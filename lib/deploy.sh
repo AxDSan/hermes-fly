@@ -524,26 +524,34 @@ deploy_collect_vm_size() {
 deploy_collect_volume_size() {
   local varname="$1"
 
+  local sizes=(1 5 10)
+  local labels=("light usage" "recommended" "heavy usage")
+  local costs=("0.15" "0.75" "1.50")
+  local default_idx=2
+
   printf '\nSelect volume size:\n' >&2
-  printf '  1) 1 GB  (light usage)\n' >&2
-  printf '  2) 5 GB  (recommended)\n' >&2
-  printf '  3) 10 GB (heavy usage)\n' >&2
-  printf 'Choice [2]: ' >&2
+  printf '  ┌───┬──────┬──────────────┬───────────┐\n' >&2
+  printf '  │ # │ Size │ Use Case     │ Cost      │\n' >&2
+  printf '  ├───┼──────┼──────────────┼───────────┤\n' >&2
+  local i
+  for i in "${!sizes[@]}"; do
+    printf '  │ %d │ %2d GB │ %-12s │ $%s/mo  │\n' "$((i + 1))" "${sizes[$i]}" "${labels[$i]}" "${costs[$i]}" >&2
+  done
+  printf '  └───┴──────┴──────────────┴───────────┘\n' >&2
+  printf 'Choice [%d]: ' "$default_idx" >&2
 
   local choice
   IFS= read -r choice
 
-  case "$choice" in
-    1)
-      eval "$varname='1'"
-      ;;
-    3)
-      eval "$varname='10'"
-      ;;
-    *)
-      eval "$varname='5'"
-      ;;
-  esac
+  if [[ -z "$choice" ]]; then
+    choice=$default_idx
+  fi
+
+  if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#sizes[@]})); then
+    eval "$varname=\"\${sizes[$((choice - 1))]}\""
+  else
+    eval "$varname='5'"
+  fi
 }
 
 # --------------------------------------------------------------------------

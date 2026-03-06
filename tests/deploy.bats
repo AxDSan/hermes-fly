@@ -106,6 +106,15 @@ teardown() {
   assert_output "5"
 }
 
+@test "deploy_collect_volume_size renders as box-drawing table" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_volume_size VSIZE <<< "1" 2>&1; echo "$VSIZE"'
+  assert_success
+  assert_output --partial "┌"
+  assert_output --partial "┘"
+  assert_output --partial "Size"
+  assert_output --partial "recommended"
+}
+
 # --- deploy_create_build_context ---
 
 @test "deploy_create_build_context generates files" {
