@@ -564,9 +564,13 @@ deploy_collect_llm_config() {
   local api_key="" model=""
 
   printf '\nSelect LLM provider:\n' >&2
-  printf '  1) OpenRouter (openrouter.ai)\n' >&2
-  printf '  2) Nous Portal (portal.nousresearch.com)\n' >&2
-  printf '  3) Custom endpoint\n' >&2
+  printf '  ┌───┬────────────────┬──────────────────────────────┐\n' >&2
+  printf '  │ # │ Provider       │ URL                          │\n' >&2
+  printf '  ├───┼────────────────┼──────────────────────────────┤\n' >&2
+  printf '  │ 1 │ OpenRouter     │ openrouter.ai                │\n' >&2
+  printf '  │ 2 │ Nous Portal    │ portal.nousresearch.com      │\n' >&2
+  printf '  │ 3 │ Custom         │ your own endpoint            │\n' >&2
+  printf '  └───┴────────────────┴──────────────────────────────┘\n' >&2
   printf 'Choice [1]: ' >&2
 
   local provider_choice
@@ -618,8 +622,6 @@ deploy_collect_llm_config() {
       DEPLOY_LLM_PROVIDER="openrouter"
       export DEPLOY_LLM_PROVIDER
 
-      local default_model="anthropic/claude-sonnet-4-20250514"
-
       while [[ -z "$api_key" ]]; do
         printf 'OpenRouter API key (required): ' >&2
         IFS= read -r api_key
@@ -628,11 +630,55 @@ deploy_collect_llm_config() {
         fi
       done
 
-      printf 'LLM model [%s]: ' "$default_model" >&2
-      IFS= read -r model
+      # Model selection table
+      local model_ids=(
+        "anthropic/claude-sonnet-4-20250514"
+        "anthropic/claude-haiku-4-20250506"
+        "google/gemini-2.5-flash"
+        "meta-llama/llama-4-maverick"
+      )
+      local model_labels=(
+        "Claude Sonnet 4"
+        "Claude Haiku 4"
+        "Gemini 2.5 Flash"
+        "Llama 4 Maverick"
+      )
+      local model_notes=(
+        "balanced, recommended"
+        "fast & affordable"
+        "fast alternative"
+        "open source"
+      )
 
-      if [[ -z "$model" ]]; then
-        model="$default_model"
+      printf '\nSelect model:\n' >&2
+      printf '  ┌───┬────────────────────┬─────────────────────┐\n' >&2
+      printf '  │ # │ Model              │ Notes               │\n' >&2
+      printf '  ├───┼────────────────────┼─────────────────────┤\n' >&2
+      local mi
+      for mi in "${!model_labels[@]}"; do
+        printf '  │ %d │ %-18s │ %-19s │\n' "$((mi + 1))" "${model_labels[$mi]}" "${model_notes[$mi]}" >&2
+      done
+      printf '  │ 5 │ Custom model ID    │ enter manually      │\n' >&2
+      printf '  └───┴────────────────────┴─────────────────────┘\n' >&2
+      printf 'Choice [1]: ' >&2
+
+      local model_choice
+      IFS= read -r model_choice
+
+      if [[ -z "$model_choice" ]]; then
+        model_choice=1
+      fi
+
+      if [[ "$model_choice" =~ ^[0-9]+$ ]] && ((model_choice >= 1 && model_choice <= ${#model_ids[@]})); then
+        model="${model_ids[$((model_choice - 1))]}"
+      elif [[ "$model_choice" == "5" ]]; then
+        printf 'Model ID (e.g. anthropic/claude-sonnet-4-20250514): ' >&2
+        IFS= read -r model
+        if [[ -z "$model" ]]; then
+          model="${model_ids[0]}"
+        fi
+      else
+        model="${model_ids[0]}"
       fi
 
       eval "$api_key_var=\"\$api_key\""

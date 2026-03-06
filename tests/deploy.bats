@@ -167,25 +167,50 @@ teardown() {
 # --- deploy_collect_llm_config ---
 
 @test "deploy_collect_llm_config stores API key and default model" {
-  # Choice 1 (OpenRouter), API key, default model (empty)
-  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_llm_config KEY MODEL < <(printf "1\nsk-test-123\n\n") 2>/dev/null; echo "KEY=$KEY MODEL=$MODEL"'
+  # Choice 1 (OpenRouter), API key, model choice 1 (default)
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_llm_config KEY MODEL < <(printf "1\nsk-test-123\n1\n") 2>/dev/null; echo "KEY=$KEY MODEL=$MODEL"'
   assert_success
   assert_output --partial "KEY=sk-test-123"
   assert_output --partial "MODEL=anthropic/claude-sonnet"
 }
 
 @test "deploy_collect_llm_config re-prompts on empty key then accepts" {
-  # Choice 1 (OpenRouter), empty key (re-prompt), API key, default model
-  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_llm_config KEY MODEL < <(printf "1\n\nsk-test-456\n\n") 2>/dev/null; echo "KEY=$KEY MODEL=$MODEL"'
+  # Choice 1 (OpenRouter), empty key (re-prompt), API key, model choice 1
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_llm_config KEY MODEL < <(printf "1\n\nsk-test-456\n1\n") 2>/dev/null; echo "KEY=$KEY MODEL=$MODEL"'
   assert_success
   assert_output --partial "KEY=sk-test-456"
+}
+
+# --- deploy_collect_llm_config table rendering ---
+
+@test "deploy_collect_llm_config renders provider as box-drawing table" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_llm_config KEY MODEL < <(printf "1\nsk-test\n1\n") 2>&1'
+  assert_success
+  assert_output --partial "┌"
+  assert_output --partial "Provider"
+  assert_output --partial "OpenRouter"
+  assert_output --partial "Nous"
+}
+
+@test "deploy_collect_llm_config OpenRouter shows model table" {
+  # Choice 1 (OpenRouter), API key, model choice 1 (default)
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_llm_config KEY MODEL < <(printf "1\nsk-test\n1\n") 2>&1; echo "MODEL=$MODEL"'
+  assert_success
+  assert_output --partial "Select model"
+  assert_output --partial "claude"
+}
+
+@test "deploy_collect_llm_config OpenRouter model choice 1 picks default" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_llm_config KEY MODEL < <(printf "1\nsk-test\n1\n") 2>/dev/null; echo "MODEL=$MODEL"'
+  assert_success
+  assert_output --partial "MODEL=anthropic/claude-sonnet"
 }
 
 # --- deploy_collect_llm_config provider choices ---
 
 @test "deploy_collect_llm_config choice 1 sets OpenRouter provider" {
-  # Choice 1 = OpenRouter, then API key, then default model
-  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_llm_config KEY MODEL < <(printf "1\nsk-or-key\n\n") 2>/dev/null; echo "KEY=$KEY MODEL=$MODEL PROVIDER=$DEPLOY_LLM_PROVIDER"'
+  # Choice 1 = OpenRouter, then API key, then model choice 1
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_llm_config KEY MODEL < <(printf "1\nsk-or-key\n1\n") 2>/dev/null; echo "KEY=$KEY MODEL=$MODEL PROVIDER=$DEPLOY_LLM_PROVIDER"'
   assert_success
   assert_output --partial "KEY=sk-or-key"
   assert_output --partial "PROVIDER=openrouter"
