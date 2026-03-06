@@ -195,27 +195,26 @@ deploy_collect_app_name() {
 # --------------------------------------------------------------------------
 deploy_collect_region() {
   local varname="$1"
-  local regions_json
-  regions_json="$(fly_get_regions 2>/dev/null)"
 
-  # Parse region codes and names from JSON array
-  # Format: [{"code":"ord","name":"Chicago, Illinois (US)"}, ...]
-  local codes=() names=()
-  local code name
-
-  while IFS= read -r line; do
-    code="$(echo "$line" | sed -n 's/.*"code"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-    name="$(echo "$line" | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-    if [[ -n "$code" ]]; then
-      codes+=("$code")
-      names+=("$name")
-    fi
-  done <<<"${regions_json///},{/$'}\n{'}"
+  # Curated list of popular regions (covers most use cases)
+  local codes=("iad" "ord" "lax" "ams" "fra" "lhr" "nrt" "sin" "syd" "gru")
+  local labels=(
+    "Washington, D.C. (US East)"
+    "Chicago (US Central)"
+    "Los Angeles (US West)"
+    "Amsterdam (Europe)"
+    "Frankfurt (Europe)"
+    "London (Europe)"
+    "Tokyo (Asia)"
+    "Singapore (Asia)"
+    "Sydney (Oceania)"
+    "São Paulo (South America)"
+  )
 
   printf '\nSelect a region:\n' >&2
   local i
   for i in "${!codes[@]}"; do
-    printf '  %d) %s (%s)\n' "$((i + 1))" "${names[$i]}" "${codes[$i]}" >&2
+    printf '  %2d) %-35s %s\n' "$((i + 1))" "${labels[$i]}" "${codes[$i]}" >&2
   done
   printf 'Choice [1]: ' >&2
 
