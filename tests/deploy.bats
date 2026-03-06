@@ -260,6 +260,15 @@ teardown() {
   assert_output "SIZE=shared-cpu-1x MEM=256mb"
 }
 
+@test "deploy_collect_vm_size renders as box-drawing table" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_vm_size SIZE MEM <<< "1" 2>&1; echo "SIZE=$SIZE MEM=$MEM"'
+  assert_success
+  assert_output --partial "┌"
+  assert_output --partial "┘"
+  assert_output --partial "shared-cpu-1x"
+  assert_output --partial "recommended"
+}
+
 @test "deploy_collect_vm_size falls back to static on API failure" {
   run bash -c 'export NO_COLOR=1; export MOCK_FLY_VM_SIZES_FAIL=true; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_vm_size SIZE MEM <<< "" 2>/dev/null; echo "SIZE=$SIZE MEM=$MEM"'
   assert_success

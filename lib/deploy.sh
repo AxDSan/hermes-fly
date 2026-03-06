@@ -459,8 +459,9 @@ deploy_collect_vm_size() {
     deploy_parse_vm_sizes "$vm_json"
   fi
 
-  printf '\nSelect VM size:\n' >&2
+  # Build table rows
   local idx=0 name mem price rec mem_label
+  local rows=()
   for name in "${wanted[@]}"; do
     idx=$((idx + 1))
     mem="$(_deploy_lookup_vm "$name" mem)"
@@ -475,12 +476,20 @@ deploy_collect_vm_size() {
       mem_label="${mem}mb"
     fi
 
-    if [[ -n "$rec" ]]; then
-      printf "  %d) %-19s / %-6s (~\$%s/mo) — %s\n" "$idx" "$name" "$mem_label" "$price" "$rec" >&2
-    else
-      printf "  %d) %-19s / %-6s (~\$%s/mo)\n" "$idx" "$name" "$mem_label" "$price" >&2
-    fi
+    rows+=("$(printf '%d│%-19s│%-5s│$%-8s│%s' "$idx" "$name" "$mem_label" "$price/mo" "$rec")")
   done
+
+  printf '\nSelect VM size:\n' >&2
+  printf '  ┌───┬─────────────────────┬───────┬───────────┬──────────────────────────┐\n' >&2
+  printf '  │ # │ VM Size             │ RAM   │ Cost      │ Use Case                 │\n' >&2
+  printf '  ├───┼─────────────────────┼───────┼───────────┼──────────────────────────┤\n' >&2
+  local row
+  for row in "${rows[@]}"; do
+    local n vm rm co uc
+    IFS='│' read -r n vm rm co uc <<<"$row"
+    printf '  │ %s │ %-19s │ %-5s │ %-9s │ %-24s │\n' "$n" "$vm" "$rm" "$co" "$uc" >&2
+  done
+  printf '  └───┴─────────────────────┴───────┴───────────┴──────────────────────────┘\n' >&2
   printf 'Choice [%d]: ' "$default_idx" >&2
 
   local choice
