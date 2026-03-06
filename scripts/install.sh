@@ -56,9 +56,25 @@ verify_checksum() {
 
 install_binary() {
   local source="$1" dest_dir="$2"
-  mkdir -p "$dest_dir"
-  cp "$source" "$dest_dir/hermes-fly"
-  chmod +x "$dest_dir/hermes-fly"
+
+  # Check if we need elevated permissions
+  if [[ -d "$dest_dir" && ! -w "$dest_dir" ]] || [[ ! -d "$dest_dir" && ! -w "$(dirname "$dest_dir")" ]]; then
+    echo "Need elevated permissions to install to $dest_dir"
+    if command -v sudo >/dev/null 2>&1; then
+      sudo mkdir -p "$dest_dir"
+      sudo cp "$source" "$dest_dir/hermes-fly"
+      sudo chmod +x "$dest_dir/hermes-fly"
+    else
+      echo "Error: Cannot write to $dest_dir and sudo is not available" >&2
+      echo "Try: HERMES_FLY_INSTALL_DIR=~/.local/bin bash install.sh" >&2
+      return 1
+    fi
+  else
+    mkdir -p "$dest_dir"
+    cp "$source" "$dest_dir/hermes-fly"
+    chmod +x "$dest_dir/hermes-fly"
+  fi
+
   echo "Installed hermes-fly to $dest_dir/hermes-fly"
 }
 
