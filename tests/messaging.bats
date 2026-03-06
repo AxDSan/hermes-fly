@@ -1,0 +1,88 @@
+#!/usr/bin/env bats
+# tests/messaging.bats — Tests for lib/messaging.sh messaging setup wizards
+
+setup() {
+  load 'test_helper/common-setup'
+  _common_setup
+  export NO_COLOR=1
+  source "${PROJECT_ROOT}/lib/ui.sh"
+  source "${PROJECT_ROOT}/lib/messaging.sh"
+}
+
+teardown() {
+  _common_teardown
+}
+
+# --- messaging_validate_telegram_token ---
+
+@test "messaging_validate_telegram_token accepts valid token" {
+  run messaging_validate_telegram_token "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+  assert_success
+}
+
+@test "messaging_validate_telegram_token rejects invalid token" {
+  run messaging_validate_telegram_token "invalid"
+  assert_failure
+}
+
+@test "messaging_validate_telegram_token rejects empty" {
+  run messaging_validate_telegram_token ""
+  assert_failure
+}
+
+# --- messaging_validate_discord_token ---
+
+@test "messaging_validate_discord_token accepts valid token" {
+  run messaging_validate_discord_token "MTIzNDU2Nzg5MDEyMzQ1Njc4.GhIjKl.abcdefghijklmnopqrstuvwxyz1234567890AB"
+  assert_success
+}
+
+@test "messaging_validate_discord_token rejects empty" {
+  run messaging_validate_discord_token ""
+  assert_failure
+}
+
+@test "messaging_validate_discord_token rejects short token" {
+  run messaging_validate_discord_token "tooshort"
+  assert_failure
+}
+
+# --- messaging_setup_menu ---
+
+@test "messaging_setup_menu with 1 returns telegram" {
+  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; echo "1" | messaging_setup_menu 2>/dev/null'
+  assert_success
+  assert_output --partial "telegram"
+}
+
+@test "messaging_setup_menu with 3 returns skip" {
+  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; echo "3" | messaging_setup_menu 2>/dev/null'
+  assert_success
+  assert_output --partial "skip"
+}
+
+# --- messaging_setup_telegram ---
+
+@test "messaging_setup_telegram sets token and users" {
+  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; messaging_setup_telegram <<EOF 2>/dev/null
+123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+12345,67890
+EOF
+echo "TOKEN=$DEPLOY_TELEGRAM_BOT_TOKEN USERS=$DEPLOY_TELEGRAM_ALLOWED_USERS"'
+  assert_success
+  assert_output --partial "TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+  assert_output --partial "USERS=12345,67890"
+}
+
+# --- messaging_setup_discord ---
+
+@test "messaging_setup_discord sets token and users" {
+  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; messaging_setup_discord <<EOF 2>/dev/null
+MTIzNDU2Nzg5MDEyMzQ1Njc4.GhIjKl.abcdefghijklmnopqrstuvwxyz1234567890AB
+111222,333444
+EOF
+echo "TOKEN=$DEPLOY_DISCORD_BOT_TOKEN USERS=$DEPLOY_DISCORD_ALLOWED_USERS"'
+  assert_success
+  assert_output --partial "TOKEN=MTIzNDU2Nzg5MDEyMzQ1Njc4.GhIjKl.abcdefghijklmnopqrstuvwxyz1234567890AB"
+  assert_output --partial "USERS=111222,333444"
+}

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Mock git — behavior controlled by MOCK_GIT_* env vars
+
+case "${1:-}" in
+    clone)
+        if [[ "${MOCK_GIT_CLONE_FAIL:-false}" == "true" ]]; then
+            echo "fatal: repository not found" >&2
+            exit 128
+        fi
+        echo "Cloning into '${3:-repo}'..."
+        ;;
+    *)
+        exit 0
+        ;;
+esac

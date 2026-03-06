@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Mock curl — behavior controlled by MOCK_CURL_* env vars
+
+if [[ "${MOCK_CURL_FAIL:-false}" == "true" ]]; then
+    echo "curl: (7) Failed to connect" >&2
+    exit 7
+fi
+
+# Default: succeed with empty body
+echo "HTTP/1.1 200 OK"
+exit 0

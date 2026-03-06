@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Mock flyctl — behavior controlled by MOCK_FLY_* env vars
+
+case "${1:-}" in
+    auth)
+        case "${2:-}" in
+            whoami)
+                # MOCK_FLY_AUTH_SEQUENCE: comma-separated results (fail,success)
+                # Uses a counter file to track call number
+                if [[ -n "${MOCK_FLY_AUTH_SEQUENCE:-}" ]]; then
+                    _counter_file="${MOCK_FLY_AUTH_COUNTER_FILE:-${TMPDIR:-/tmp}/mock_fly_auth_counter}"
+                    _count=0
+                    if [[ -f "$_counter_file" ]]; then
+                        _count=$(cat "$_counter_file")
+                    fi
+                    _count=$((_count + 1))
+                    echo "$_count" > "$_counter_file"
+                    _result=$(echo "$MOCK_FLY_AUTH_SEQUENCE" | cut -d',' -f"$_count")
+                    if [[ "$_result" == "fail" ]]; then
+                        echo "Error: not logged in" >&2
+                        exit 1
+                    fi
+                    echo "test-user@example.com"
+                    exit 0
+                fi
+                if [[ "${MOCK_FLY_AUTH:-success}" == "fail" ]]; then
+                    echo "Error: not logged in" >&2
+                    exit 1
+                fi
+                echo "test-user@example.com"
+                ;;
+        esac
+        ;;
+    version)
+        echo "fly v${MOCK_FLY_VERSION:-0.3.52} linux/amd64"
+        ;;
+    apps)
+        case "${2:-}" in
+            create)
+                if [[ "${MOCK_FLY_APPS_CREATE:-success}" == "fail" ]]; then
+                    echo "Error: app name already exists" >&2
+                    exit 1
+                fi
+                echo "{\"name\":\"${3:-test-app}\",\"status\":\"pending\"}"
+                ;;
+            destroy)
+                if [[ "${MOCK_FLY_APPS_DESTROY:-success}" == "fail" ]]; then
+                    echo "Error: app not found" >&2
+                    exit 1
+                fi
+                echo "Destroyed app ${3:-test-app}"
+                ;;
+        esac
+        ;;
+    volumes)
+        case "${2:-}" in
+            create)
+                echo "{\"id\":\"vol_test123\",\"name\":\"${3:-data}\",\"size_gb\":${MOCK_FLY_VOLUME_SIZE:-5},\"region\":\"${MOCK_FLY_REGION:-ord}\"}"
+                ;;
+            list)
+                if [[ "${MOCK_FLY_VOLUMES_EMPTY:-false}" == "true" ]]; then
+                    echo "[]"
+                else
+                    echo "[{\"id\":\"vol_test123\",\"name\":\"hermes_data\",\"size_gb\":5,\"region\":\"ord\"}]"
+                fi
+                ;;
+            delete)
+                echo "Deleted volume ${3:-vol_test123}"
+                ;;
+        esac
+        ;;
+    secrets)
+        case "${2:-}" in
+            set)
+                shift 2
+                # Record what was set for test verification
+                echo "Secrets set: $*" >&2
+                echo "{\"release\":{\"version\":2}}"
+                ;;
+            list)
+                if [[ "${MOCK_FLY_SECRETS_MISSING:-false}" == "true" ]]; then
+                    echo "[]"
+                else
+                    case "${MOCK_FLY_SECRETS_PROVIDER:-}" in
+                        nous)
+                            echo "[{\"Name\":\"NOUS_API_KEY\",\"Digest\":\"nous123\"},{\"Name\":\"TELEGRAM_BOT_TOKEN\",\"Digest\":\"def456\"}]"
+                            ;;
+                        custom)
+                            echo "[{\"Name\":\"LLM_API_KEY\",\"Digest\":\"llm123\"},{\"Name\":\"TELEGRAM_BOT_TOKEN\",\"Digest\":\"def456\"}]"
+                            ;;
+                        *)
+                            echo "[{\"Name\":\"OPENROUTER_API_KEY\",\"Digest\":\"abc123\"},{\"Name\":\"TELEGRAM_BOT_TOKEN\",\"Digest\":\"def456\"}]"
+                            ;;
+                    esac
+                fi
+                ;;
+        esac
+        ;;
+    deploy)
+        if [[ "${MOCK_FLY_DEPLOY:-success}" == "fail" ]]; then
+            echo "Error: deployment failed" >&2
+            exit 1
+        fi
+        # Record deploy args for test verification
+        if [[ -n "${MOCK_FLY_DEPLOY_ARGS_FILE:-}" ]]; then
+            echo "$*" > "$MOCK_FLY_DEPLOY_ARGS_FILE"
+        fi
+        echo "Deploying..."
+        echo "==> Building image"
+        echo "==> Pushing image"
+        echo "==> Creating release"
+        echo "Release v1 created"
+        ;;
+    status)
+        if [[ "${MOCK_FLY_STATUS:-success}" == "fail" ]]; then
+            echo "Error: app not found" >&2
+            exit 1
+        fi
+        # Find the app name from --app flag
+        local app_name="test-app"
+        for arg in "$@"; do
+            if [[ "${prev_arg:-}" == "--app" || "${prev_arg:-}" == "-a" ]]; then
+                app_name="$arg"
+                break
+            fi
+            prev_arg="$arg"
+        done
+        echo "{\"app\":{\"name\":\"${app_name}\",\"status\":\"running\",\"hostname\":\"${app_name}.fly.dev\"},\"machines\":[{\"id\":\"machine123\",\"state\":\"${MOCK_FLY_MACHINE_STATE:-started}\",\"region\":\"ord\",\"process\":\"hermes\"}]}"
+        ;;
+    logs)
+        if [[ "${MOCK_FLY_LOGS:-success}" == "fail" ]]; then
+            echo "Error: app not found" >&2
+            exit 1
+        fi
+        echo "2024-01-15T10:00:00Z [info] Hermes gateway started"
+        echo "2024-01-15T10:00:01Z [info] Listening on port 8080"
+        echo "2024-01-15T10:00:02Z [info] Connected to Telegram"
+        ;;
+    platform)
+        case "${2:-}" in
+            vm-sizes)
+                echo "[{\"name\":\"shared-cpu-1x\",\"cpu_cores\":1,\"memory_mb\":256,\"price_month\":1.94},{\"name\":\"shared-cpu-2x\",\"cpu_cores\":2,\"memory_mb\":512,\"price_month\":3.88},{\"name\":\"performance-1x\",\"cpu_cores\":1,\"memory_mb\":2048,\"price_month\":12.00}]"
+                ;;
+            regions)
+                echo "[{\"code\":\"ord\",\"name\":\"Chicago, Illinois (US)\"},{\"code\":\"ams\",\"name\":\"Amsterdam, Netherlands\"},{\"code\":\"nrt\",\"name\":\"Tokyo, Japan\"}]"
+                ;;
+        esac
+        ;;
+    *)
+        echo "Unknown fly command: $*" >&2
+        exit 1
+        ;;
+esac

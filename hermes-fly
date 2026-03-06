@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HERMES_FLY_VERSION="0.1.0"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source all library modules
+source "${SCRIPT_DIR}/lib/ui.sh"
+source "${SCRIPT_DIR}/lib/fly-helpers.sh"
+source "${SCRIPT_DIR}/lib/docker-helpers.sh"
+source "${SCRIPT_DIR}/lib/messaging.sh"
+source "${SCRIPT_DIR}/lib/config.sh"
+source "${SCRIPT_DIR}/lib/status.sh"
+source "${SCRIPT_DIR}/lib/logs.sh"
+source "${SCRIPT_DIR}/lib/doctor.sh"
+source "${SCRIPT_DIR}/lib/destroy.sh"
+source "${SCRIPT_DIR}/lib/deploy.sh"
+
+# --- Help text ---
+show_help() {
+    cat <<'EOF'
+hermes-fly — Deploy Hermes Agent to Fly.io
+
+Usage:
+  hermes-fly <command> [options]
+
+Commands:
+  deploy              Interactive deployment wizard
+  status [-a APP]     Check deployment health
+  logs [-a APP]       View application logs
+  doctor [-a APP]     Diagnose common issues
+  destroy [-a APP]    Remove deployment (confirmation required)
+  help                Show this help message
+  version             Show version
+
+Options:
+  -a APP              Specify app name (defaults to current app)
+  --force             Skip confirmation prompts (destroy only)
+  --help, -h          Show help
+  --version, -v       Show version
+
+Examples:
+  hermes-fly deploy                  # Start deployment wizard
+  hermes-fly status                  # Check current app status
+  hermes-fly status -a my-hermes     # Check specific app
+  hermes-fly doctor                  # Run diagnostics
+  hermes-fly destroy --force         # Force destroy without confirmation
+
+Documentation:
+  https://github.com/alexfazio/hermes-fly
+EOF
+}
+
+# --- Deploy help ---
+show_deploy_help() {
+    cat <<'EOF'
+hermes-fly deploy — Interactive Deployment Wizard
+
+Guides you through deploying Hermes Agent to Fly.io:
+  1. Checks prerequisites (flyctl, auth, connectivity)
+  2. Configures app name, region, VM size, volume
+  3. Sets up LLM provider (OpenRouter API key)
+  4. Configures messaging (Telegram/Discord)
+  5. Generates Dockerfile and fly.toml
+  6. Creates Fly resources and deploys
+  7. Verifies deployment health
+
+Usage:
+  hermes-fly deploy [--help]
+
+The wizard will prompt for all required information interactively.
+EOF
+}
+
+# --- Main dispatch ---
+main() {
+    local cmd="${1:-help}"
+    shift || true
+
+    case "$cmd" in
+        deploy)
+            if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+                show_deploy_help
+                return 0
+            fi
+            cmd_deploy "$@"
+            ;;
+        status)
+            local app
+            app="$(config_resolve_app "$@" 2>/dev/null)" || {
+                ui_error "No app specified. Use -a APP or run 'hermes-fly deploy' first."
+                return 1
+            }
+            cmd_status "$app"
+            ;;
+        logs)
+            local app
+            app="$(config_resolve_app "$@" 2>/dev/null)" || {
+                ui_error "No app specified. Use -a APP or run 'hermes-fly deploy' first."
+                return 1
+            }
+            cmd_logs "$app"
+            ;;
+        doctor)
+            local app
+            app="$(config_resolve_app "$@" 2>/dev/null)" || {
+                ui_error "No app specified. Use -a APP or run 'hermes-fly deploy' first."
+                return 1
+            }
+            cmd_doctor "$app"
+            ;;
+        destroy)
+            local app
+            app="$(config_resolve_app "$@" 2>/dev/null)" || {
+                ui_error "No app specified. Use -a APP or run 'hermes-fly deploy' first."
+                return 1
+            }
+            cmd_destroy "$app" "$@"
+            ;;
+        help|--help|-h)
+            show_help
+            ;;
+        version|--version|-v)
+            echo "hermes-fly ${HERMES_FLY_VERSION}"
+            ;;
+        *)
+            ui_error "Unknown command: ${cmd}"
+            show_help
+            return 1
+            ;;
+    esac
+}
+
+main "$@"
