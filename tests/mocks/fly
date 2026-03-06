@@ -38,7 +38,7 @@ case "${1:-}" in
         case "${2:-}" in
             create)
                 if [[ "${MOCK_FLY_APPS_CREATE:-success}" == "fail" ]]; then
-                    echo "Error: app name already exists" >&2
+                    echo "Error: ${MOCK_FLY_APPS_CREATE_MSG:-app name already exists}" >&2
                     exit 1
                 fi
                 echo "{\"name\":\"${3:-test-app}\",\"status\":\"pending\"}"
@@ -55,6 +55,10 @@ case "${1:-}" in
     volumes)
         case "${2:-}" in
             create)
+                if [[ "${MOCK_FLY_VOLUME_CREATE:-success}" == "fail" ]]; then
+                    echo "Error: ${MOCK_FLY_VOLUME_CREATE_MSG:-no volumes available}" >&2
+                    exit 1
+                fi
                 echo "{\"id\":\"vol_test123\",\"name\":\"${3:-data}\",\"size_gb\":${MOCK_FLY_VOLUME_SIZE:-5},\"region\":\"${MOCK_FLY_REGION:-ord}\"}"
                 ;;
             list)
@@ -72,6 +76,10 @@ case "${1:-}" in
     secrets)
         case "${2:-}" in
             set)
+                if [[ "${MOCK_FLY_SECRETS_SET:-success}" == "fail" ]]; then
+                    echo "Error: ${MOCK_FLY_SECRETS_SET_MSG:-failed to set secrets}" >&2
+                    exit 1
+                fi
                 shift 2
                 # Record what was set for test verification
                 echo "Secrets set: $*" >&2

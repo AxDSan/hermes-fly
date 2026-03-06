@@ -582,8 +582,7 @@ deploy_collect_llm_config() {
       export DEPLOY_LLM_PROVIDER
 
       while [[ -z "$api_key" ]]; do
-        printf 'Nous API key (from portal.nousresearch.com, required): ' >&2
-        IFS= read -r api_key
+        ui_ask_secret 'Nous API key (from portal.nousresearch.com, required):' api_key
         if [[ -z "$api_key" ]]; then
           printf 'API key cannot be empty.\n' >&2
         fi
@@ -606,8 +605,7 @@ deploy_collect_llm_config() {
       done
 
       while [[ -z "$api_key" ]]; do
-        printf 'LLM API key (required): ' >&2
-        IFS= read -r api_key
+        ui_ask_secret 'LLM API key (required):' api_key
         if [[ -z "$api_key" ]]; then
           printf 'API key cannot be empty.\n' >&2
         fi
@@ -623,8 +621,7 @@ deploy_collect_llm_config() {
       export DEPLOY_LLM_PROVIDER
 
       while [[ -z "$api_key" ]]; do
-        printf 'OpenRouter API key (required): ' >&2
-        IFS= read -r api_key
+        ui_ask_secret 'OpenRouter API key (required):' api_key
         if [[ -z "$api_key" ]]; then
           printf 'API key cannot be empty.\n' >&2
         fi
@@ -726,6 +723,13 @@ deploy_collect_config() {
   printf '  VM size:     %s / %s\n' "$DEPLOY_VM_SIZE" "$DEPLOY_VM_MEMORY" >&2
   printf '  Volume:      %s GB\n' "$DEPLOY_VOLUME_SIZE" >&2
   printf '  Model:       %s\n' "$DEPLOY_MODEL" >&2
+  if [[ -n "${DEPLOY_TELEGRAM_BOT_TOKEN:-}" ]]; then
+    printf '  Messaging:   Telegram (configured)\n' >&2
+  elif [[ -n "${DEPLOY_DISCORD_BOT_TOKEN:-}" ]]; then
+    printf '  Messaging:   Discord (configured)\n' >&2
+  else
+    printf '  Messaging:   none (configure later)\n' >&2
+  fi
   printf '\n' >&2
 
   if ! ui_confirm "Proceed with deployment?"; then
@@ -773,14 +777,23 @@ deploy_provision_resources() {
   local total=3
 
   ui_step 1 "$total" "Creating Fly app '${DEPLOY_APP_NAME}'"
-  if ! fly_retry 3 fly_create_app "$DEPLOY_APP_NAME" >/dev/null 2>&1; then
+  local create_output
+  if ! create_output="$(fly_retry 3 fly_create_app "$DEPLOY_APP_NAME" 2>&1)"; then
     ui_error "Failed to create app '${DEPLOY_APP_NAME}'"
+    if printf '%s' "$create_output" | grep -qi 'already exists'; then
+      printf '  Hint: app name may already be taken. Try a more unique name.\n' >&2
+      printf '  Tip: use the default generated name (hermes-<user>-XXX) for uniqueness.\n' >&2
+    else
+      printf '  Details: %s\n' "$(printf '%s' "$create_output" | head -1)" >&2
+    fi
     return 1
   fi
 
   ui_step 2 "$total" "Creating volume (${DEPLOY_VOLUME_SIZE} GB)"
-  if ! fly_retry 3 fly_create_volume "$DEPLOY_APP_NAME" "hermes_data" "$DEPLOY_VOLUME_SIZE" "$DEPLOY_REGION" >/dev/null 2>&1; then
+  local volume_output
+  if ! volume_output="$(fly_retry 3 fly_create_volume "$DEPLOY_APP_NAME" "hermes_data" "$DEPLOY_VOLUME_SIZE" "$DEPLOY_REGION" 2>&1)"; then
     ui_error "Failed to create volume"
+    printf '  Details: %s\n' "$(printf '%s' "$volume_output" | head -1)" >&2
     return 1
   fi
 
@@ -814,8 +827,10 @@ deploy_provision_resources() {
     fi
   fi
 
-  if ! fly_retry 3 fly_set_secrets "$DEPLOY_APP_NAME" "${secrets[@]}" >/dev/null 2>&1; then
+  local secrets_output
+  if ! secrets_output="$(fly_retry 3 fly_set_secrets "$DEPLOY_APP_NAME" "${secrets[@]}" 2>&1)"; then
     ui_error "Failed to set secrets"
+    printf '  Details: %s\n' "$(printf '%s' "$secrets_output" | head -1)" >&2
     return 1
   fi
 

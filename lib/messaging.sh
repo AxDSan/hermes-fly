@@ -39,6 +39,23 @@ messaging_validate_discord_token() {
   return 0
 }
 
+# Validate user IDs are numeric (comma-separated).
+# Empty input is valid (allow all users).
+# Returns 0 if valid, 1 if any ID is non-numeric.
+messaging_validate_user_ids() {
+  local input="$1"
+  [[ -z "$input" ]] && return 0
+  local id
+  local IFS=','
+  for id in $input; do
+    id="$(printf '%s' "$id" | tr -d '[:space:]')"
+    if [[ -n "$id" ]] && ! [[ "$id" =~ ^[0-9]+$ ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
 # --- Setup menu ---
 
 # Present a choice menu for messaging platform selection.
@@ -83,8 +100,7 @@ messaging_setup_telegram() {
   printf '\n' >&2
 
   local token
-  printf 'Bot token: ' >&2
-  IFS= read -r token
+  ui_ask_secret 'Bot token:' token
 
   if ! messaging_validate_telegram_token "$token"; then
     printf 'Warning: token format looks invalid, proceeding anyway.\n' >&2
@@ -99,6 +115,10 @@ messaging_setup_telegram() {
   local users
   printf 'User IDs (comma-separated, or blank for all): ' >&2
   IFS= read -r users
+
+  if ! messaging_validate_user_ids "$users"; then
+    printf 'Warning: user IDs should be numeric (e.g., 123456789). Proceeding anyway.\n' >&2
+  fi
 
   DEPLOY_TELEGRAM_BOT_TOKEN="$token"
   DEPLOY_TELEGRAM_ALLOWED_USERS="$users"
@@ -122,8 +142,7 @@ messaging_setup_discord() {
   printf '\n' >&2
 
   local token
-  printf 'Bot token: ' >&2
-  IFS= read -r token
+  ui_ask_secret 'Bot token:' token
 
   if ! messaging_validate_discord_token "$token"; then
     printf 'Warning: token format looks invalid, proceeding anyway.\n' >&2
@@ -139,6 +158,10 @@ messaging_setup_discord() {
   local users
   printf 'User IDs (comma-separated, or blank for all): ' >&2
   IFS= read -r users
+
+  if ! messaging_validate_user_ids "$users"; then
+    printf 'Warning: user IDs should be numeric (e.g., 123456789). Proceeding anyway.\n' >&2
+  fi
 
   DEPLOY_DISCORD_BOT_TOKEN="$token"
   DEPLOY_DISCORD_ALLOWED_USERS="$users"

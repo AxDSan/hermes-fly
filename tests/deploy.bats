@@ -403,6 +403,115 @@ teardown() {
 
 # --- config persistence ---
 
+# --- deploy_provision_resources error messages ---
+
+@test "deploy_provision_resources shows hint when app name already taken" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VOLUME_SIZE="5"
+  export DEPLOY_API_KEY="sk-test-key"
+  export DEPLOY_MODEL="anthropic/claude-sonnet-4-20250514"
+  export MOCK_FLY_APPS_CREATE=fail
+  run deploy_provision_resources
+  assert_failure
+  assert_output --partial "Hint"
+  assert_output --partial "already be taken"
+}
+
+@test "deploy_provision_resources shows error details on unknown failure" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VOLUME_SIZE="5"
+  export DEPLOY_API_KEY="sk-test-key"
+  export DEPLOY_MODEL="anthropic/claude-sonnet-4-20250514"
+  export MOCK_FLY_APPS_CREATE=fail
+  export MOCK_FLY_APPS_CREATE_MSG="quota exceeded"
+  run deploy_provision_resources
+  assert_failure
+  assert_output --partial "Details"
+  assert_output --partial "quota exceeded"
+}
+
+@test "deploy_provision_resources shows only first error in details" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VOLUME_SIZE="5"
+  export DEPLOY_API_KEY="sk-test-key"
+  export DEPLOY_MODEL="anthropic/claude-sonnet-4-20250514"
+  export MOCK_FLY_APPS_CREATE=fail
+  export MOCK_FLY_APPS_CREATE_MSG="quota exceeded"
+  run deploy_provision_resources
+  assert_failure
+  assert_output --partial "quota exceeded"
+  refute_output --partial "command failed after"
+}
+
+@test "deploy_provision_resources shows volume error details on failure" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VOLUME_SIZE="5"
+  export DEPLOY_API_KEY="sk-test-key"
+  export DEPLOY_MODEL="anthropic/claude-sonnet-4-20250514"
+  export MOCK_FLY_VOLUME_CREATE=fail
+  run deploy_provision_resources
+  assert_failure
+  assert_output --partial "Details"
+  assert_output --partial "no volumes available"
+}
+
+@test "deploy_provision_resources shows custom volume error message" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VOLUME_SIZE="5"
+  export DEPLOY_API_KEY="sk-test-key"
+  export DEPLOY_MODEL="anthropic/claude-sonnet-4-20250514"
+  export MOCK_FLY_VOLUME_CREATE=fail
+  export MOCK_FLY_VOLUME_CREATE_MSG="region full"
+  run deploy_provision_resources
+  assert_failure
+  assert_output --partial "region full"
+}
+
+@test "deploy_provision_resources shows secrets error details on failure" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VOLUME_SIZE="5"
+  export DEPLOY_API_KEY="sk-test-key"
+  export DEPLOY_MODEL="anthropic/claude-sonnet-4-20250514"
+  export MOCK_FLY_SECRETS_SET=fail
+  run deploy_provision_resources
+  assert_failure
+  assert_output --partial "Details"
+  assert_output --partial "failed to set secrets"
+}
+
+@test "deploy_provision_resources shows custom secrets error message" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VOLUME_SIZE="5"
+  export DEPLOY_API_KEY="sk-test-key"
+  export DEPLOY_MODEL="anthropic/claude-sonnet-4-20250514"
+  export MOCK_FLY_SECRETS_SET=fail
+  export MOCK_FLY_SECRETS_SET_MSG="unauthorized"
+  run deploy_provision_resources
+  assert_failure
+  assert_output --partial "unauthorized"
+}
+
+# --- deployment summary messaging ---
+
+@test "deployment summary shows Telegram when configured" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_config < <(printf "my-test-app\n1\n2\n2\n1\nsk-test-key\n1\n1\n123:ABC-token\n12345\ny\n") 2>&1'
+  assert_success
+  assert_output --partial "Telegram (configured)"
+}
+
+@test "deployment summary shows none when messaging skipped" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_config < <(printf "my-test-app\n1\n2\n2\n1\nsk-test-key\n1\n3\ny\n") 2>&1'
+  assert_success
+  assert_output --partial "none (configure later)"
+}
+
 @test "config_save_app after deploy stores app in config.yaml" {
   config_save_app "deploy-test-app" "ord"
   run cat "${HERMES_FLY_CONFIG_DIR}/config.yaml"
