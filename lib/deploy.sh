@@ -389,7 +389,7 @@ deploy_collect_llm_config() {
 # Stores results in exported DEPLOY_* global variables.
 # --------------------------------------------------------------------------
 deploy_collect_config() {
-  ui_banner "Hermes Deploy Configuration"
+  ui_banner "Hermes Agent Deploy Configuration"
 
   deploy_collect_app_name DEPLOY_APP_NAME
   deploy_collect_region DEPLOY_REGION
