@@ -49,6 +49,14 @@ teardown() {
 
 # --- messaging_setup_menu ---
 
+@test "messaging_setup_menu renders as box-drawing table" {
+  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; echo "1" | messaging_setup_menu 2>&1'
+  assert_success
+  assert_output --partial "┌"
+  assert_output --partial "Platform"
+  assert_output --partial "Telegram"
+}
+
 @test "messaging_setup_menu with 1 returns telegram" {
   run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; echo "1" | messaging_setup_menu 2>/dev/null'
   assert_success
@@ -63,6 +71,12 @@ teardown() {
 
 # --- messaging_setup_telegram ---
 
+@test "messaging_setup_telegram shows how to find user ID" {
+  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; messaging_setup_telegram < <(printf "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11\n12345\n") 2>&1'
+  assert_success
+  assert_output --partial "@userinfobot"
+}
+
 @test "messaging_setup_telegram sets token and users" {
   run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; messaging_setup_telegram <<EOF 2>/dev/null
 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
@@ -74,7 +88,24 @@ echo "TOKEN=$DEPLOY_TELEGRAM_BOT_TOKEN USERS=$DEPLOY_TELEGRAM_ALLOWED_USERS"'
   assert_output --partial "USERS=12345,67890"
 }
 
+@test "messaging_setup_telegram allows empty user IDs" {
+  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; messaging_setup_telegram <<EOF 2>/dev/null
+123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+
+EOF
+echo "TOKEN=$DEPLOY_TELEGRAM_BOT_TOKEN USERS=[$DEPLOY_TELEGRAM_ALLOWED_USERS]"'
+  assert_success
+  assert_output --partial "TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+  assert_output --partial "USERS=[]"
+}
+
 # --- messaging_setup_discord ---
+
+@test "messaging_setup_discord shows how to find user ID" {
+  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; messaging_setup_discord < <(printf "MTIzNDU2Nzg5MDEyMzQ1Njc4.GhIjKl.abcdefghijklmnopqrstuvwxyz1234567890AB\n111222\n") 2>&1'
+  assert_success
+  assert_output --partial "Developer Mode"
+}
 
 @test "messaging_setup_discord sets token and users" {
   run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; messaging_setup_discord <<EOF 2>/dev/null
@@ -85,4 +116,14 @@ echo "TOKEN=$DEPLOY_DISCORD_BOT_TOKEN USERS=$DEPLOY_DISCORD_ALLOWED_USERS"'
   assert_success
   assert_output --partial "TOKEN=MTIzNDU2Nzg5MDEyMzQ1Njc4.GhIjKl.abcdefghijklmnopqrstuvwxyz1234567890AB"
   assert_output --partial "USERS=111222,333444"
+}
+
+@test "messaging_setup_discord allows empty user IDs" {
+  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; messaging_setup_discord <<EOF 2>/dev/null
+MTIzNDU2Nzg5MDEyMzQ1Njc4.GhIjKl.abcdefghijklmnopqrstuvwxyz1234567890AB
+
+EOF
+echo "TOKEN=$DEPLOY_DISCORD_BOT_TOKEN USERS=[$DEPLOY_DISCORD_ALLOWED_USERS]"'
+  assert_success
+  assert_output --partial "USERS=[]"
 }

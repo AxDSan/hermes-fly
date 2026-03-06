@@ -10,7 +10,7 @@ fi
 # --- Source ui.sh for prompts ---
 _MESSAGING_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! command -v ui_ask &>/dev/null; then
-  # shellcheck source=./ui.sh
+  # shellcheck source=./ui.sh disable=SC1091
   source "${_MESSAGING_SCRIPT_DIR}/ui.sh" 2>/dev/null || true
 fi
 
@@ -47,10 +47,14 @@ messaging_validate_discord_token() {
 # Returns 0.
 messaging_setup_menu() {
   printf '\nMessaging Platform Setup\n' >&2
-  printf '  1) Telegram\n' >&2
-  printf '  2) Discord\n' >&2
-  printf '  3) Skip (no messaging)\n' >&2
-  printf 'Choice [1-3]: ' >&2
+  printf '  ┌───┬──────────┬────────────────────────────────┐\n' >&2
+  printf '  │ # │ Platform │ Description                    │\n' >&2
+  printf '  ├───┼──────────┼────────────────────────────────┤\n' >&2
+  printf '  │ 1 │ Telegram │ chat bot via @BotFather        │\n' >&2
+  printf '  │ 2 │ Discord  │ server bot via Developer Portal│\n' >&2
+  printf '  │ 3 │ Skip     │ configure later                │\n' >&2
+  printf '  └───┴──────────┴────────────────────────────────┘\n' >&2
+  printf 'Choice [3]: ' >&2
 
   local choice
   IFS= read -r choice
@@ -86,8 +90,14 @@ messaging_setup_telegram() {
     printf 'Warning: token format looks invalid, proceeding anyway.\n' >&2
   fi
 
+  printf '\nTo find your Telegram user ID:\n' >&2
+  printf '  1. Message @userinfobot on Telegram\n' >&2
+  printf '  2. It replies with your numeric user ID\n' >&2
+  printf 'Only these IDs can interact with the bot.\n' >&2
+  printf 'Leave blank to allow all users.\n' >&2
+
   local users
-  printf 'Allowed user IDs (comma-separated): ' >&2
+  printf 'User IDs (comma-separated, or blank for all): ' >&2
   IFS= read -r users
 
   DEPLOY_TELEGRAM_BOT_TOKEN="$token"
@@ -119,8 +129,15 @@ messaging_setup_discord() {
     printf 'Warning: token format looks invalid, proceeding anyway.\n' >&2
   fi
 
+  printf '\nTo find your Discord user ID:\n' >&2
+  printf '  1. Enable Developer Mode in Discord settings\n' >&2
+  printf '     (Settings > Advanced > Developer Mode)\n' >&2
+  printf '  2. Right-click your name and select "Copy User ID"\n' >&2
+  printf 'Only these IDs can interact with the bot.\n' >&2
+  printf 'Leave blank to allow all users.\n' >&2
+
   local users
-  printf 'Allowed user IDs (comma-separated): ' >&2
+  printf 'User IDs (comma-separated, or blank for all): ' >&2
   IFS= read -r users
 
   DEPLOY_DISCORD_BOT_TOKEN="$token"
