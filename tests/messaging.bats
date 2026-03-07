@@ -91,6 +91,20 @@ teardown() {
   assert_output --partial "skip"
 }
 
+@test "messaging_setup_menu re-prompts on invalid input then accepts valid" {
+  _run_with_stdin() { printf 'garbage\n1\n' | messaging_setup_menu 2>/dev/null; }
+  run _run_with_stdin
+  assert_success
+  assert_output "telegram"
+}
+
+@test "messaging_setup_menu rejects bot token pasted as choice" {
+  _run_with_stdin() { printf '8617478383:AAGtp-test\n3\n' | messaging_setup_menu 2>/dev/null; }
+  run _run_with_stdin
+  assert_success
+  assert_output "skip"
+}
+
 # --- messaging_setup_telegram ---
 
 @test "messaging_setup_telegram shows how to find user ID" {

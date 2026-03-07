@@ -71,18 +71,27 @@ messaging_setup_menu() {
   printf '  │ 2 │ Discord  │ server bot via Developer Portal│\n' >&2
   printf '  │ 3 │ Skip     │ configure later                │\n' >&2
   printf '  └───┴──────────┴────────────────────────────────┘\n' >&2
-  printf 'Choice [3]: ' >&2
-
   local choice
-  IFS= read -r choice
-
-  case "$choice" in
-    1) echo "telegram" ;;
-    2) echo "discord" ;;
-    *) echo "skip" ;;
-  esac
-
-  return 0
+  while true; do
+    printf 'Choice [3]: ' >&2
+    IFS= read -r choice
+    [[ -z "$choice" ]] && choice=3
+    case "$choice" in
+      1)
+        echo "telegram"
+        return 0
+        ;;
+      2)
+        echo "discord"
+        return 0
+        ;;
+      3)
+        echo "skip"
+        return 0
+        ;;
+      *) printf 'Invalid choice. Please enter 1, 2, or 3.\n' >&2 ;;
+    esac
+  done
 }
 
 # --- Telegram setup ---
