@@ -971,24 +971,54 @@ deploy_run_deploy() {
 # Returns: 0 if running, 1 if not
 # --------------------------------------------------------------------------
 deploy_post_deploy_check() {
-  ui_info "Checking deployment status..."
-  local status_json
+  local max_checks=3
+  local check_num=1
+  local wait_time=3
 
-  if ! status_json="$(fly_status "$DEPLOY_APP_NAME" 2>&1)"; then
-    ui_error "Failed to get status for '${DEPLOY_APP_NAME}'"
-    return 1
-  fi
+  while ((check_num <= max_checks)); do
+    ui_info "Check ${check_num}/${max_checks}: Checking deployment status..."
+    local status_json
 
-  local app_status
-  app_status="$(echo "$status_json" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    if ! status_json="$(fly_status "$DEPLOY_APP_NAME" 2>&1)"; then
+      ui_error "Failed to get status for '${DEPLOY_APP_NAME}'"
+      return 1
+    fi
 
-  if [[ "$app_status" == "running" ]] || [[ "$app_status" == "deployed" ]]; then
-    ui_success "App is running"
-    return 0
-  else
+    local app_status
+    app_status="$(echo "$status_json" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+
+    if [[ "$app_status" == "running" ]] || [[ "$app_status" == "deployed" ]]; then
+      ui_success "App is running"
+      return 0
+    fi
+
     ui_warn "App status: ${app_status:-unknown}"
-    return 1
-  fi
+
+    if ((check_num == max_checks)); then
+      break
+    fi
+
+    printf '\n  The app is not running yet. This can happen when the machine\n' >&2
+    printf '  needs a few seconds to start, or if there is a configuration issue.\n' >&2
+    if ui_confirm "  Retry status check? (will wait ${wait_time}s before checking)"; then
+      if [[ "${HERMES_FLY_RETRY_SLEEP:-1}" != "0" ]]; then
+        sleep "$wait_time"
+      fi
+      ((wait_time *= 2))
+      ((check_num++))
+    else
+      break
+    fi
+  done
+
+  # Failed after all checks — show diagnostics, do NOT destroy app
+  printf '\n  The deployment completed but the app is not running.\n' >&2
+  printf '  Your app and resources have been preserved.\n' >&2
+  printf '\n  Troubleshooting:\n' >&2
+  printf '    hermes-fly logs    — view recent app logs\n' >&2
+  printf '    hermes-fly doctor  — run full diagnostics\n' >&2
+  printf '    hermes-fly destroy — remove the app if needed\n' >&2
+  return 1
 }
 
 # --------------------------------------------------------------------------
@@ -1072,9 +1102,10 @@ cmd_deploy() {
     return 1
   fi
 
-  # Post-deploy check
+  # Post-deploy check (do NOT destroy app on failure — deployment succeeded)
   if ! deploy_post_deploy_check; then
-    deploy_cleanup_on_failure "$DEPLOY_APP_NAME"
+    # Save config so user can run doctor/logs/destroy
+    config_save_app "$DEPLOY_APP_NAME" "$DEPLOY_REGION"
     return 1
   fi
 

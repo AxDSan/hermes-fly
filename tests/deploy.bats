@@ -585,6 +585,51 @@ teardown() {
   assert_output --partial "hermes-fly doctor"
 }
 
+# --- deploy_post_deploy_check retry ---
+
+@test "deploy_post_deploy_check retries when user approves and succeeds" {
+  export DEPLOY_APP_NAME="test-app"
+  export MOCK_FLY_STATUS_SEQUENCE="stopped,running"
+  export MOCK_FLY_STATUS_COUNTER_FILE="${TEST_TEMP_DIR}/status_counter"
+  export HERMES_FLY_RETRY_SLEEP=0
+  _run_with_stdin() { printf 'y\n' | deploy_post_deploy_check; }
+  run _run_with_stdin
+  assert_success
+  assert_output --partial "stopped"
+  assert_output --partial "App is running"
+}
+
+@test "deploy_post_deploy_check shows status trace" {
+  export DEPLOY_APP_NAME="test-app"
+  export MOCK_FLY_STATUS_SEQUENCE="stopped,running"
+  export MOCK_FLY_STATUS_COUNTER_FILE="${TEST_TEMP_DIR}/status_counter"
+  export HERMES_FLY_RETRY_SLEEP=0
+  _run_with_stdin() { printf 'y\n' | deploy_post_deploy_check; }
+  run _run_with_stdin
+  assert_success
+  assert_output --partial "Check 1"
+  assert_output --partial "Check 2"
+}
+
+@test "deploy_post_deploy_check stops when user declines retry" {
+  export DEPLOY_APP_NAME="test-app"
+  export MOCK_FLY_MACHINE_STATE="stopped"
+  _run_with_stdin() { printf 'n\n' | deploy_post_deploy_check; }
+  run _run_with_stdin
+  assert_failure
+  assert_output --partial "stopped"
+  assert_output --partial "hermes-fly doctor"
+}
+
+@test "deploy_post_deploy_check does not destroy app on failure" {
+  export DEPLOY_APP_NAME="test-app"
+  export MOCK_FLY_MACHINE_STATE="stopped"
+  _run_with_stdin() { printf 'n\n' | deploy_post_deploy_check; }
+  run _run_with_stdin
+  assert_failure
+  refute_output --partial "Cleaning up"
+}
+
 @test "deploy_provision_resources shows hint when name has already been taken" {
   export DEPLOY_APP_NAME="test-app"
   export DEPLOY_REGION="ord"
