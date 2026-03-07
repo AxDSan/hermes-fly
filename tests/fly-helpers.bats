@@ -62,6 +62,12 @@ teardown() {
   assert_output --partial "my-app"
 }
 
+@test "fly_create_app passes org when provided" {
+  run fly_create_app "my-app" "my-org"
+  assert_success
+  assert_output --partial "my-app"
+}
+
 # --- fly_set_secrets ---
 
 @test "fly_set_secrets passes all pairs" {
@@ -95,6 +101,14 @@ teardown() {
   run fly_get_vm_sizes
   assert_success
   assert_output --partial "shared-cpu-1x"
+}
+
+# --- fly_get_orgs ---
+
+@test "fly_get_orgs returns JSON" {
+  run fly_get_orgs
+  assert_success
+  assert_output --partial "personal"
 }
 
 # --- fly_check_auth_interactive ---

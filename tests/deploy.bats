@@ -132,6 +132,36 @@ teardown() {
   rm -rf "${DEPLOY_BUILD_DIR}"
 }
 
+# --- deploy_collect_org ---
+
+@test "deploy_collect_org auto-selects single org silently" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_org DEPLOY_ORG 2>&1; echo "ORG=$DEPLOY_ORG"'
+  assert_success
+  assert_output --partial "ORG=personal"
+  refute_output --partial "Select organization"
+}
+
+@test "deploy_collect_org shows table for multiple orgs" {
+  export MOCK_FLY_ORGS_JSON='{"personal":"Personal","my-team":"My Team"}'
+  run bash -c 'export NO_COLOR=1; export MOCK_FLY_ORGS_JSON='"'"'{"personal":"Personal","my-team":"My Team"}'"'"'; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_org DEPLOY_ORG < <(printf "1\n") 2>&1; echo "ORG=$DEPLOY_ORG"'
+  assert_success
+  assert_output --partial "Select organization"
+  assert_output --partial "my-team"
+  assert_output --partial "ORG=personal"
+}
+
+@test "deploy_collect_org selects second org from table" {
+  run bash -c 'export NO_COLOR=1; export MOCK_FLY_ORGS_JSON='"'"'{"personal":"Personal","my-team":"My Team"}'"'"'; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_org DEPLOY_ORG < <(printf "2\n") 2>&1; echo "ORG=$DEPLOY_ORG"'
+  assert_success
+  assert_output --partial "ORG=my-team"
+}
+
+@test "deploy_collect_org fails on API error" {
+  run bash -c 'export NO_COLOR=1; export MOCK_FLY_ORGS=fail; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_org DEPLOY_ORG 2>&1'
+  assert_failure
+  assert_output --partial "Failed to fetch"
+}
+
 # --- deploy_provision_resources ---
 
 @test "deploy_provision_resources calls create app and volume" {
@@ -140,6 +170,17 @@ teardown() {
   export DEPLOY_VOLUME_SIZE="5"
   export DEPLOY_API_KEY="sk-test-key"
   export DEPLOY_MODEL="anthropic/claude-sonnet-4-20250514"
+  run deploy_provision_resources
+  assert_success
+}
+
+@test "deploy_provision_resources passes org to fly_create_app" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VOLUME_SIZE="5"
+  export DEPLOY_API_KEY="sk-test-key"
+  export DEPLOY_MODEL="anthropic/claude-sonnet-4-20250514"
+  export DEPLOY_ORG="my-org"
   run deploy_provision_resources
   assert_success
 }
@@ -233,6 +274,27 @@ teardown() {
   assert_output --partial "MODEL= "
   assert_output --partial "PROVIDER=custom"
   assert_output --partial "BASE_URL=https://my-llm.example.com/v1"
+}
+
+# --- deploy_parse_orgs ---
+
+@test "deploy_parse_orgs extracts slug and name from single org" {
+  deploy_parse_orgs '{"personal":"Personal"}'
+  [[ "${_ORG_SLUGS[0]}" == "personal" ]]
+  [[ "${_ORG_NAMES[0]}" == "Personal" ]]
+}
+
+@test "deploy_parse_orgs extracts multiple orgs" {
+  deploy_parse_orgs '{"personal":"Personal","my-team":"My Team"}'
+  [[ ${#_ORG_SLUGS[@]} -eq 2 ]]
+  [[ "${_ORG_SLUGS[0]}" == "personal" ]]
+  [[ "${_ORG_SLUGS[1]}" == "my-team" ]]
+  [[ "${_ORG_NAMES[1]}" == "My Team" ]]
+}
+
+@test "deploy_parse_orgs handles empty JSON" {
+  deploy_parse_orgs "{}"
+  [[ ${#_ORG_SLUGS[@]} -eq 0 ]]
 }
 
 # --- deploy_parse_regions ---

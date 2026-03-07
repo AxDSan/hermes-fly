@@ -104,6 +104,17 @@ case "${1:-}" in
                 ;;
         esac
         ;;
+    orgs)
+        case "${2:-}" in
+            list)
+                if [[ "${MOCK_FLY_ORGS:-success}" == "fail" ]]; then
+                    echo "Error: ${MOCK_FLY_ORGS_MSG:-API unavailable}" >&2
+                    exit 1
+                fi
+                echo "${MOCK_FLY_ORGS_JSON:-{\"personal\":\"Personal\"}}"
+                ;;
+        esac
+        ;;
     deploy)
         if [[ "${MOCK_FLY_DEPLOY:-success}" == "fail" ]]; then
             echo "Error: deployment failed" >&2

@@ -231,6 +231,79 @@ deploy_collect_app_name() {
 }
 
 # --------------------------------------------------------------------------
+# deploy_parse_orgs JSON — parse fly orgs list JSON map {"slug":"name",...}
+# Sets global arrays: _ORG_SLUGS, _ORG_NAMES
+# --------------------------------------------------------------------------
+deploy_parse_orgs() {
+  local json="$1"
+  _ORG_SLUGS=()
+  _ORG_NAMES=()
+
+  [[ "$json" == "{}" || -z "$json" ]] && return 0
+
+  local pairs_raw
+  pairs_raw="$(printf '%s' "$json" | grep -oE '"[^"]+"\s*:\s*"[^"]+"')"
+
+  local line slug name
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    slug="$(printf '%s' "$line" | sed 's/"\([^"]*\)"\s*:.*/\1/')"
+    name="$(printf '%s' "$line" | sed 's/.*:\s*"\([^"]*\)"/\1/')"
+    _ORG_SLUGS+=("$slug")
+    _ORG_NAMES+=("$name")
+  done <<<"$pairs_raw"
+}
+
+# --------------------------------------------------------------------------
+# deploy_collect_org VARNAME — select a Fly.io organization
+# Auto-selects single org silently. Shows table for multiple orgs.
+# --------------------------------------------------------------------------
+deploy_collect_org() {
+  local varname="$1"
+
+  local orgs_json
+  if ! orgs_json="$(fly_get_orgs 2>/dev/null)" || [[ -z "$orgs_json" ]]; then
+    ui_error "Failed to fetch Fly.io organizations"
+    return 1
+  fi
+
+  deploy_parse_orgs "$orgs_json"
+
+  if [[ ${#_ORG_SLUGS[@]} -eq 0 ]]; then
+    ui_error "No Fly.io organizations found"
+    return 1
+  fi
+
+  # Auto-select single org silently
+  if [[ ${#_ORG_SLUGS[@]} -eq 1 ]]; then
+    eval "$varname=\"\${_ORG_SLUGS[0]}\""
+    return 0
+  fi
+
+  # Multiple orgs: show selection table
+  printf '\nSelect organization:\n' >&2
+  printf '  ┌───┬──────────────────────┬──────────────────┐\n' >&2
+  printf '  │ # │ Organization         │ Slug             │\n' >&2
+  printf '  ├───┼──────────────────────┼──────────────────┤\n' >&2
+  local i
+  for i in "${!_ORG_SLUGS[@]}"; do
+    printf '  │ %d │ %-20s │ %-16s │\n' "$((i + 1))" "${_ORG_NAMES[$i]}" "${_ORG_SLUGS[$i]}" >&2
+  done
+  printf '  └───┴──────────────────────┴──────────────────┘\n' >&2
+  printf 'Choice [1]: ' >&2
+
+  local choice
+  IFS= read -r choice
+  [[ -z "$choice" ]] && choice=1
+
+  if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#_ORG_SLUGS[@]})); then
+    eval "$varname=\"\${_ORG_SLUGS[$((choice - 1))]}\""
+  else
+    eval "$varname=\"\${_ORG_SLUGS[0]}\""
+  fi
+}
+
+# --------------------------------------------------------------------------
 # deploy_parse_regions JSON — parse fly platform regions JSON
 # Sets global arrays: _REGION_CODES, _REGION_NAMES
 # --------------------------------------------------------------------------
@@ -691,13 +764,14 @@ deploy_collect_llm_config() {
 deploy_collect_config() {
   ui_banner "Hermes Agent Deploy Configuration"
 
+  deploy_collect_org DEPLOY_ORG
   deploy_collect_app_name DEPLOY_APP_NAME
   deploy_collect_region DEPLOY_REGION
   deploy_collect_vm_size DEPLOY_VM_SIZE DEPLOY_VM_MEMORY
   deploy_collect_volume_size DEPLOY_VOLUME_SIZE
   deploy_collect_llm_config DEPLOY_API_KEY DEPLOY_MODEL
 
-  export DEPLOY_APP_NAME DEPLOY_REGION DEPLOY_VM_SIZE DEPLOY_VM_MEMORY
+  export DEPLOY_ORG DEPLOY_APP_NAME DEPLOY_REGION DEPLOY_VM_SIZE DEPLOY_VM_MEMORY
   export DEPLOY_VOLUME_SIZE DEPLOY_API_KEY DEPLOY_MODEL
 
   # Messaging setup
@@ -778,7 +852,7 @@ deploy_provision_resources() {
 
   ui_step 1 "$total" "Creating Fly app '${DEPLOY_APP_NAME}'"
   local create_output
-  if ! create_output="$(fly_retry 3 fly_create_app "$DEPLOY_APP_NAME" 2>&1)"; then
+  if ! create_output="$(fly_retry 3 fly_create_app "$DEPLOY_APP_NAME" "${DEPLOY_ORG:-}" 2>&1)"; then
     ui_error "Failed to create app '${DEPLOY_APP_NAME}'"
     if printf '%s' "$create_output" | grep -qi 'already exists'; then
       printf '  Hint: app name may already be taken. Try a more unique name.\n' >&2
