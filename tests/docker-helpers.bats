@@ -52,6 +52,12 @@ teardown() { _common_teardown; }
   assert_output --partial "xz-utils"
 }
 
+@test "templates/Dockerfile.template passes --skip-setup to installer" {
+  local template="${PROJECT_ROOT}/templates/Dockerfile.template"
+  run cat "$template"
+  assert_output --partial "--skip-setup"
+}
+
 # --- docker_validate_dockerfile ---
 
 @test "validate_dockerfile returns 0 for valid file" {
