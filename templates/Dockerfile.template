@@ -6,4 +6,4 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_VERSION}/scripts/install.sh | bash -s -- --skip-setup
 ENV PATH="/root/.local/bin:${PATH}"
 WORKDIR /root/.hermes
-ENTRYPOINT ["hermes", "gateway"]
+ENTRYPOINT ["/root/.local/bin/hermes", "gateway"]
