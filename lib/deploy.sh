@@ -852,6 +852,11 @@ deploy_create_build_context() {
     return 1
   fi
 
+  if ! docker_generate_entrypoint "$build_dir"; then
+    ui_error "Failed to generate entrypoint.sh"
+    return 1
+  fi
+
   DEPLOY_BUILD_DIR="$build_dir"
   export DEPLOY_BUILD_DIR
   return 0

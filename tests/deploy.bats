@@ -180,6 +180,7 @@ teardown() {
   deploy_create_build_context
   assert [ -f "${DEPLOY_BUILD_DIR}/Dockerfile" ]
   assert [ -f "${DEPLOY_BUILD_DIR}/fly.toml" ]
+  assert [ -f "${DEPLOY_BUILD_DIR}/entrypoint.sh" ]
   rm -rf "${DEPLOY_BUILD_DIR}"
 }
 

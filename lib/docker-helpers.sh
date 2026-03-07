@@ -64,6 +64,19 @@ docker_generate_fly_toml() {
     "$template" >"${output_dir}/fly.toml"
 }
 
+# docker_generate_entrypoint "output_dir"
+#   Copy templates/entrypoint.sh into output_dir/entrypoint.sh.
+docker_generate_entrypoint() {
+  local output_dir="$1"
+  local src="${DOCKER_HELPERS_TEMPLATE_DIR}/entrypoint.sh"
+  if [[ ! -f "$src" ]]; then
+    echo "Error: entrypoint template not found: $src" >&2
+    return 1
+  fi
+  mkdir -p "$output_dir"
+  cp "$src" "${output_dir}/entrypoint.sh"
+}
+
 # docker_validate_dockerfile "path"
 #   Validate that a Dockerfile exists and contains required directives.
 #   Returns 0 if valid, 1 if not.

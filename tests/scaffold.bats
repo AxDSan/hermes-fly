@@ -82,3 +82,41 @@ teardown() {
   assert_output --partial 'auto_stop_machines = "off"'
   assert_output --partial "min_machines_running = 1"
 }
+
+# --- entrypoint.sh template ---
+
+@test "templates/entrypoint.sh exists" {
+  assert [ -f "${PROJECT_ROOT}/templates/entrypoint.sh" ]
+}
+
+@test "templates/entrypoint.sh symlinks hermes-agent from /opt/hermes" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_output --partial "ln -sfn /opt/hermes/hermes-agent /root/.hermes/hermes-agent"
+}
+
+@test "templates/entrypoint.sh execs hermes from /opt/hermes venv" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_output --partial "exec /opt/hermes/hermes-agent/venv/bin/hermes gateway"
+}
+
+@test "templates/entrypoint.sh symlinks node from /opt/hermes" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_output --partial "ln -sfn /opt/hermes/node /root/.hermes/node"
+}
+
+@test "templates/entrypoint.sh creates all runtime directories" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_output --partial "cron"
+  assert_output --partial "pairing"
+  assert_output --partial "whatsapp/session"
+}
+
+@test "templates/entrypoint.sh seeds default config files" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_output --partial 'cp /opt/hermes/defaults/$f /root/.hermes/$f'
+}
+
+@test "templates/entrypoint.sh seeds skills dir on first deploy" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_output --partial "cp -r /opt/hermes/defaults/skills /root/.hermes/skills"
+}

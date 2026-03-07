@@ -96,6 +96,50 @@ EOF
   rm -rf "$output"
 }
 
+# --- Dockerfile.template volume-safe layout ---
+
+@test "templates/Dockerfile.template moves hermes-agent to /opt/hermes" {
+  run cat "${PROJECT_ROOT}/templates/Dockerfile.template"
+  assert_output --partial "/opt/hermes/hermes-agent"
+}
+
+@test "templates/Dockerfile.template copies entrypoint.sh" {
+  run cat "${PROJECT_ROOT}/templates/Dockerfile.template"
+  assert_output --partial "COPY entrypoint.sh /entrypoint.sh"
+}
+
+@test "templates/Dockerfile.template ENTRYPOINT is /entrypoint.sh" {
+  run cat "${PROJECT_ROOT}/templates/Dockerfile.template"
+  assert_output --partial '"/entrypoint.sh"'
+}
+
+@test "templates/Dockerfile.template moves node to /opt/hermes" {
+  run cat "${PROJECT_ROOT}/templates/Dockerfile.template"
+  assert_output --partial "mv /root/.hermes/node"
+  assert_output --partial "/opt/hermes/node"
+}
+
+@test "templates/Dockerfile.template creates /opt/hermes/defaults" {
+  run cat "${PROJECT_ROOT}/templates/Dockerfile.template"
+  assert_output --partial "/opt/hermes/defaults"
+}
+
+# --- docker_generate_entrypoint ---
+
+@test "docker_generate_entrypoint copies entrypoint.sh to build dir" {
+  run docker_generate_entrypoint "$TEST_TEMP_DIR"
+  assert_success
+  assert [ -f "$TEST_TEMP_DIR/entrypoint.sh" ]
+}
+
+@test "docker_generate_entrypoint fails when template missing" {
+  local old_dir="$DOCKER_HELPERS_TEMPLATE_DIR"
+  DOCKER_HELPERS_TEMPLATE_DIR="/nonexistent"
+  run docker_generate_entrypoint "$TEST_TEMP_DIR"
+  DOCKER_HELPERS_TEMPLATE_DIR="$old_dir"
+  assert_failure
+}
+
 # --- Symlink resilience ---
 
 @test "docker_generate_dockerfile works when lib is symlinked" {
