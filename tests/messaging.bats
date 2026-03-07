@@ -108,44 +108,45 @@ teardown() {
 # --- messaging_setup_telegram ---
 
 @test "messaging_setup_telegram shows how to find user ID" {
-  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; messaging_setup_telegram < <(printf "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11\n12345\n") 2>&1'
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";
+    source lib/ui.sh; source lib/messaging.sh;
+    messaging_setup_telegram < <(printf "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11\ny\n12345\n") 2>&1'
   assert_success
   assert_output --partial "@userinfobot"
 }
 
 @test "messaging_setup_telegram sets token and users" {
-  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; messaging_setup_telegram <<EOF 2>/dev/null
-123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
-12345,67890
-EOF
-echo "TOKEN=$DEPLOY_TELEGRAM_BOT_TOKEN USERS=$DEPLOY_TELEGRAM_ALLOWED_USERS"'
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";
+    source lib/ui.sh; source lib/messaging.sh;
+    messaging_setup_telegram < <(printf "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11\ny\n12345,67890\n") 2>/dev/null
+    echo "TOKEN=$DEPLOY_TELEGRAM_BOT_TOKEN USERS=$DEPLOY_TELEGRAM_ALLOWED_USERS"'
   assert_success
   assert_output --partial "TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
   assert_output --partial "USERS=12345,67890"
 }
 
-@test "messaging_setup_telegram warns on non-numeric user IDs" {
-  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; messaging_setup_telegram < <(printf "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11\nalexfazio\n") 2>&1'
+@test "messaging_setup_telegram re-prompts on non-numeric user IDs" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";
+    source lib/ui.sh; source lib/messaging.sh;
+    messaging_setup_telegram < <(printf "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11\ny\nalexfazio\n12345\n") 2>&1'
   assert_success
-  assert_output --partial "user IDs should be numeric"
+  assert_output --partial "user IDs must be numeric"
 }
 
 @test "messaging_setup_telegram still captures token with masked input" {
-  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; messaging_setup_telegram <<EOF 2>/dev/null
-123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
-12345
-EOF
-echo "TOKEN=$DEPLOY_TELEGRAM_BOT_TOKEN"'
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";
+    source lib/ui.sh; source lib/messaging.sh;
+    messaging_setup_telegram < <(printf "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11\ny\n12345\n") 2>/dev/null
+    echo "TOKEN=$DEPLOY_TELEGRAM_BOT_TOKEN"'
   assert_success
   assert_output --partial "TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
 }
 
 @test "messaging_setup_telegram allows empty user IDs" {
-  run bash -c 'export NO_COLOR=1; source lib/ui.sh; source lib/messaging.sh; messaging_setup_telegram <<EOF 2>/dev/null
-123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
-
-EOF
-echo "TOKEN=$DEPLOY_TELEGRAM_BOT_TOKEN USERS=[$DEPLOY_TELEGRAM_ALLOWED_USERS]"'
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";
+    source lib/ui.sh; source lib/messaging.sh;
+    messaging_setup_telegram < <(printf "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11\ny\n\n") 2>/dev/null
+    echo "TOKEN=$DEPLOY_TELEGRAM_BOT_TOKEN USERS=[$DEPLOY_TELEGRAM_ALLOWED_USERS]"'
   assert_success
   assert_output --partial "TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
   assert_output --partial "USERS=[]"
@@ -194,4 +195,51 @@ EOF
 echo "TOKEN=$DEPLOY_DISCORD_BOT_TOKEN USERS=[$DEPLOY_DISCORD_ALLOWED_USERS]"'
   assert_success
   assert_output --partial "USERS=[]"
+}
+
+# --- messaging_validate_telegram_token_api ---
+
+@test "messaging_validate_telegram_token_api returns 0 and sets bot username on valid token" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";
+    source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/messaging.sh;
+    messaging_validate_telegram_token_api "123456:ValidToken"
+    echo "USERNAME=$DEPLOY_TELEGRAM_BOT_USERNAME"'
+  assert_success
+  assert_output --partial "USERNAME=test_hermes_bot"
+}
+
+@test "messaging_validate_telegram_token_api returns 1 on invalid token" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; export MOCK_CURL_FAIL=true;
+    source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/messaging.sh;
+    messaging_validate_telegram_token_api "bad-token"'
+  assert_failure
+}
+
+@test "messaging_setup_telegram re-prompts on non-numeric user ID until valid" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";
+    source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/fly-helpers.sh;
+    source '"${PROJECT_ROOT}"'/lib/messaging.sh;
+    messaging_setup_telegram < <(printf "123456:ValidToken\ny\nalexfazio\n123456789\n") 2>/dev/null
+    echo "USERS=$DEPLOY_TELEGRAM_ALLOWED_USERS"'
+  assert_success
+  assert_output --partial "USERS=123456789"
+}
+
+@test "messaging_setup_telegram shows bot identity from getMe" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";
+    source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/fly-helpers.sh;
+    source '"${PROJECT_ROOT}"'/lib/messaging.sh;
+    messaging_setup_telegram < <(printf "123456:ValidToken\ny\n123456789\n") 2>&1'
+  assert_success
+  assert_output --partial "@test_hermes_bot"
+}
+
+@test "messaging_setup_telegram sets DEPLOY_MESSAGING_PLATFORM to telegram" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";
+    source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/fly-helpers.sh;
+    source '"${PROJECT_ROOT}"'/lib/messaging.sh;
+    messaging_setup_telegram < <(printf "123456:ValidToken\ny\n123456789\n") 2>/dev/null
+    echo "PLATFORM=$DEPLOY_MESSAGING_PLATFORM"'
+  assert_success
+  assert_output --partial "PLATFORM=telegram"
 }

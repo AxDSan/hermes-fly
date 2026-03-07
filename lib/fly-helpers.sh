@@ -198,6 +198,21 @@ fly_get_orgs() {
 }
 
 # --------------------------------------------------------------------------
+# fly_get_machine_state "app" — get the machine state (started, stopped, etc.)
+# --------------------------------------------------------------------------
+fly_get_machine_state() {
+  local app_name="$1"
+  local json
+  json="$(fly_status "$app_name" 2>/dev/null)" || {
+    printf 'unknown'
+    return 1
+  }
+  printf '%s' "$json" | tr -d '\n' \
+    | grep -oE '"state"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+    | sed 's/.*"state"[[:space:]]*:[[:space:]]*"//;s/"//'
+}
+
+# --------------------------------------------------------------------------
 # fly_retry "max_attempts" CMD... — retry a command with exponential backoff
 # Set HERMES_FLY_RETRY_SLEEP=0 to disable sleep (for tests)
 # --------------------------------------------------------------------------

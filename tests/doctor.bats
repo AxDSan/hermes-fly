@@ -158,15 +158,28 @@ teardown() {
 
 # --- doctor_check_gateway_health ---
 
-@test "doctor_check_gateway_health returns 0 when app URL responds" {
-  run doctor_check_gateway_health "test-app"
+@test "doctor_check_gateway_health returns 0 when Telegram getMe succeeds" {
+  export MOCK_FLY_SECRETS_HAS_TELEGRAM=true
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";
+    export MOCK_FLY_SECRETS_HAS_TELEGRAM=true;
+    source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/fly-helpers.sh;
+    source '"${PROJECT_ROOT}"'/lib/doctor.sh;
+    doctor_check_gateway_health "test-app"'
   assert_success
 }
 
-@test "doctor_check_gateway_health returns 1 when unreachable" {
-  export MOCK_CURL_FAIL=true
-  run doctor_check_gateway_health "test-app"
+@test "doctor_check_gateway_health returns 1 when getMe fails for Telegram app" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";
+    export MOCK_FLY_SECRETS_HAS_TELEGRAM=true; export MOCK_CURL_FAIL=true;
+    source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/fly-helpers.sh;
+    source '"${PROJECT_ROOT}"'/lib/doctor.sh;
+    doctor_check_gateway_health "test-app"'
   assert_failure
+}
+
+@test "doctor_check_gateway_health falls back to HTTP probe for non-Telegram apps" {
+  run doctor_check_gateway_health "test-app"
+  assert_success
 }
 
 # --- doctor_check_api_connectivity ---

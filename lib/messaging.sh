@@ -28,6 +28,23 @@ messaging_validate_telegram_token() {
   return 1
 }
 
+# Call Telegram getMe to validate token and get bot identity.
+# Sets DEPLOY_TELEGRAM_BOT_USERNAME and DEPLOY_TELEGRAM_BOT_NAME on success.
+# Returns 0 on success, 1 if curl fails or response ok=false.
+messaging_validate_telegram_token_api() {
+  local token="$1"
+  local response
+  response="$(curl -sf --max-time 10 "https://api.telegram.org/bot${token}/getMe" 2>/dev/null)" || return 1
+  printf '%s' "$response" | grep -q '"ok":true' || return 1
+  local username
+  username="$(printf '%s' "$response" | sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  [[ -z "$username" ]] && return 1
+  DEPLOY_TELEGRAM_BOT_USERNAME="$username"
+  DEPLOY_TELEGRAM_BOT_NAME="$(printf '%s' "$response" | sed -n 's/.*"first_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  export DEPLOY_TELEGRAM_BOT_USERNAME DEPLOY_TELEGRAM_BOT_NAME
+  return 0
+}
+
 # Validate Discord bot token format.
 # Valid: non-empty string with at least 20 characters.
 # Returns 0 if valid, 1 if not.
@@ -105,33 +122,45 @@ messaging_setup_telegram() {
   printf 'To create a Telegram bot:\n' >&2
   printf '  1. Open Telegram and search for @BotFather\n' >&2
   printf '  2. Send /newbot and follow the prompts\n' >&2
-  printf '  3. Copy the bot token provided\n' >&2
-  printf '\n' >&2
+  printf '  3. Copy the bot token provided\n\n' >&2
 
   local token
-  ui_ask_secret 'Bot token:' token
-
-  if ! messaging_validate_telegram_token "$token"; then
-    printf 'Warning: token format looks invalid, proceeding anyway.\n' >&2
-  fi
+  while true; do
+    ui_ask_secret 'Bot token:' token
+    if ! messaging_validate_telegram_token "$token"; then
+      printf 'Error: token format invalid. Expected format: 123456789:ABCdef...\n' >&2
+      continue
+    fi
+    printf 'Verifying token with Telegram...\n' >&2
+    if ! messaging_validate_telegram_token_api "$token"; then
+      printf 'Error: Telegram rejected this token. Check it and try again.\n' >&2
+      continue
+    fi
+    printf 'Found bot: @%s (%s)\n' "$DEPLOY_TELEGRAM_BOT_USERNAME" "$DEPLOY_TELEGRAM_BOT_NAME" >&2
+    if ui_confirm "Continue with this bot?"; then
+      break
+    fi
+  done
 
   printf '\nTo find your Telegram user ID:\n' >&2
   printf '  1. Message @userinfobot on Telegram\n' >&2
-  printf '  2. It replies with your numeric user ID\n' >&2
-  printf 'Only these IDs can interact with the bot.\n' >&2
-  printf 'Leave blank to allow all users.\n' >&2
+  printf '  2. It replies with your numeric user ID (e.g., 123456789)\n' >&2
+  printf 'Only these IDs can interact with the bot. Leave blank to allow all users.\n\n' >&2
 
   local users
-  printf 'User IDs (comma-separated, or blank for all): ' >&2
-  IFS= read -r users
-
-  if ! messaging_validate_user_ids "$users"; then
-    printf 'Warning: user IDs should be numeric (e.g., 123456789). Proceeding anyway.\n' >&2
-  fi
+  while true; do
+    printf 'User IDs (comma-separated, or blank for all): ' >&2
+    IFS= read -r users
+    if messaging_validate_user_ids "$users"; then
+      break
+    fi
+    printf 'Error: user IDs must be numeric (e.g., 123456789). Use @userinfobot to find yours.\n' >&2
+  done
 
   DEPLOY_TELEGRAM_BOT_TOKEN="$token"
   DEPLOY_TELEGRAM_ALLOWED_USERS="$users"
-  export DEPLOY_TELEGRAM_BOT_TOKEN DEPLOY_TELEGRAM_ALLOWED_USERS
+  DEPLOY_MESSAGING_PLATFORM="telegram"
+  export DEPLOY_TELEGRAM_BOT_TOKEN DEPLOY_TELEGRAM_ALLOWED_USERS DEPLOY_MESSAGING_PLATFORM
 
   return 0
 }

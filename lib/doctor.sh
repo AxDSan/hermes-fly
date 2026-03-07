@@ -116,10 +116,24 @@ doctor_check_secrets_set() {
 
 # --------------------------------------------------------------------------
 # doctor_check_gateway_health "app_name"
-# Curl the app's public URL to check if gateway responds.
+# For Telegram polling bots: validates via getMe (HTTP probe gives false negatives).
+# For other apps: falls back to HTTP probe of the public URL.
 # --------------------------------------------------------------------------
 doctor_check_gateway_health() {
   local app_name="$1"
+  # Detect Telegram deployment: check secrets list for TELEGRAM_BOT_TOKEN
+  local secrets_list
+  secrets_list="$(fly secrets list --app "$app_name" 2>/dev/null || printf '')"
+  if printf '%s' "$secrets_list" | grep -q "TELEGRAM_BOT_TOKEN"; then
+    # For Telegram polling bots: use getMe via fly ssh console (token in machine env)
+    # shellcheck disable=SC2016
+    local _getme_cmd='curl -sf --max-time 10 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" >/dev/null 2>&1'
+    if fly ssh console --app "$app_name" -C "$_getme_cmd" 2>/dev/null; then
+      return 0
+    fi
+    return 1
+  fi
+  # Fallback: HTTP probe for webhook or other deploys
   local url="https://${app_name}.fly.dev"
   if curl -sf --max-time 10 "$url" >/dev/null 2>&1; then
     return 0

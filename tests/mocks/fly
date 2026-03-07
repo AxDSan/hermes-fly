@@ -88,6 +88,9 @@ case "${1:-}" in
             list)
                 if [[ "${MOCK_FLY_SECRETS_MISSING:-false}" == "true" ]]; then
                     echo "[]"
+                elif [[ "${MOCK_FLY_SECRETS_HAS_TELEGRAM:-false}" == "true" ]]; then
+                    printf 'NAME                    DIGEST     CREATED AT\n'
+                    printf 'TELEGRAM_BOT_TOKEN      abc123     2026-03-07T00:00:00Z\n'
                 else
                     case "${MOCK_FLY_SECRETS_PROVIDER:-}" in
                         nous)
@@ -193,6 +196,21 @@ case "${1:-}" in
                 echo '[{"code":"iad","name":"Ashburn, Virginia (US)"},{"code":"ord","name":"Chicago, Illinois (US)"},{"code":"lax","name":"Los Angeles, California (US)"},{"code":"ams","name":"Amsterdam, Netherlands"},{"code":"fra","name":"Frankfurt, Germany"},{"code":"lhr","name":"London, United Kingdom"},{"code":"nrt","name":"Tokyo, Japan"},{"code":"sin","name":"Singapore, Singapore"},{"code":"syd","name":"Sydney, Australia"},{"code":"gru","name":"Sao Paulo, Brazil"}]'
                 ;;
         esac
+        ;;
+    ssh)
+        if [[ "${MOCK_CURL_FAIL:-false}" == "true" ]]; then
+            exit 1
+        fi
+        # Execute the -C command argument if present
+        for _i in $(seq 1 $#); do
+            if [[ "${!_i}" == "-C" ]]; then
+                _next=$((_i + 1))
+                eval "${!_next}" 2>/dev/null || true
+                exit 0
+            fi
+        done
+        echo "mock ssh: $*"
+        exit 0
         ;;
     *)
         echo "Unknown fly command: $*" >&2

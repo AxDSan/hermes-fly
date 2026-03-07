@@ -716,6 +716,13 @@ deploy_collect_llm_config() {
         fi
       done
 
+      # Validate key via OpenRouter API
+      printf 'Verifying OpenRouter API key...\n' >&2
+      while ! deploy_validate_openrouter_key "$api_key"; do
+        printf 'Error: OpenRouter rejected this key. Check it and try again.\n' >&2
+        ui_ask_secret 'OpenRouter API key (required):' api_key
+      done
+
       # Model selection table
       local model_ids=(
         "anthropic/claude-sonnet-4"
@@ -768,6 +775,29 @@ deploy_collect_llm_config() {
       eval "$model_var=\"\$model\""
       ;;
   esac
+}
+
+# --------------------------------------------------------------------------
+# deploy_validate_openrouter_key KEY — validate via /api/v1/key endpoint
+# Warns if free tier with no usage. Returns 1 on invalid key.
+# --------------------------------------------------------------------------
+deploy_validate_openrouter_key() {
+  local api_key="$1"
+  local response
+  response="$(curl -sf --max-time 10 "https://openrouter.ai/api/v1/key" \
+    -H "Authorization: Bearer ${api_key}" 2>/dev/null)" || return 1
+  printf '%s' "$response" | grep -q '"error"' && return 1
+
+  local is_free_tier="false" usage=""
+  if printf '%s' "$response" | grep -q '"is_free_tier"[[:space:]]*:[[:space:]]*true'; then
+    is_free_tier="true"
+  fi
+  usage="$(printf '%s' "$response" | grep -oE '"usage"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' | head -1)"
+
+  if [[ "$is_free_tier" == "true" ]] && [[ "${usage:-1}" == "0" ]]; then
+    printf 'Warning: OpenRouter account appears to be on free tier with no usage. Add credits at https://openrouter.ai/credits\n' >&2
+  fi
+  return 0
 }
 
 # --------------------------------------------------------------------------
@@ -1051,6 +1081,9 @@ deploy_show_success() {
   printf '  VM size:     %s\n' "$DEPLOY_VM_SIZE"
   printf '  Volume:      %s GB\n' "$DEPLOY_VOLUME_SIZE"
   printf '  Est. cost:   %s\n' "$cost"
+  if [[ -n "${DEPLOY_TELEGRAM_BOT_USERNAME:-}" ]]; then
+    printf '  Telegram:    @%s\n' "$DEPLOY_TELEGRAM_BOT_USERNAME"
+  fi
   printf '\n'
   printf '  Next steps:\n'
   printf '    - Check app status:  hermes-fly status\n'
@@ -1060,6 +1093,67 @@ deploy_show_success() {
     printf '    - Set up messaging:  hermes-fly messaging\n'
   fi
   printf '\n'
+}
+
+# --------------------------------------------------------------------------
+# deploy_write_summary — write YAML + Markdown deploy summary files
+# --------------------------------------------------------------------------
+deploy_write_summary() {
+  local deploys_dir="${HERMES_FLY_CONFIG_DIR:-$HOME/.hermes-fly}/deploys"
+  mkdir -p "$deploys_dir"
+  local app="${DEPLOY_APP_NAME:-}"
+  [[ -z "$app" ]] && return 0
+  local ts
+  ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  # Write YAML
+  cat >"${deploys_dir}/${app}.yaml" <<EOF
+app_name: ${app}
+region: ${DEPLOY_REGION:-}
+url: https://${app}.fly.dev
+vm_size: ${DEPLOY_VM_SIZE:-}
+volume_size_gb: ${DEPLOY_VOLUME_SIZE:-}
+messaging:
+  platform: ${DEPLOY_MESSAGING_PLATFORM:-none}
+  bot_username: ${DEPLOY_TELEGRAM_BOT_USERNAME:-}
+llm:
+  model: ${DEPLOY_MODEL:-}
+  provider: ${DEPLOY_LLM_PROVIDER:-}
+deployed_at: ${ts}
+hermes_fly_version: ${HERMES_FLY_VERSION:-}
+management:
+  status: "hermes-fly status -a ${app}"
+  logs: "hermes-fly logs -a ${app}"
+  doctor: "hermes-fly doctor -a ${app}"
+  destroy: "hermes-fly destroy -a ${app}"
+EOF
+  # Write Markdown
+  cat >"${deploys_dir}/${app}.md" <<EOF
+# Hermes Agent: ${app}
+
+Deployed: ${ts}
+
+## Coordinates
+- **App URL:** https://${app}.fly.dev
+- **Region:** ${DEPLOY_REGION:-}
+- **VM size:** ${DEPLOY_VM_SIZE:-}
+- **Volume:** ${DEPLOY_VOLUME_SIZE:-} GB
+- **Model:** ${DEPLOY_MODEL:-}
+- **Messaging:** ${DEPLOY_MESSAGING_PLATFORM:-none}${DEPLOY_TELEGRAM_BOT_USERNAME:+ (@${DEPLOY_TELEGRAM_BOT_USERNAME})}
+
+## Management
+\`\`\`bash
+hermes-fly status -a ${app}
+hermes-fly logs -a ${app}
+hermes-fly doctor -a ${app}
+hermes-fly destroy -a ${app}
+\`\`\`
+
+## Troubleshooting
+- **Bot not responding:** \`hermes-fly doctor -a ${app}\`
+- **OpenRouter 401:** rotate key, then \`fly secrets set OPENROUTER_API_KEY=... -a ${app}\`
+- **Pairing prompt:** check \`fly ssh console -a ${app}\` pairing directory
+- **Telegram logOut 10-min window:** after destroy, wait 10 min before reusing same bot token
+EOF
 }
 
 # --------------------------------------------------------------------------
@@ -1127,8 +1221,9 @@ cmd_deploy() {
   # Success
   deploy_show_success
 
-  # Persist config
+  # Persist config + deploy summary
   config_save_app "$DEPLOY_APP_NAME" "$DEPLOY_REGION"
+  deploy_write_summary
 
   return 0
 }

@@ -51,5 +51,22 @@ except Exception:
     pass
 PYEOF
 fi
+# Pre-seed Telegram approved users on first boot only (skip pairing prompt for configured users)
+if [[ -n "${TELEGRAM_ALLOWED_USERS:-}" ]] \
+  && [[ ! -f /root/.hermes/pairing/telegram-approved.json ]]; then
+  python3 - <<'PYEOF'
+import json, os, time
+approved_file = '/root/.hermes/pairing/telegram-approved.json'
+users_raw = os.environ.get('TELEGRAM_ALLOWED_USERS', '')
+entries = {}
+for uid in users_raw.split(','):
+    uid = uid.strip()
+    if uid.isdigit():
+        entries[uid] = {"user_name": "auto-approved", "approved_at": time.time()}
+if entries:
+    os.makedirs('/root/.hermes/pairing', exist_ok=True)
+    json.dump(entries, open(approved_file, 'w'))
+PYEOF
+fi
 # Start hermes gateway
 exec /opt/hermes/hermes-agent/venv/bin/hermes gateway "$@"

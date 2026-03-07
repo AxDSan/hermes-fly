@@ -1,6 +1,45 @@
 #!/usr/bin/env bash
 # Mock curl — behavior controlled by MOCK_CURL_* env vars
 
+# getMe endpoint — validate Telegram bot token
+if printf '%s' "$*" | grep -q "api.telegram.org.*getMe"; then
+    if [[ "${MOCK_CURL_FAIL:-false}" == "true" ]]; then
+        printf '{"ok":false,"error_code":401,"description":"Unauthorized"}\n'
+        exit 7
+    fi
+    printf '{"ok":true,"result":{"id":12345,"is_bot":true,"first_name":"Test Hermes","username":"test_hermes_bot"}}\n'
+    exit 0
+fi
+
+# OpenRouter key validation
+if printf '%s' "$*" | grep -q "openrouter.ai/api/v1/key"; then
+    if [[ "${MOCK_CURL_FAIL:-false}" == "true" ]]; then
+        printf '{"error":{"message":"User not found.","code":401}}\n'
+        exit 7
+    fi
+    # Support "fail once" mode: first call fails, subsequent calls succeed
+    if [[ -n "${MOCK_OPENROUTER_FAIL_FILE:-}" ]] && [[ -f "${MOCK_OPENROUTER_FAIL_FILE}" ]]; then
+        rm -f "${MOCK_OPENROUTER_FAIL_FILE}"
+        printf '{"error":{"message":"User not found.","code":401}}\n'
+        exit 7
+    fi
+    if [[ "${MOCK_OPENROUTER_FREE_TIER:-false}" == "true" ]]; then
+        printf '{"data":{"is_free_tier":true,"usage":0,"limit":null}}\n'
+    else
+        printf '{"data":{"is_free_tier":false,"usage":150}}\n'
+    fi
+    exit 0
+fi
+
+# logOut / deleteWebhook / Telegram generic
+if printf '%s' "$*" | grep -q "api.telegram.org"; then
+    if [[ "${MOCK_CURL_FAIL:-false}" == "true" ]]; then
+        exit 7
+    fi
+    printf '{"ok":true,"result":true}\n'
+    exit 0
+fi
+
 if [[ "${MOCK_CURL_FAIL:-false}" == "true" ]]; then
     echo "curl: (7) Failed to connect" >&2
     exit 7

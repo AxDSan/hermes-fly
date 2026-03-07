@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HERMES_FLY_VERSION="0.1.9"
+HERMES_FLY_VERSION="0.1.10"
 # Resolve symlinks so lib/ is found relative to the real file location
 _self="${BASH_SOURCE[0]}"
 while [[ -L "$_self" ]]; do
@@ -22,6 +22,7 @@ source "${SCRIPT_DIR}/lib/status.sh"
 source "${SCRIPT_DIR}/lib/logs.sh"
 source "${SCRIPT_DIR}/lib/doctor.sh"
 source "${SCRIPT_DIR}/lib/destroy.sh"
+source "${SCRIPT_DIR}/lib/list.sh"
 source "${SCRIPT_DIR}/lib/deploy.sh"
 
 # --- Help text ---
@@ -34,10 +35,11 @@ Usage:
 
 Commands:
   deploy              Interactive deployment wizard
+  list                List all deployed agents
   status [-a APP]     Check deployment health
   logs [-a APP]       View application logs
   doctor [-a APP]     Diagnose common issues
-  destroy [-a APP]    Remove deployment (confirmation required)
+  destroy [-a APP]    Remove deployment (interactive or -a APP)
   help                Show this help message
   version             Show version
 
@@ -117,12 +119,12 @@ main() {
             }
             cmd_doctor "$app"
             ;;
+        list)
+            cmd_list
+            ;;
         destroy)
             local app
-            app="$(config_resolve_app "$@" 2>/dev/null)" || {
-                ui_error "No app specified. Use -a APP or run 'hermes-fly deploy' first."
-                return 1
-            }
+            app="$(config_resolve_app "$@" 2>/dev/null)" || true
             cmd_destroy "$app" "$@"
             ;;
         help|--help|-h)

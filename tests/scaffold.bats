@@ -155,3 +155,20 @@ teardown() {
   assert_success
   assert_output --partial '//|/'
 }
+
+# --- Entrypoint auto-approve ---
+
+@test "entrypoint.sh pre-seeds telegram-approved.json from TELEGRAM_ALLOWED_USERS" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "telegram-approved.json"
+  assert_output --partial "auto-approved"
+  assert_output --partial "TELEGRAM_ALLOWED_USERS"
+}
+
+@test "entrypoint.sh only pre-seeds on first boot (no overwrite on restart)" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "! -f"
+  assert_output --partial "telegram-approved.json"
+}

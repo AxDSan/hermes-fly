@@ -757,7 +757,7 @@ teardown() {
 # --- deployment summary messaging ---
 
 @test "deployment summary shows Telegram when configured" {
-  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_config < <(printf "my-test-app\n1\n2\n2\n1\nsk-test-key\n1\n1\n123:ABC-token\n12345\ny\n") 2>&1'
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source lib/ui.sh; source lib/fly-helpers.sh; source lib/docker-helpers.sh; source lib/messaging.sh; source lib/config.sh; source lib/status.sh; source lib/deploy.sh; deploy_collect_config < <(printf "my-test-app\n1\n2\n2\n1\nsk-test-key\n1\n1\n123:ABC-token\ny\n12345\ny\n") 2>&1'
   assert_success
   assert_output --partial "Telegram (configured)"
 }
@@ -825,4 +825,85 @@ teardown() {
   run cat "${HERMES_FLY_CONFIG_DIR}/config.yaml"
   assert_success
   assert_output --partial "deploy-test-app"
+}
+
+# --- deploy_validate_openrouter_key ---
+
+@test "deploy_validate_openrouter_key returns 0 for valid key" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";
+    source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/fly-helpers.sh;
+    source '"${PROJECT_ROOT}"'/lib/docker-helpers.sh; source '"${PROJECT_ROOT}"'/lib/messaging.sh;
+    source '"${PROJECT_ROOT}"'/lib/config.sh; source '"${PROJECT_ROOT}"'/lib/status.sh;
+    source '"${PROJECT_ROOT}"'/lib/deploy.sh;
+    deploy_validate_openrouter_key "sk-or-v1-valid" 2>/dev/null'
+  assert_success
+}
+
+@test "deploy_validate_openrouter_key returns 1 for invalid key" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; export MOCK_CURL_FAIL=true;
+    source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/fly-helpers.sh;
+    source '"${PROJECT_ROOT}"'/lib/docker-helpers.sh; source '"${PROJECT_ROOT}"'/lib/messaging.sh;
+    source '"${PROJECT_ROOT}"'/lib/config.sh; source '"${PROJECT_ROOT}"'/lib/status.sh;
+    source '"${PROJECT_ROOT}"'/lib/deploy.sh;
+    deploy_validate_openrouter_key "bad-key" 2>/dev/null'
+  assert_failure
+}
+
+@test "deploy_write_summary creates YAML with all fields" {
+  export DEPLOY_APP_NAME="my-agent" DEPLOY_REGION="ams" DEPLOY_VM_SIZE="shared-cpu-2x"
+  export DEPLOY_VOLUME_SIZE="5" DEPLOY_MODEL="anthropic/claude-haiku-4.5"
+  export DEPLOY_LLM_PROVIDER="openrouter" DEPLOY_TELEGRAM_BOT_USERNAME="my_bot"
+  export DEPLOY_MESSAGING_PLATFORM="telegram" HERMES_FLY_VERSION="0.1.10"
+  run bash -c 'source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/fly-helpers.sh;
+    source '"${PROJECT_ROOT}"'/lib/docker-helpers.sh; source '"${PROJECT_ROOT}"'/lib/messaging.sh;
+    source '"${PROJECT_ROOT}"'/lib/config.sh; source '"${PROJECT_ROOT}"'/lib/status.sh;
+    source '"${PROJECT_ROOT}"'/lib/deploy.sh;
+    deploy_write_summary 2>/dev/null
+    cat "${HERMES_FLY_CONFIG_DIR}/deploys/my-agent.yaml"'
+  assert_success
+  assert_output --partial "app_name: my-agent"
+  assert_output --partial "region: ams"
+  assert_output --partial "bot_username: my_bot"
+  assert_output --partial "hermes_fly_version: 0.1.10"
+}
+
+@test "deploy_write_summary creates Markdown with management commands" {
+  export DEPLOY_APP_NAME="my-agent" DEPLOY_REGION="ams" DEPLOY_VM_SIZE="shared-cpu-2x"
+  export DEPLOY_VOLUME_SIZE="5" DEPLOY_MODEL="" DEPLOY_LLM_PROVIDER="openrouter"
+  export DEPLOY_MESSAGING_PLATFORM="telegram" DEPLOY_TELEGRAM_BOT_USERNAME="my_bot"
+  export HERMES_FLY_VERSION="0.1.10"
+  run bash -c 'source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/fly-helpers.sh;
+    source '"${PROJECT_ROOT}"'/lib/docker-helpers.sh; source '"${PROJECT_ROOT}"'/lib/messaging.sh;
+    source '"${PROJECT_ROOT}"'/lib/config.sh; source '"${PROJECT_ROOT}"'/lib/status.sh;
+    source '"${PROJECT_ROOT}"'/lib/deploy.sh;
+    deploy_write_summary 2>/dev/null
+    cat "${HERMES_FLY_CONFIG_DIR}/deploys/my-agent.md"'
+  assert_success
+  assert_output --partial "hermes-fly status -a my-agent"
+  assert_output --partial "https://my-agent.fly.dev"
+}
+
+@test "deploy_collect_llm_config re-prompts on invalid OpenRouter key" {
+  local fail_file="${BATS_TEST_TMPDIR}/openrouter_fail"
+  touch "$fail_file"
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";
+    export MOCK_OPENROUTER_FAIL_FILE="'"${fail_file}"'";
+    source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/fly-helpers.sh;
+    source '"${PROJECT_ROOT}"'/lib/docker-helpers.sh; source '"${PROJECT_ROOT}"'/lib/messaging.sh;
+    source '"${PROJECT_ROOT}"'/lib/config.sh; source '"${PROJECT_ROOT}"'/lib/status.sh;
+    source '"${PROJECT_ROOT}"'/lib/deploy.sh;
+    deploy_collect_llm_config DEPLOY_API_KEY DEPLOY_MODEL < <(printf "1\nbad-key\ngood-key\n1\n") 2>&1'
+  assert_success
+  assert_output --partial "rejected"
+}
+
+@test "deploy_validate_openrouter_key warns on free tier with zero usage" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; export MOCK_OPENROUTER_FREE_TIER=true;
+    source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/fly-helpers.sh;
+    source '"${PROJECT_ROOT}"'/lib/docker-helpers.sh; source '"${PROJECT_ROOT}"'/lib/messaging.sh;
+    source '"${PROJECT_ROOT}"'/lib/config.sh; source '"${PROJECT_ROOT}"'/lib/status.sh;
+    source '"${PROJECT_ROOT}"'/lib/deploy.sh;
+    deploy_validate_openrouter_key "sk-or-v1-free" 2>&1'
+  assert_success
+  assert_output --partial "free tier"
 }
