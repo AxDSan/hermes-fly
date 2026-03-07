@@ -42,6 +42,16 @@ teardown() { _common_teardown; }
   assert_output --partial 'initial_size = "5gb"'
 }
 
+# --- Dockerfile template includes required system packages ---
+
+@test "templates/Dockerfile.template contains all required system packages" {
+  local template="${PROJECT_ROOT}/templates/Dockerfile.template"
+  run cat "$template"
+  assert_output --partial "git"
+  assert_output --partial "curl"
+  assert_output --partial "xz-utils"
+}
+
 # --- docker_validate_dockerfile ---
 
 @test "validate_dockerfile returns 0 for valid file" {
