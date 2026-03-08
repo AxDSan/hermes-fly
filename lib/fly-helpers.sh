@@ -18,15 +18,48 @@ fi
 
 # --------------------------------------------------------------------------
 # fly_check_installed — verify the fly CLI is available
+# Checks: callable "fly" command.
 # Returns: 0 if found, 1 + error message if not
+# Side effects: in fallback mode, temporarily prepends flyctl dir to PATH while probing.
 # --------------------------------------------------------------------------
 fly_check_installed() {
-  if command -v fly >/dev/null 2>&1; then
-    return 0
-  else
+  # Delegate to prereqs helper if available (handles ~/.fly/bin, flyctl symlink, etc.)
+  if declare -f _prereqs_check_tool_available >/dev/null 2>&1; then
+    if _prereqs_check_tool_available "fly"; then
+      return 0
+    fi
     echo "Error: fly CLI not found. Install from https://fly.io/docs/flyctl/install/" >&2
     return 1
   fi
+
+  # Fallback: direct command checks when prereqs.sh not sourced
+  if command -v fly >/dev/null 2>&1 && fly version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local original_path="${PATH}"
+  local path_mutated=false
+
+  # Check for 'flyctl' and expose sibling 'fly' symlink if present
+  if command -v flyctl >/dev/null 2>&1; then
+    local flyctl_dir
+    flyctl_dir="$(dirname "$(command -v flyctl)")"
+    if [[ ":${PATH}:" != *":${flyctl_dir}:"* ]]; then
+      export PATH="${flyctl_dir}:${PATH}"
+      path_mutated=true
+    fi
+    # Verify 'fly' is now callable
+    if command -v fly >/dev/null 2>&1 && fly version >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  if [[ "$path_mutated" == "true" ]]; then
+    export PATH="${original_path}"
+  fi
+
+  echo "Error: fly CLI not found. Install from https://fly.io/docs/flyctl/install/" >&2
+  return 1
 }
 
 # --------------------------------------------------------------------------
