@@ -1,3 +1,5 @@
+![](docs/assets/hermes-fly-cover.png)
+
 # hermes-fly
 
 Deploy [Hermes](https://github.com/rubbrband/hermes) to
@@ -20,7 +22,7 @@ and manages a Hermes instance on Fly.io.
 ### Install
 
 ```bash
-curl -fsSL https://get.hermes-fly.dev/install.sh | bash
+curl -fsSL "https://raw.githubusercontent.com/alexfazio/hermes-fly/main/scripts/install.sh" | bash
 ```
 
 Or clone and run directly:
@@ -48,23 +50,23 @@ The wizard walks you through:
 
 ## Commands
 
-| Command              | Description                             |
-| -------------------- | --------------------------------------- |
-| `hermes-fly deploy`  | Launch the interactive deploy wizard    |
-| `hermes-fly status`  | Show app status, machine state, and URL |
-| `hermes-fly logs`    | Stream live application logs            |
-| `hermes-fly doctor`  | Run diagnostic checks on deployment     |
+| Command              | Description                              |
+| -------------------- | ---------------------------------------- |
+| `hermes-fly deploy`  | Launch the interactive deploy wizard     |
+| `hermes-fly status`  | Show app status, machine state, and URL  |
+| `hermes-fly logs`    | Stream live application logs             |
+| `hermes-fly doctor`  | Run diagnostic checks on deployment      |
 | `hermes-fly destroy` | Tear down app, volumes, and local config |
 
 ## Cost Estimates
 
 Fly.io charges are usage-based. Typical monthly costs:
 
-| VM Size        | Mem    | VM     | +1 GB | +5 GB | +10 GB |
-| -------------- | ------ | ------ | ----- | ----- | ------ |
-| shared-cpu-1x  | 256 MB | ~$1.94 | $2.09 | $2.69 | $3.44  |
-| shared-cpu-2x  | 512 MB | ~$3.88 | $4.03 | $4.63 | $5.38  |
-| performance-1x | 2 GB   | ~$12   | $12.15| $12.75| $13.50 |
+| VM Size        | Mem    | VM     | +1 GB  | +5 GB  | +10 GB |
+| -------------- | ------ | ------ | ------ | ------ | ------ |
+| shared-cpu-1x  | 256 MB | ~$1.94 | $2.09  | $2.69  | $3.44  |
+| shared-cpu-2x  | 512 MB | ~$3.88 | $4.03  | $4.63  | $5.38  |
+| performance-1x | 2 GB   | ~$12   | $12.15 | $12.75 | $13.50 |
 
 Volume storage: $0.15/GB/month. See
 [Fly.io Pricing](https://fly.io/pricing) for current rates.
