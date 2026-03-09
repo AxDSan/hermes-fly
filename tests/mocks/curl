@@ -31,6 +31,85 @@ if printf '%s' "$*" | grep -q "openrouter.ai/api/v1/key"; then
     exit 0
 fi
 
+# OpenRouter models list
+if printf '%s' "$*" | grep -q "openrouter.ai/api/v1/models"; then
+    if [[ "${MOCK_CURL_FAIL:-false}" == "true" ]] || [[ "${MOCK_OPENROUTER_MODELS_FAIL:-false}" == "true" ]]; then
+        echo "curl: (7) Failed to connect" >&2
+        exit 7
+    fi
+    cat <<'MODELS_JSON'
+{"data":[{"id":"anthropic/claude-sonnet-4","name":"Claude Sonnet 4"},{"id":"anthropic/claude-haiku-4.5","name":"Claude Haiku 4.5"},{"id":"openai/gpt-4o","name":"GPT-4o"},{"id":"google/gemini-2.5-flash","name":"Gemini 2.5 Flash"},{"id":"meta-llama/llama-4-maverick","name":"Llama 4 Maverick"},{"id":"mistralai/mistral-large","name":"Mistral Large"}]}
+MODELS_JSON
+    exit 0
+fi
+
+# Nous API key validation
+if printf '%s' "$*" | grep -q "nousresearch.com"; then
+    if [[ "${MOCK_NOUS_TIMEOUT:-false}" == "true" ]]; then
+        exit 28
+    fi
+    # Fail-N-then-succeed mode: MOCK_NOUS_FAIL_DIR contains fail* files
+    # Each call removes one fail file and returns 401. When no files remain, succeeds.
+    if [[ -n "${MOCK_NOUS_FAIL_DIR:-}" ]] && [[ -d "${MOCK_NOUS_FAIL_DIR}" ]]; then
+        for _f in "$MOCK_NOUS_FAIL_DIR"/fail*; do
+            if [[ -f "$_f" ]]; then
+                rm -f "$_f"
+                if printf '%s' "$*" | grep -q '%{http_code}'; then
+                    printf '401'
+                    exit 0
+                fi
+                printf '{"error":"Unauthorized"}\n'
+                exit 22
+            fi
+        done
+    fi
+    # Detect -w '%{http_code}' mode (status code extraction)
+    if printf '%s' "$*" | grep -q '%{http_code}'; then
+        if [[ "${MOCK_NOUS_AUTH_FAIL:-false}" == "true" ]]; then
+            printf '401'
+            exit 0
+        fi
+        if [[ "${MOCK_NOUS_SERVER_ERROR:-false}" == "true" ]]; then
+            printf '500'
+            exit 0
+        fi
+        if [[ "${MOCK_NOUS_RATE_LIMIT:-false}" == "true" ]]; then
+            printf '429'
+            exit 0
+        fi
+        printf '200'
+        exit 0
+    fi
+    # Legacy mode (curl -sf)
+    if [[ "${MOCK_NOUS_AUTH_FAIL:-false}" == "true" ]]; then
+        printf '{"error":"Unauthorized"}\n'
+        exit 22
+    fi
+    printf '{"status":"ok"}\n'
+    exit 0
+fi
+
+# Telegram bot description endpoints
+if printf '%s' "$*" | grep -q "api.telegram.org.*getMyDescription"; then
+    printf '{"ok":true,"result":{"description":"%s"}}\n' "${MOCK_TELEGRAM_DESCRIPTION:-existing description}"
+    exit 0
+fi
+
+if printf '%s' "$*" | grep -q "api.telegram.org.*getMyShortDescription"; then
+    printf '{"ok":true,"result":{"short_description":"%s"}}\n' "${MOCK_TELEGRAM_SHORT_DESCRIPTION:-existing short description}"
+    exit 0
+fi
+
+if printf '%s' "$*" | grep -q "api.telegram.org.*setMyDescription"; then
+    printf '{"ok":true,"result":true}\n'
+    exit 0
+fi
+
+if printf '%s' "$*" | grep -q "api.telegram.org.*setMyShortDescription"; then
+    printf '{"ok":true,"result":true}\n'
+    exit 0
+fi
+
 # logOut / deleteWebhook / Telegram generic
 if printf '%s' "$*" | grep -q "api.telegram.org"; then
     if [[ "${MOCK_CURL_FAIL:-false}" == "true" ]]; then

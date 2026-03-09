@@ -16,13 +16,46 @@ if [[ ! -d /root/.hermes/skills ]] && [[ -d /opt/hermes/defaults/skills ]]; then
 fi
 # Bridge Fly secrets into /root/.hermes/.env on every boot (not just first deploy)
 for var in OPENROUTER_API_KEY LLM_MODEL LLM_BASE_URL LLM_API_KEY NOUS_API_KEY \
-  TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_USERS DISCORD_BOT_TOKEN DISCORD_ALLOWED_USERS; do
+  TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_USERS DISCORD_BOT_TOKEN DISCORD_ALLOWED_USERS \
+  HERMES_APP_NAME GATEWAY_ALLOW_ALL_USERS TELEGRAM_HOME_CHANNEL; do
   val="${!var:-}"
   if [[ -n "$val" ]]; then
     sed -i "/^${var}=/d" /root/.hermes/.env
     printf '%s=%s\n' "$var" "$val" >>/root/.hermes/.env
   fi
 done
+# Auto-configure Telegram bot description on boot (never block startup)
+if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]]; then
+  (
+    _app="${HERMES_APP_NAME:-hermes}"
+    _desired_desc="Hermes AI Agent (${_app}) — Your AI assistant powered by Hermes on Fly.io"
+    _desired_short="${_app} — Hermes AI Agent"
+    # Fetch current long description
+    _current_desc="$(curl -sf --max-time 5 \
+      "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMyDescription" 2>/dev/null \
+      | sed -n 's/.*"description"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    # Fetch current short description independently
+    _current_short="$(curl -sf --max-time 5 \
+      "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMyShortDescription" 2>/dev/null \
+      | sed -n 's/.*"short_description"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    # Reconcile long description
+    if [[ "$_current_desc" != "$_desired_desc" ]]; then
+      if ! curl -sf --max-time 5 \
+        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMyDescription" \
+        --data-urlencode "description=${_desired_desc}" >/dev/null 2>&1; then
+        echo "[hermes] Warning: failed to update bot description" >&2
+      fi
+    fi
+    # Reconcile short description independently
+    if [[ "$_current_short" != "$_desired_short" ]]; then
+      if ! curl -sf --max-time 5 \
+        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMyShortDescription" \
+        --data-urlencode "short_description=${_desired_short}" >/dev/null 2>&1; then
+        echo "[hermes] Warning: failed to update bot short description" >&2
+      fi
+    fi
+  ) || true
+fi
 # Patch config.yaml model.default from LLM_MODEL on every boot
 if [[ -n "${LLM_MODEL:-}" ]]; then
   _safe_model="${LLM_MODEL//|/\\|}"

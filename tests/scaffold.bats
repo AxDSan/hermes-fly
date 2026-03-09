@@ -172,3 +172,53 @@ teardown() {
   assert_output --partial "! -f"
   assert_output --partial "telegram-approved.json"
 }
+
+@test "entrypoint.sh contains bot description auto-config" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "setMyDescription"
+}
+
+@test "entrypoint.sh bot description does not block startup on failure" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "|| true"
+  assert_output --partial "Warning"
+}
+
+@test "entrypoint.sh bot description uses URL encoding" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "data-urlencode"
+}
+
+@test "entrypoint.sh bridges HERMES_APP_NAME GATEWAY_ALLOW_ALL_USERS TELEGRAM_HOME_CHANNEL" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "HERMES_APP_NAME"
+  assert_output --partial "GATEWAY_ALLOW_ALL_USERS"
+  assert_output --partial "TELEGRAM_HOME_CHANNEL"
+}
+
+@test "entrypoint.sh fetches getMyShortDescription independently" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "getMyShortDescription"
+}
+
+@test "entrypoint.sh reconciles short-description independently from long description" {
+  # Short description should have its own comparison block, not nested inside long-desc check
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  # Verify independent fetch + comparison for short description
+  assert_output --partial '_current_short'
+  assert_output --partial '_desired_short'
+}
+
+@test "entrypoint.sh warns on short-description update failure" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  # The short-description branch must log a warning on curl failure, matching
+  # the pattern used by the long-description branch
+  assert_output --partial "failed to update bot short description"
+}
