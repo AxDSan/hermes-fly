@@ -142,6 +142,21 @@ EOF
 
 # --- Symlink resilience ---
 
+# --- PR 3: Pinned ref rendering ---
+
+@test "generate_dockerfile with 40-char SHA renders exact ref in ARG and LABEL" {
+  local sha="8eefbef91cd715cfe410bba8c13cfab4eb3040df"
+  run docker_generate_dockerfile "$TEST_TEMP_DIR" "$sha"
+  assert_success
+  run cat "$TEST_TEMP_DIR/Dockerfile"
+  # ARG line gets the pinned SHA (Docker resolves ${HERMES_VERSION} at build time)
+  assert_output --partial "ARG HERMES_VERSION=${sha}"
+  # LABEL line
+  assert_output --partial "version=\"${sha}\""
+  # Must NOT contain "main"
+  refute_output --partial "HERMES_VERSION=main"
+}
+
 @test "docker_generate_dockerfile works when lib is symlinked" {
   # Create symlink to docker-helpers.sh in temp dir
   ln -s "${PROJECT_ROOT}/lib/docker-helpers.sh" "${TEST_TEMP_DIR}/docker-helpers-link.sh"

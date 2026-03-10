@@ -47,6 +47,30 @@ if ! declare -f reasoning_normalize_family >/dev/null 2>&1; then
 fi
 
 # ==========================================================================
+# Hermes Agent ref pinning
+# ==========================================================================
+
+# Pinned to upstream main at hermes-fly v0.1.14 release time.
+# DUAL-UPDATE REQUIREMENT: bump this SHA when cutting a new hermes-fly release.
+HERMES_AGENT_DEFAULT_REF="8eefbef91cd715cfe410bba8c13cfab4eb3040df"
+
+# --------------------------------------------------------------------------
+# deploy_resolve_hermes_ref — resolve Hermes Agent ref for Dockerfile build
+# Returns pinned default ref, or HERMES_AGENT_REF override if set.
+# Warns on stderr when override is active (non-reproducible build).
+# Exit codes: 0 always
+# --------------------------------------------------------------------------
+deploy_resolve_hermes_ref() {
+  if [[ -n "${HERMES_AGENT_REF:-}" ]]; then
+    ui_warn "Using custom Hermes Agent ref: ${HERMES_AGENT_REF} (non-reproducible build)" >&2
+    printf '%s' "$HERMES_AGENT_REF"
+  else
+    printf '%s' "$HERMES_AGENT_DEFAULT_REF"
+  fi
+  return 0
+}
+
+# ==========================================================================
 # Step 4.1: Preflight Checks
 # ==========================================================================
 
@@ -1017,13 +1041,17 @@ deploy_collect_config() {
 # Sets DEPLOY_BUILD_DIR global variable.
 # --------------------------------------------------------------------------
 deploy_create_build_context() {
-  local build_dir
+  local build_dir hermes_ref
   build_dir="$(docker_get_build_dir)"
+  hermes_ref="$(deploy_resolve_hermes_ref)"
 
-  if ! docker_generate_dockerfile "$build_dir" "main"; then
+  if ! docker_generate_dockerfile "$build_dir" "$hermes_ref"; then
     ui_error "Failed to generate Dockerfile"
     return 1
   fi
+
+  DEPLOY_HERMES_AGENT_REF="$hermes_ref"
+  export DEPLOY_HERMES_AGENT_REF
 
   if ! docker_generate_fly_toml "$build_dir" \
     "$DEPLOY_APP_NAME" "$DEPLOY_REGION" \
@@ -1241,6 +1269,9 @@ deploy_show_success() {
   printf '  VM size:     %s\n' "$DEPLOY_VM_SIZE"
   printf '  Volume:      %s GB\n' "$DEPLOY_VOLUME_SIZE"
   printf '  Est. cost:   %s\n' "$cost"
+  if [[ -n "${DEPLOY_HERMES_AGENT_REF:-}" ]]; then
+    printf '  Hermes ref:  %.8s\n' "$DEPLOY_HERMES_AGENT_REF"
+  fi
   if [[ -n "${DEPLOY_TELEGRAM_BOT_USERNAME:-}" ]]; then
     printf '  Telegram:    @%s\n' "$DEPLOY_TELEGRAM_BOT_USERNAME"
     printf '  Chat link:   https://t.me/%s?start=%s\n' "$DEPLOY_TELEGRAM_BOT_USERNAME" "$DEPLOY_APP_NAME"
@@ -1285,6 +1316,7 @@ EOF
       printf '  reasoning_effort: %s\n' "${DEPLOY_REASONING_EFFORT}"
     fi
     cat <<EOF
+hermes_agent_ref: ${DEPLOY_HERMES_AGENT_REF:-}
 deployed_at: ${ts}
 hermes_fly_version: ${HERMES_FLY_VERSION:-}
 management:
@@ -1307,6 +1339,7 @@ Deployed: ${ts}
 - **VM size:** ${DEPLOY_VM_SIZE:-}
 - **Volume:** ${DEPLOY_VOLUME_SIZE:-} GB
 - **Model:** ${DEPLOY_MODEL:-}
+- **Hermes ref:** ${DEPLOY_HERMES_AGENT_REF:-}
 EOF
     if [[ -n "${DEPLOY_REASONING_EFFORT:-}" ]]; then
       printf -- '- **Reasoning effort:** %s\n' "${DEPLOY_REASONING_EFFORT}"

@@ -1671,3 +1671,128 @@ teardown() {
   assert_success
   assert_output --partial "Reasoning:   medium"
 }
+
+# ==========================================================================
+# PR 3: Hermes Agent Pinning — Explicit ref resolution
+# ==========================================================================
+
+# --- deploy_resolve_hermes_ref ---
+
+@test "deploy_resolve_hermes_ref returns default pinned ref" {
+  unset HERMES_AGENT_REF
+  run deploy_resolve_hermes_ref
+  assert_success
+  # Must return a 40-char hex SHA, not "main"
+  [[ "$output" =~ ^[0-9a-f]{40}$ ]]
+  [[ "$output" != "main" ]]
+}
+
+@test "deploy_resolve_hermes_ref respects HERMES_AGENT_REF env override" {
+  export HERMES_AGENT_REF="v2.0.0-beta"
+  run deploy_resolve_hermes_ref
+  assert_success
+  assert_output --partial "v2.0.0-beta"
+}
+
+@test "deploy_resolve_hermes_ref warns on non-default override" {
+  export HERMES_AGENT_REF="custom-branch"
+  run deploy_resolve_hermes_ref
+  assert_success
+  assert_output --partial "custom-branch"
+  # Warning must be emitted for non-default overrides
+  assert_output --partial "non-reproducible build"
+}
+
+# --- deploy_create_build_context uses pinned ref ---
+
+@test "deploy_create_build_context uses pinned ref in Dockerfile (not main)" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VM_SIZE="shared-cpu-1x"
+  export DEPLOY_VM_MEMORY="256mb"
+  export DEPLOY_VOLUME_SIZE="5"
+  unset HERMES_AGENT_REF
+
+  deploy_create_build_context
+  run cat "${DEPLOY_BUILD_DIR}/Dockerfile"
+  assert_success
+  # Must contain the pinned SHA, not "main"
+  refute_output --partial "HERMES_VERSION=main"
+  [[ "$output" =~ HERMES_VERSION=[0-9a-f]{40} ]]
+  rm -rf "${DEPLOY_BUILD_DIR}"
+}
+
+@test "deploy_create_build_context respects HERMES_AGENT_REF override" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VM_SIZE="shared-cpu-1x"
+  export DEPLOY_VM_MEMORY="256mb"
+  export DEPLOY_VOLUME_SIZE="5"
+  export HERMES_AGENT_REF="v1.5.0"
+
+  deploy_create_build_context
+  run cat "${DEPLOY_BUILD_DIR}/Dockerfile"
+  assert_success
+  assert_output --partial "HERMES_VERSION=v1.5.0"
+  rm -rf "${DEPLOY_BUILD_DIR}"
+}
+
+@test "deploy_create_build_context sets DEPLOY_HERMES_AGENT_REF global" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VM_SIZE="shared-cpu-1x"
+  export DEPLOY_VM_MEMORY="256mb"
+  export DEPLOY_VOLUME_SIZE="5"
+  unset HERMES_AGENT_REF
+
+  deploy_create_build_context
+  # Must be non-empty and a 40-char hex SHA
+  [ -n "${DEPLOY_HERMES_AGENT_REF:-}" ]
+  [[ "${DEPLOY_HERMES_AGENT_REF}" =~ ^[0-9a-f]{40}$ ]]
+  rm -rf "${DEPLOY_BUILD_DIR}"
+}
+
+# --- deploy_show_success includes hermes_agent_ref ---
+
+@test "deploy_show_success shows Hermes Agent ref" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VM_SIZE="shared-cpu-1x"
+  export DEPLOY_VOLUME_SIZE="5"
+  export DEPLOY_HERMES_AGENT_REF="abc123def456abc123def456abc123def456abc1"
+  run deploy_show_success
+  assert_success
+  assert_output --partial "Hermes ref:"
+  assert_output --partial "abc123de"
+}
+
+# --- deploy_write_summary includes hermes_agent_ref ---
+
+@test "deploy_write_summary YAML includes hermes_agent_ref field" {
+  export DEPLOY_APP_NAME="pin-test" DEPLOY_REGION="ams" DEPLOY_VM_SIZE="shared-cpu-2x"
+  export DEPLOY_VOLUME_SIZE="5" DEPLOY_MODEL="anthropic/claude-sonnet-4"
+  export DEPLOY_LLM_PROVIDER="openrouter" DEPLOY_MESSAGING_PLATFORM="none"
+  export HERMES_FLY_VERSION="0.1.14"
+  export DEPLOY_HERMES_AGENT_REF="abc123def456abc123def456abc123def456abc1"
+
+  deploy_write_summary
+
+  run cat "${HERMES_FLY_CONFIG_DIR}/deploys/pin-test.yaml"
+  assert_success
+  assert_output --partial "hermes_agent_ref: abc123def456abc123def456abc123def456abc1"
+}
+
+@test "deploy_write_summary Markdown includes Hermes Agent ref" {
+  export DEPLOY_APP_NAME="pin-test" DEPLOY_REGION="ams" DEPLOY_VM_SIZE="shared-cpu-2x"
+  export DEPLOY_VOLUME_SIZE="5" DEPLOY_MODEL="anthropic/claude-sonnet-4"
+  export DEPLOY_LLM_PROVIDER="openrouter" DEPLOY_MESSAGING_PLATFORM="none"
+  export HERMES_FLY_VERSION="0.1.14"
+  export DEPLOY_HERMES_AGENT_REF="abc123def456abc123def456abc123def456abc1"
+
+  deploy_write_summary
+
+  run cat "${HERMES_FLY_CONFIG_DIR}/deploys/pin-test.md"
+  assert_success
+  assert_output --partial "Hermes ref"
+  assert_output --partial "abc123de"
+}
