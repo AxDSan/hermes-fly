@@ -32,7 +32,10 @@ docker_generate_dockerfile() {
   fi
 
   mkdir -p "$output_dir"
-  sed -e "s|{{HERMES_VERSION}}|${version}|g" "$template" >"${output_dir}/Dockerfile"
+  # M1: escape sed replacement-significant chars (& backreference, | delimiter, / and \)
+  local safe_version
+  safe_version="$(printf '%s' "$version" | sed -e 's/[&|\\/]/\\&/g')"
+  sed -e "s|{{HERMES_VERSION}}|${safe_version}|g" "$template" >"${output_dir}/Dockerfile"
 }
 
 # docker_generate_fly_toml "output_dir" "app_name" "region" "vm_size" "vm_memory" "volume_name" "volume_size"
