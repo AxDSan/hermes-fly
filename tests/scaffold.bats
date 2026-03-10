@@ -238,3 +238,42 @@ teardown() {
   assert_failure
   assert_output --partial "source this file"
 }
+
+# --- PR-04: Runtime provenance manifest ---
+
+@test "entrypoint.sh writes deploy-manifest.json on boot (PR-04)" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "deploy-manifest.json"
+}
+
+@test "entrypoint.sh manifest write includes hermes_fly_version key (PR-04)" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "HERMES_FLY_VERSION"
+}
+
+@test "entrypoint.sh manifest write includes hermes_agent_ref key (PR-04)" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "HERMES_AGENT_REF"
+}
+
+@test "entrypoint.sh manifest write includes deploy_channel key (PR-04)" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "deploy_channel"
+}
+
+@test "entrypoint.sh manifest write is idempotent across restarts — no first-boot guard (PR-04)" {
+  # Idempotent: manifest must be written on every boot, not just first boot.
+  # Verify deploy-manifest.json write is NOT guarded by [[ ! -f ... ]].
+  run grep -c "! -f.*deploy-manifest.json" "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_failure
+}
+
+@test "entrypoint.sh manifest write includes reasoning_effort key (PR-04)" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "HERMES_REASONING_EFFORT"
+}

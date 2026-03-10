@@ -102,5 +102,17 @@ if entries:
     json.dump(entries, open(approved_file, 'w'))
 PYEOF
 fi
+# Write deploy provenance manifest on every boot (idempotent — latest config always wins)
+{
+  printf '{\n'
+  printf '  "hermes_fly_version": "%s",\n' "${HERMES_FLY_VERSION:-}"
+  printf '  "hermes_agent_ref": "%s",\n' "${HERMES_AGENT_REF:-}"
+  printf '  "deploy_channel": "%s",\n' "${HERMES_DEPLOY_CHANNEL:-stable}"
+  printf '  "compat_policy_version": "%s",\n' "${HERMES_COMPAT_POLICY:-}"
+  printf '  "reasoning_effort": "%s",\n' "${HERMES_REASONING_EFFORT:-}"
+  printf '  "llm_model": "%s",\n' "${LLM_MODEL:-}"
+  printf '  "written_at": "%s"\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  printf '}\n'
+} > /root/.hermes/deploy-manifest.json
 # Start hermes gateway
 exec /opt/hermes/hermes-agent/venv/bin/hermes gateway "$@"
