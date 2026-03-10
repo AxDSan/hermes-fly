@@ -7,7 +7,7 @@ Master navigation document for the hermes-fly Project Structure Files (PSF).
 | Field | Value |
 |-------|-------|
 | **Name** | hermes-fly |
-| **Version** | 0.1.9 |
+| **Version** | 0.1.11 |
 | **Language** | Pure Bash (3.2+ compatible) |
 | **Purpose** | CLI wizard to deploy [Hermes Agent](https://github.com/NousResearch/hermes-agent) to [Fly.io](https://fly.io) |
 | **License** | MIT |
@@ -50,8 +50,9 @@ graph TD
 ```text
 hermes-fly/
 ├── hermes-fly                  # Entry point: arg parsing + command dispatch
-├── lib/                        # Core library modules (10 files)
+├── lib/                        # Core library modules (12 files)
 │   ├── ui.sh                   # Colors, prompts, spinners, logging, exit codes
+│   ├── prereqs.sh              # Prerequisite detection + auto-install with fallbacks
 │   ├── config.sh               # App tracking (~/.hermes-fly/config.yaml)
 │   ├── fly-helpers.sh          # Fly.io CLI wrappers + retry logic
 │   ├── docker-helpers.sh       # Template-based Dockerfile/fly.toml generation
@@ -60,7 +61,8 @@ hermes-fly/
 │   ├── status.sh               # Status display + cost estimation
 │   ├── logs.sh                 # Log streaming wrapper
 │   ├── doctor.sh               # Diagnostic health checks
-│   └── destroy.sh              # Teardown + cleanup
+│   ├── destroy.sh              # Teardown + cleanup
+│   └── list.sh                 # List deployed Hermes instances
 ├── templates/                  # Deployment artifact templates
 │   ├── Dockerfile.template     # Python 3.11 + Hermes Agent install
 │   ├── fly.toml.template       # Fly.io app configuration
@@ -75,6 +77,7 @@ hermes-fly/
 ├── docs/                       # Documentation
 │   ├── psf/                    # Project Structure Files (this directory)
 │   ├── plans/                  # Future roadmap
+│   ├── EDGE_CASE_HANDLING.md   # Edge case scenarios in prereqs module
 │   ├── architecture.md         # System design overview
 │   ├── getting-started.md      # Deployment walkthrough
 │   ├── configuration.md        # Config options
@@ -92,6 +95,7 @@ graph BT
     UI["ui.sh<br/>(exit codes, colors, prompts, spinners)"]
     CONFIG["config.sh<br/>(standalone)"]
     DOCKER["docker-helpers.sh<br/>(standalone, reads templates/)"]
+    PREREQS["prereqs.sh<br/>(platform detection, auto-install)"] --> UI
     MSG["messaging.sh"] --> UI
     FLY["fly-helpers.sh"] --> UI
     STATUS["status.sh"] --> UI

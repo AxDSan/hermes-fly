@@ -153,6 +153,8 @@ EOF
 
 @test "EC-3.3b: check_and_install returns 1 when any tool missing" {
   export HERMES_FLY_PLATFORM="Darwin"
+  export HOME="${BATS_RUN_TMPDIR}/home-ec-3-3b"
+  mkdir -p "${HOME}"
   PATH="/usr/bin:/bin"  # no mocks
   export HERMES_FLY_NO_AUTO_INSTALL=1  # skip prompts
 
@@ -166,6 +168,8 @@ EOF
 
 @test "EC-4.1a: CI=true skips install and shows disabled message for missing tool" {
   export HERMES_FLY_PLATFORM="Darwin"
+  export HOME="${BATS_RUN_TMPDIR}/home-ec-4-1a"
+  mkdir -p "${HOME}"
   PATH="/usr/bin:/bin"  # no mocks to trigger missing
   export CI=true
 
@@ -185,6 +189,8 @@ EOF
 
 @test "EC-4.2: HERMES_FLY_NO_AUTO_INSTALL=1 shows disabled message for missing tool" {
   export HERMES_FLY_PLATFORM="Darwin"
+  export HOME="${BATS_RUN_TMPDIR}/home-ec-4-2"
+  mkdir -p "${HOME}"
   PATH="/usr/bin:/bin"  # no mocks
   export HERMES_FLY_NO_AUTO_INSTALL=1
 
@@ -195,6 +201,8 @@ EOF
 
 @test "EC-4.3: CI=true takes precedence over HERMES_FLY_NO_AUTO_INSTALL" {
   export HERMES_FLY_PLATFORM="Darwin"
+  export HOME="${BATS_RUN_TMPDIR}/home-ec-4-3"
+  mkdir -p "${HOME}"
   PATH="/usr/bin:/bin"  # no mocks
   export CI=true
   export HERMES_FLY_NO_AUTO_INSTALL=1
@@ -404,6 +412,8 @@ EOF
 
 @test "EC-8.1a: apt-get install fails gracefully when sudo not on PATH" {
   export HERMES_FLY_PLATFORM="Linux"
+  export HOME="${BATS_RUN_TMPDIR}/home-ec-8-1a"
+  mkdir -p "${HOME}"
   PATH="/usr/bin:/bin"  # exclude mocks (no apt-get either)
   export HERMES_FLY_NO_AUTO_INSTALL=1
 

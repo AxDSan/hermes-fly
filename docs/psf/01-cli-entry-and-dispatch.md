@@ -10,7 +10,7 @@ This document covers the main `hermes-fly` executable — the single entry point
 
 - Shell configuration (`set -euo pipefail`)
 - Symlink resolution to find `lib/` relative to the real script location
-- Sourcing all 10 library modules
+- Sourcing all 12 library modules
 - Help text rendering
 - Command dispatch via `case` statement
 - App name resolution (`-a APP` flag or `current_app` from config)
@@ -19,25 +19,27 @@ This document covers the main `hermes-fly` executable — the single entry point
 
 | Path | Lines | Role |
 |------|-------|------|
-| `hermes-fly` | ~143 | Entry point, dispatcher |
+| `hermes-fly` | ~152 | Entry point, dispatcher |
 
 ## 3. Initialization Sequence
 
 ```text
 1. set -euo pipefail
-2. HERMES_FLY_VERSION="0.1.9"
+2. HERMES_FLY_VERSION="0.1.11"
 3. Resolve symlinks to find real script location → SCRIPT_DIR
 4. Source lib/ui.sh
-5. Source lib/fly-helpers.sh
-6. Source lib/docker-helpers.sh
-7. Source lib/messaging.sh
-8. Source lib/config.sh
-9. Source lib/status.sh
-10. Source lib/logs.sh
-11. Source lib/doctor.sh
-12. Source lib/destroy.sh
-13. Source lib/deploy.sh
-14. Call main() with all arguments
+5. Source lib/prereqs.sh
+6. Source lib/fly-helpers.sh
+7. Source lib/docker-helpers.sh
+8. Source lib/messaging.sh
+9. Source lib/config.sh
+10. Source lib/status.sh
+11. Source lib/logs.sh
+12. Source lib/doctor.sh
+13. Source lib/destroy.sh
+14. Source lib/list.sh
+15. Source lib/deploy.sh
+16. Call main() with all arguments
 ```
 
 Symlink resolution loop (lines 6-12) ensures `hermes-fly` works when invoked via a symlink (e.g., after `ln -s` installation):
@@ -62,6 +64,7 @@ The `main()` function (line 84) uses a `case` statement:
 | `status` | `cmd_status "$app"` | `config_resolve_app "$@"` |
 | `logs` | `cmd_logs "$app"` | `config_resolve_app "$@"` |
 | `doctor` | `cmd_doctor "$app"` | `config_resolve_app "$@"` |
+| `list` | `cmd_list` | Not needed (lists all tracked apps) |
 | `destroy` | `cmd_destroy "$app" "$@"` | `config_resolve_app "$@"` |
 | `help`/`--help`/`-h` | `show_help` | N/A |
 | `version`/`--version`/`-v` | Prints version | N/A |

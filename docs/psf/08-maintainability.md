@@ -263,17 +263,29 @@ The deploy wizard passes state via exported global variables (`DEPLOY_*`). This 
 
 Some `sed` usage relies on GNU sed features (e.g., `sed -i.bak`). The `.bak` extension makes it work on both macOS (BSD sed) and Linux (GNU sed), but edge cases may exist.
 
-## 8. Versioning
+## 8. Documentation
+
+### 8.1 Edge Case Handling
+
+The prerequisite auto-install module (`lib/prereqs.sh`) handles complex edge cases such as platform detection fallbacks, installation failures, and permission scenarios. Detailed documentation of how each edge case is handled is available in [docs/EDGE_CASE_HANDLING.md](../EDGE_CASE_HANDLING.md).
+
+This includes:
+- Platform detection edge cases (unsupported OS, unset/empty environment variables)
+- Installation fallback chains for missing package managers
+- Permission handling and sudo scenarios
+- System state edge cases and their mitigations
+
+## 9. Versioning
 
 `HERMES_FLY_VERSION` is set in line 4 of `hermes-fly`:
 
 ```bash
-HERMES_FLY_VERSION="0.1.9"
+HERMES_FLY_VERSION="0.1.11"
 ```
 
 No automatic version bumping. Update manually when releasing.
 
-## 9. Release Checklist
+## 10. Release Checklist
 
 1. Update `HERMES_FLY_VERSION` in `hermes-fly`
 2. Run full test suite: `./tests/bats/bin/bats tests/`
