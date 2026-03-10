@@ -10,9 +10,9 @@ Three foundational modules used by the rest of the system:
 
 | Path | Lines | Role |
 |------|-------|------|
-| `lib/ui.sh` | ~224 | Colors, prompts, spinners, logging, exit codes |
-| `lib/config.sh` | ~191 | App tracking via `~/.hermes-fly/config.yaml` |
-| `lib/messaging.sh` | ~181 | Telegram/Discord setup wizards |
+| `lib/ui.sh` | ~223 | Colors, prompts, spinners, logging, exit codes |
+| `lib/config.sh` | ~190 | App tracking via `~/.hermes-fly/config.yaml` |
+| `lib/messaging.sh` | ~202 | Telegram setup wizard |
 
 ## 2. UI Module (`lib/ui.sh`)
 
@@ -172,54 +172,41 @@ This is the primary resolution mechanism used by `status`, `logs`, `doctor`, and
 | Function | Rules | Returns |
 |----------|-------|---------|
 | `messaging_validate_telegram_token` | Matches `^[0-9]+:[A-Za-z0-9_-]+$` | 0/1 |
-| `messaging_validate_discord_token` | Non-empty, >= 20 characters | 0/1 |
+| `messaging_validate_telegram_token_api` | Calls Telegram `getMe` API to verify token; sets `DEPLOY_TELEGRAM_BOT_USERNAME` and `DEPLOY_TELEGRAM_BOT_NAME` on success | 0/1 |
 | `messaging_validate_user_ids` | Empty OR comma-separated numeric IDs | 0/1 |
-
-Validation is advisory — warnings are printed but invalid tokens are accepted. This avoids blocking deployments when token formats change.
 
 ### 4.2 Setup Menu
 
 `messaging_setup_menu()`:
-- ASCII table with 3 options: Telegram, Discord, Skip (default)
-- Echoes `"telegram"`, `"discord"`, or `"skip"` to stdout
-- Default is Skip (option 3) — messaging is optional
+- ASCII table with 2 options: Telegram, Skip (default)
+- Echoes `"telegram"` or `"skip"` to stdout
+- Default is Skip (option 2) — messaging is optional
 
 ### 4.3 Telegram Setup
 
 `messaging_setup_telegram()`:
 1. Prints instructions for creating bot via @BotFather
 2. Prompts for bot token (secret input)
-3. Validates token format (warns on invalid)
-4. Prints instructions for finding user ID via @userinfobot
-5. Prompts for allowed user IDs (comma-separated, blank = all)
-6. Validates user IDs (warns on non-numeric)
-7. Exports `DEPLOY_TELEGRAM_BOT_TOKEN` and `DEPLOY_TELEGRAM_ALLOWED_USERS`
+3. Validates token format locally, then verifies via Telegram `getMe` API
+4. Displays confirmed bot identity (`@username (name)`) and asks for confirmation
+5. Presents access control menu (Only me / Specific people / Anyone)
+6. Prompts for user IDs (comma-separated) or sets `DEPLOY_GATEWAY_ALLOW_ALL_USERS` for "Anyone" mode
+7. Offers to set home channel (auto-suggests first user ID)
+8. Exports `DEPLOY_TELEGRAM_BOT_TOKEN`, `DEPLOY_TELEGRAM_ALLOWED_USERS`, `DEPLOY_MESSAGING_PLATFORM`, and optionally `DEPLOY_GATEWAY_ALLOW_ALL_USERS` and `DEPLOY_TELEGRAM_HOME_CHANNEL`
 
-### 4.4 Discord Setup
-
-`messaging_setup_discord()`:
-1. Prints instructions for Discord Developer Portal
-2. Prompts for bot token (secret input)
-3. Validates token format (warns on invalid)
-4. Prints instructions for finding user ID (Developer Mode)
-5. Prompts for allowed user IDs
-6. Validates user IDs
-7. Exports `DEPLOY_DISCORD_BOT_TOKEN` and `DEPLOY_DISCORD_ALLOWED_USERS`
-
-### 4.5 Data Flow
+### 4.4 Data Flow
 
 ```mermaid
 graph LR
     MENU["messaging_setup_menu()"] -->|"telegram"| TG["messaging_setup_telegram()"]
-    MENU -->|"discord"| DC["messaging_setup_discord()"]
     MENU -->|"skip"| SKIP["No action"]
 
-    TG --> VARS1["DEPLOY_TELEGRAM_BOT_TOKEN<br/>DEPLOY_TELEGRAM_ALLOWED_USERS"]
-    DC --> VARS2["DEPLOY_DISCORD_BOT_TOKEN<br/>DEPLOY_DISCORD_ALLOWED_USERS"]
+    TG --> VARS1["DEPLOY_TELEGRAM_BOT_TOKEN<br/>DEPLOY_TELEGRAM_ALLOWED_USERS<br/>DEPLOY_MESSAGING_PLATFORM"]
 
     VARS1 --> SECRETS["deploy_provision_resources()<br/>→ fly secrets set"]
-    VARS2 --> SECRETS
 ```
+
+Note: Discord setup was removed from the wizard. Discord secrets (`DISCORD_BOT_TOKEN`, `DISCORD_ALLOWED_USERS`) are still bridged in `entrypoint.sh` for backward compatibility with previously deployed instances.
 
 ## 5. Module Guard Pattern
 

@@ -69,8 +69,12 @@ The entrypoint bridges these Fly secrets on every boot:
 
 ```text
 OPENROUTER_API_KEY, LLM_MODEL, LLM_BASE_URL, LLM_API_KEY, NOUS_API_KEY,
-TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS, DISCORD_BOT_TOKEN, DISCORD_ALLOWED_USERS
+HERMES_APP_NAME, GATEWAY_ALLOW_ALL_USERS,
+TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS, TELEGRAM_HOME_CHANNEL,
+DISCORD_BOT_TOKEN, DISCORD_ALLOWED_USERS
 ```
+
+> **Note**: The Discord setup wizard was removed from `messaging.sh`, but Discord secrets (`DISCORD_BOT_TOKEN`, `DISCORD_ALLOWED_USERS`) are still bridged in `entrypoint.sh` for backward compatibility with existing deployments.
 
 The bridging uses `sed -i` to remove any existing line for the key, then appends the new value. This ensures fresh secrets override stale values.
 

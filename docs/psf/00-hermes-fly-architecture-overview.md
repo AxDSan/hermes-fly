@@ -7,7 +7,7 @@ Master navigation document for the hermes-fly Project Structure Files (PSF).
 | Field | Value |
 |-------|-------|
 | **Name** | hermes-fly |
-| **Version** | 0.1.11 |
+| **Version** | 0.1.14 |
 | **Language** | Pure Bash (3.2+ compatible) |
 | **Purpose** | CLI wizard to deploy [Hermes Agent](https://github.com/NousResearch/hermes-agent) to [Fly.io](https://fly.io) |
 | **License** | MIT |
@@ -69,10 +69,10 @@ hermes-fly/
 │   └── entrypoint.sh           # Container startup: symlinks, secrets bridge, gateway
 ├── scripts/
 │   └── install.sh              # curl | bash installer
-├── tests/                      # BATS test suite (14 test files + mocks)
+├── tests/                      # BATS test suite (16 test files + mocks)
 │   ├── *.bats                  # Test files per module
 │   ├── bats/                   # BATS framework
-│   ├── mocks/                  # Mock fly CLI for testing
+│   ├── mocks/                  # Mock executables (apt-get, brew, curl, fly, git, mock-fail-gracefully, sudo, xcode-select)
 │   └── test_helper/            # Shared test utilities
 ├── docs/                       # Documentation
 │   ├── psf/                    # Project Structure Files (this directory)
@@ -161,6 +161,7 @@ hermes-fly deploy
 |----------|-------|
 | **[00-hermes-fly-architecture-overview.md](00-hermes-fly-architecture-overview.md)** | This file: navigation, architecture, design decisions |
 | **[01-cli-entry-and-dispatch.md](01-cli-entry-and-dispatch.md)** | Entry point, command routing, argument parsing |
+| **[02-prerequisite-system.md](02-prerequisite-system.md)** | Prerequisite detection, auto-install logic, platform-specific fallbacks |
 | **[03-infrastructure-and-operations.md](03-infrastructure-and-operations.md)** | Fly.io helpers, status, logs, doctor, destroy commands |
 | **[04-ui-config-messaging.md](04-ui-config-messaging.md)** | UI primitives, config management, messaging setup |
 | **[05-testing-and-qa.md](05-testing-and-qa.md)** | BATS test framework, test organization, mocking, CI/CD integration |

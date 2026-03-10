@@ -124,7 +124,7 @@ deploy_collect_region() → fly platform regions --json
 
 ```
 deploy_collect_vm_size() → fly platform vm-sizes --json
-  ├─ Offer: 4 standard sizes (shared-cpu-1x, shared-cpu-2x, performance-1x, dedicated-cpu-1x)
+  ├─ Offer: 4 standard sizes (shared-cpu-1x, shared-cpu-2x, performance-1x, performance-2x)
   ├─ Default: shared-cpu-2x (recommended)
   ├─ Show: RAM, monthly cost, use case (lightweight, most users, multi-tool, workloads)
   ├─ Stores in: DEPLOY_VM_SIZE, DEPLOY_VM_MEMORY
@@ -160,7 +160,7 @@ deploy_collect_llm_config() → 3-choice provider menu
   ├─ 1: OpenRouter (default)
   │   ├─ Prompt: API key (required)
   │   ├─ Prompt: Model selection (4 preset + custom option)
-  │   └─ Models: Claude Sonnet 4, Claude Haiku 4.5, Gemini 2.5 Flash, Llama 4
+  │   └─ Static fallback models: Claude Sonnet 4, Claude Haiku 4.5, Gemini 2.5 Flash, Llama 4 Maverick
   │
   ├─ 2: Nous Portal
   │   ├─ Prompt: API key (required)
@@ -180,24 +180,22 @@ deploy_collect_llm_config() → 3-choice provider menu
 ### 4.7 Messaging Setup (Optional)
 
 ```
-messaging_setup_menu() → 3 choices
+messaging_setup_menu() → 2 choices
   ├─ 1: Telegram
   │   ├─ messaging_setup_telegram()
-  │   ├─ Prompt: Bot token (secret input)
-  │   └─ Prompt: User IDs (comma-separated, optional)
+  │   ├─ Prompt: Bot token (secret input, verified via Telegram API)
+  │   ├─ Access control: Only me / Specific people / Anyone
+  │   ├─ Prompt: User IDs (comma-separated)
+  │   └─ Prompt: Home channel (auto-suggested)
   │
-  ├─ 2: Discord
-  │   ├─ messaging_setup_discord()
-  │   ├─ Prompt: Bot token (secret input)
-  │   └─ Prompt: User IDs (comma-separated, optional)
-  │
-  └─ 3: Skip (default)
+  └─ 2: Skip (default)
 
   Stores in:
-    - DEPLOY_TELEGRAM_BOT_TOKEN (Telegram only)
-    - DEPLOY_TELEGRAM_ALLOWED_USERS (Telegram only)
-    - DEPLOY_DISCORD_BOT_TOKEN (Discord only)
-    - DEPLOY_DISCORD_ALLOWED_USERS (Discord only)
+    - DEPLOY_TELEGRAM_BOT_TOKEN
+    - DEPLOY_TELEGRAM_ALLOWED_USERS
+    - DEPLOY_MESSAGING_PLATFORM
+    - DEPLOY_GATEWAY_ALLOW_ALL_USERS (if "Anyone" selected)
+    - DEPLOY_TELEGRAM_HOME_CHANNEL (if set)
 ```
 
 ### 4.8 Confirmation Summary
@@ -217,6 +215,27 @@ Proceed with deployment? [y/N]
 ```
 
 Returns 1 (cancel) if user declines.
+
+### 4.9 Configuration Helper Functions
+
+The collection phase relies on several parsing and lookup helpers:
+
+| Function | Purpose |
+|----------|---------|
+| `deploy_generate_app_name()` | Generates `hermes-{whoami}-{000-999}` suggestion |
+| `deploy_parse_orgs(JSON)` | Parses org list (flat map or array format) into `_ORG_SLUGS[]` and `_ORG_NAMES[]` |
+| `deploy_parse_regions(JSON)` | Parses region JSON into `_REGION_CODES[]` and `_REGION_NAMES[]` |
+| `deploy_get_region_continent(CODE)` | Maps region code to continent name (Americas, Europe, Asia-Pacific, Oceania, South America, Africa) |
+| `deploy_parse_vm_sizes(JSON)` | Parses VM sizes JSON into `_VM_NAMES[]`, `_VM_MEMORY[]`, `_VM_PRICES[]` |
+| `deploy_get_vm_tier(NAME)` | Returns tier label (Starter, Standard, Pro, Power) |
+| `deploy_get_vm_recommendation(NAME)` | Returns recommendation text for each VM tier |
+| `_deploy_fallback_mem(NAME)` | Static fallback memory (MB) when API unavailable |
+| `_deploy_fallback_price(NAME)` | Static fallback monthly price when API unavailable |
+| `_deploy_lookup_vm(NAME, FIELD)` | Looks up `mem` or `price` from parsed `_VM_*` arrays |
+| `deploy_collect_model(RESULT_VAR)` | Interactive model picker; tries dynamic fetch from OpenRouter API (requires jq), falls back to static list of 4 models |
+| `deploy_validate_openrouter_key(KEY)` | Validates key via OpenRouter `/api/v1/key` endpoint; warns on free tier with no usage |
+| `deploy_validate_nous_key(KEY)` | Validates key via Nous API; hard-rejects 401/403, offers bypass on network/server errors |
+| `deploy_write_summary()` | Writes YAML + Markdown deploy summary files to `~/.hermes-fly/deploys/` |
 
 ## 5. Phase 3: Build Context Generation
 
@@ -266,10 +285,14 @@ COPY entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 ```
 
-**fly.toml.template (22 lines):**
+**fly.toml.template (21 lines):**
 ```toml
 app = "{{APP_NAME}}"
 primary_region = "{{REGION}}"
+
+[build]
+
+[env]
 
 [http_service]
   internal_port = 8080
@@ -287,19 +310,24 @@ primary_region = "{{REGION}}"
   initial_size = "{{VOLUME_SIZE}}"
 ```
 
-**entrypoint.sh (55 lines):**
+**entrypoint.sh (105 lines):**
 
 Runs on every container boot:
 
 1. Symlink binaries from `/opt/hermes/` to `/root/.hermes/` (survives volume wipes)
-2. Create runtime directories (cron, sessions, logs, pairing, hooks, caches, whatsapp)
-3. Seed default configs on first deploy (only if missing)
-4. Bridge Fly secrets to `/root/.hermes/.env` (every boot):
-   - `OPENROUTER_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY`, `NOUS_API_KEY`
-   - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, `DISCORD_BOT_TOKEN`, `DISCORD_ALLOWED_USERS`
-5. Patch `config.yaml` model from `LLM_MODEL` env var
-6. Clear rate limit entries for already-approved users
-7. `exec` hermes gateway
+2. Create runtime directories (cron, sessions, logs, pairing, hooks, image_cache, audio_cache, memories, whatsapp/session)
+3. Seed default configs on first deploy (only if missing: `.env`, `config.yaml`, `SOUL.md`)
+4. Seed skills directory on first deploy (copies `/opt/hermes/defaults/skills/` if missing)
+5. Bridge Fly secrets to `/root/.hermes/.env` (every boot):
+   - LLM: `OPENROUTER_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY`, `NOUS_API_KEY`
+   - Telegram: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, `TELEGRAM_HOME_CHANNEL`
+   - Discord (backward compat): `DISCORD_BOT_TOKEN`, `DISCORD_ALLOWED_USERS`
+   - App identity: `HERMES_APP_NAME`, `GATEWAY_ALLOW_ALL_USERS`
+6. Auto-configure Telegram bot description and short description via Telegram API (non-blocking, background subshell)
+7. Patch `config.yaml` model from `LLM_MODEL` env var
+8. Clear rate limit entries for already-approved users (Python script)
+9. Pre-seed Telegram approved users on first boot (skip pairing prompt for configured users)
+10. `exec` hermes gateway
 
 ## 6. Phase 4: Resource Provisioning
 
@@ -343,12 +371,21 @@ LLM_BASE_URL="${DEPLOY_LLM_BASE_URL}"
 LLM_API_KEY="${DEPLOY_API_KEY}"
 ```
 
-**Always include messaging secrets if configured:**
+**Always include app identity:**
+```bash
+HERMES_APP_NAME="${DEPLOY_APP_NAME}"
+```
+
+**Gateway config (if set):**
+```bash
+GATEWAY_ALLOW_ALL_USERS="${DEPLOY_GATEWAY_ALLOW_ALL_USERS}"  # only if "Anyone" mode
+TELEGRAM_HOME_CHANNEL="${DEPLOY_TELEGRAM_HOME_CHANNEL}"      # only if set
+```
+
+**Telegram secrets (if configured):**
 ```bash
 TELEGRAM_BOT_TOKEN="${DEPLOY_TELEGRAM_BOT_TOKEN}"
 TELEGRAM_ALLOWED_USERS="${DEPLOY_TELEGRAM_ALLOWED_USERS}"
-DISCORD_BOT_TOKEN="${DEPLOY_DISCORD_BOT_TOKEN}"
-DISCORD_ALLOWED_USERS="${DEPLOY_DISCORD_ALLOWED_USERS}"
 ```
 
 ## 7. Phase 5: Deploy
@@ -507,9 +544,10 @@ With --force:
   (skips confirmation, useful for scripts)
 
 Cleanup:
-  1. List and delete all volumes
-  2. Destroy Fly.io app
-  3. Remove from ~/.hermes-fly/config.yaml
+  1. Disconnect Telegram bot (fail-open)
+  2. List and delete all volumes
+  3. Destroy Fly.io app
+  4. Remove from ~/.hermes-fly/config.yaml
 ```
 
 ## 11. Global State Variables
@@ -532,8 +570,11 @@ Deployment state flows through exported globals (ephemeral, scoped to one deploy
 | `DEPLOY_APP_CREATED` | `deploy_collect_app_name` | `deploy_provision_resources` | Skip re-creation |
 | `DEPLOY_TELEGRAM_BOT_TOKEN` | `messaging_setup_telegram` | Secrets | Telegram token |
 | `DEPLOY_TELEGRAM_ALLOWED_USERS` | `messaging_setup_telegram` | Secrets | Allowed user IDs |
-| `DEPLOY_DISCORD_BOT_TOKEN` | `messaging_setup_discord` | Secrets | Discord token |
-| `DEPLOY_DISCORD_ALLOWED_USERS` | `messaging_setup_discord` | Secrets | Allowed user IDs |
+| `DEPLOY_TELEGRAM_BOT_USERNAME` | `messaging_validate_telegram_token_api` | Display | Bot username from API |
+| `DEPLOY_TELEGRAM_BOT_NAME` | `messaging_validate_telegram_token_api` | Display | Bot display name from API |
+| `DEPLOY_MESSAGING_PLATFORM` | `messaging_setup_telegram` | Summary | Platform identifier (`telegram`) |
+| `DEPLOY_GATEWAY_ALLOW_ALL_USERS` | `messaging_setup_telegram` | Secrets | `"true"` if "Anyone" access selected |
+| `DEPLOY_TELEGRAM_HOME_CHANNEL` | `messaging_setup_telegram` | Secrets | Home channel user ID |
 
 ## 12. Testing the Deployment Pipeline
 

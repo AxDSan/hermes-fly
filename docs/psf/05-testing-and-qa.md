@@ -11,7 +11,7 @@ Comprehensive coverage of hermes-fly's testing infrastructure:
 | Path | Contents |
 |------|----------|
 | `tests/` | Root test directory with all test files and helpers |
-| `tests/*.bats` | 14 test files (one per module + integration/scaffold) |
+| `tests/*.bats` | 16 test files (one per module + integration/scaffold/prereqs/install) |
 | `tests/bats/` | BATS framework (vendored, self-contained) |
 | `tests/mocks/` | Mock executables for `fly` CLI and dependencies |
 | `tests/test_helper/` | Shared test utilities and setup functions |
@@ -83,15 +83,18 @@ Each module has a dedicated test file. Tests are isolated and can source the mod
 
 | File | Module tested | Tests | Focus |
 |------|---------------|-------|-------|
-| `ui.bats` | `lib/ui.sh` | 12+ | Colors, prompts, spinners, exit codes, logging |
-| `config.bats` | `lib/config.sh` | 10+ | Save/load/remove apps, config YAML parsing, validation |
-| `fly-helpers.bats` | `lib/fly-helpers.sh` | 8+ | CLI wrappers, version checks, retry logic |
-| `docker-helpers.bats` | `lib/docker-helpers.sh` | 6+ | Template generation, file writes, validation |
-| `messaging.bats` | `lib/messaging.sh` | 12+ | Token validation, user ID parsing, setup flows |
-| `status.bats` | `lib/status.sh` | 4+ | Cost estimation arithmetic, display formatting |
-| `logs.bats` | `lib/logs.sh` | 2+ | Log wrapper, error handling |
-| `doctor.bats` | `lib/doctor.sh` | 12+ | Individual checks, JSON parsing, report formatting |
-| `destroy.bats` | `lib/destroy.sh` | 6+ | Confirmation, volume cleanup, app teardown |
+| `ui.bats` | `lib/ui.sh` | 12 | Colors, prompts, spinners, exit codes, logging |
+| `config.bats` | `lib/config.sh` | 18 | Save/load/remove apps, config YAML parsing, validation |
+| `fly-helpers.bats` | `lib/fly-helpers.sh` | 31 | CLI wrappers, version checks, retry logic |
+| `docker-helpers.bats` | `lib/docker-helpers.sh` | 18 | Template generation, file writes, validation |
+| `messaging.bats` | `lib/messaging.sh` | 31 | Token validation, user ID parsing, setup flows |
+| `status.bats` | `lib/status.sh` | 6 | Cost estimation arithmetic, display formatting |
+| `logs.bats` | `lib/logs.sh` | 2 | Log wrapper, error handling |
+| `doctor.bats` | `lib/doctor.sh` | 25 | Individual checks, JSON parsing, report formatting |
+| `destroy.bats` | `lib/destroy.sh` | 11 | Confirmation, volume cleanup, app teardown |
+| `prereqs.bats` | `lib/prereqs.sh` | 76 | Platform detection, tool checks, auto-install flows |
+| `prereqs_edge_cases.bats` | `lib/prereqs.sh` | 57 | Edge cases: sudo, CI/CD bypass, signal handling, fallback chains |
+| `install.bats` | `scripts/install.sh` | 9 | Installer script validation and behavior |
 
 ### 3.2 Integration Test Files
 
@@ -99,9 +102,10 @@ Higher-level tests that verify interactions between modules and end-to-end behav
 
 | File | Scope | Tests |
 |------|-------|-------|
-| `deploy.bats` | `lib/deploy.sh` orchestration | 25+ |
-| `scaffold.bats` | All modules load without error | 5+ |
-| `integration.bats` | CLI entry point (`hermes-fly`) | 8+ |
+| `deploy.bats` | `lib/deploy.sh` orchestration | 134 |
+| `scaffold.bats` | All modules load without error | 32 |
+| `integration.bats` | CLI entry point (`hermes-fly`) | 10 |
+| `list.bats` | `cmd_list` command | 5 |
 
 ## 4. Mocking Strategy
 
@@ -113,8 +117,15 @@ Tests must not call the real Fly.io API. Instead, mock `fly` executables provide
 
 ```text
 tests/mocks/
-├── fly              # Default mock: echoes args or returns JSON
-└── fly-fail         # Failure variant: returns non-zero exit codes
+├── apt-get              # Mock for apt-get package manager (prereqs testing)
+├── brew                 # Mock for Homebrew package manager (prereqs testing)
+├── curl                 # Mock for curl (prereqs testing)
+├── fly                  # Default mock: echoes args or returns JSON
+├── fly-fail             # Failure variant: returns non-zero exit codes
+├── git                  # Mock for git (prereqs testing)
+├── mock-fail-gracefully # Generic failure mock for graceful error handling
+├── sudo                 # Mock for sudo (permission escalation testing)
+└── xcode-select         # Mock for Xcode CLI tools (macOS prereqs testing)
 ```
 
 **Injection method:**
@@ -336,15 +347,21 @@ graph LR
         T_LOG["logs.bats"] --> M_LOG["lib/logs.sh"]
         T_DOC["doctor.bats"] --> M_DOC["lib/doctor.sh"]
         T_DEST["destroy.bats"] --> M_DEST["lib/destroy.sh"]
+        T_PREREQS["prereqs.bats"] --> M_PREREQS["lib/prereqs.sh"]
+        T_PREREQS_EDGE["prereqs_edge_cases.bats"] --> M_PREREQS
     end
     subgraph "Integration Tests (integration.bats)"
         T_INT["integration.bats"] --> ENTRY["hermes-fly entry point"]
+        T_LIST["list.bats"] --> ENTRY
     end
     subgraph "Full Flow Tests (deploy.bats)"
         T_DEPLOY["deploy.bats"] --> ALL["Deploy wizard + all modules"]
     end
     subgraph "Sanity Tests (scaffold.bats)"
         T_SCAFF["scaffold.bats"] --> LOAD["Module loading, function existence"]
+    end
+    subgraph "Installer Tests (install.bats)"
+        T_INSTALL["install.bats"] --> INSTALLER["scripts/install.sh"]
     end
 ```
 

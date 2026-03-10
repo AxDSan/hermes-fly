@@ -10,11 +10,11 @@ This document covers the infrastructure abstraction layer and all post-deploy ma
 
 | Path | Lines | Role |
 |------|-------|------|
-| `lib/fly-helpers.sh` | ~228 | Fly.io CLI wrappers + retry |
+| `lib/fly-helpers.sh` | ~293 | Fly.io CLI wrappers + retry |
 | `lib/status.sh` | ~91 | Status display + cost estimation |
 | `lib/logs.sh` | ~20 | Log streaming wrapper |
-| `lib/doctor.sh` | ~241 | Diagnostic health checks |
-| `lib/destroy.sh` | ~98 | Teardown + cleanup |
+| `lib/doctor.sh` | ~254 | Diagnostic health checks |
+| `lib/destroy.sh` | ~163 | Teardown + cleanup |
 
 ## 2. Fly Helpers (`lib/fly-helpers.sh`)
 
@@ -27,6 +27,7 @@ The central abstraction layer between hermes-fly and the `flyctl` CLI. Every Fly
 | `fly_check_installed()` | `command -v fly` | 0/1 |
 | `fly_check_version()` | Parse `fly version` output, require >= 0.2.0 | 0/1 |
 | `fly_check_auth()` | `fly auth whoami` | 0/EXIT_AUTH(2) |
+| `fly_auth_login_command()` | Resolve safest `fly auth login` command path (prefers `~/.fly/bin/fly`) | Echoes command string |
 | `fly_check_auth_interactive()` | Check auth, prompt for login + retry once | 0/EXIT_AUTH(2) |
 
 Version parsing: extracts `X.Y.Z` from `fly vX.Y.Z ...` via sed, splits on `.`, compares major > 0 OR (major == 0 AND minor >= 2).
@@ -53,7 +54,11 @@ Version parsing: extracts `X.Y.Z` from `fly vX.Y.Z ...` via sed, splits on `.`, 
 | `fly_get_vm_sizes()` | `fly platform vm-sizes --json` |
 | `fly_get_orgs()` | `fly orgs list --json` |
 
-### 2.4 Retry Logic
+### 2.4 Machine State
+
+`fly_get_machine_state("app")` parses the first `"state"` field from `fly_status` JSON output. Returns the state string (e.g., `started`, `stopped`) via stdout. Returns 1 and echoes `unknown` on failure.
+
+### 2.5 Retry Logic
 
 ```bash
 fly_retry "max_attempts" CMD...
@@ -160,14 +165,28 @@ Return: 0 if all pass, 1 if any fail.
 ### 6.1 `cmd_destroy "app_name" [--force]`
 
 1. Parse args for `--force` flag
-2. Without `--force`: prompt user to type "yes" to confirm (not `ui_confirm` — requires exact "yes" string)
-3. `destroy_cleanup_volumes`: list volumes via `fly_list_volumes`, parse IDs matching `vol_*`, delete each
-4. `fly_destroy_app`: destroys the Fly.io app (`--yes` flag)
-5. `destroy_remove_config` → `config_remove_app`: removes from `~/.hermes-fly/config.yaml`
+2. If no app name provided: interactive selection from `config_list_apps`
+3. Without `--force`: prompt user to type "yes" to confirm (not `ui_confirm` — requires exact "yes" string)
+4. `destroy_telegram_logout`: disconnect Telegram bot (fail-open)
+5. `destroy_cleanup_volumes`: list volumes via `fly_list_volumes`, parse IDs matching `vol_*`, delete each
+6. `fly_destroy_app`: destroys the Fly.io app (`--yes` flag)
+7. `destroy_remove_config` → `config_remove_app`: removes from `~/.hermes-fly/config.yaml`
 
-### 6.2 Failure Handling
+### 6.2 `destroy_telegram_logout "app_name"`
+
+Disconnects the Telegram bot before app destruction:
+
+1. Checks machine state via `fly_get_machine_state` — if stopped/unknown, prints manual steps and returns
+2. If machine running: runs `curl` commands via `fly ssh console` to call Telegram `logOut` and `deleteWebhook` APIs
+3. On success: warns user to wait 10 minutes before reusing the bot token
+4. On failure: prints manual steps (revoke token via @BotFather, revoke OpenRouter key)
+
+Fail-open design: errors are non-fatal (`|| true` in `cmd_destroy`).
+
+### 6.3 Failure Handling
 
 - If app not found during destroy: `EXIT_RESOURCE` (4)
+- Telegram logout errors are non-fatal (fail-open)
 - Volume deletion errors are non-fatal (volumes may already be detached)
 - Config cleanup runs regardless of app destroy result
 

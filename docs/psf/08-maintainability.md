@@ -103,6 +103,7 @@ Each module has a single responsibility:
 | `fly-helpers.sh` | Fly.io CLI wrapper — no business logic, no UI |
 | `docker-helpers.sh` | Template I/O — no network, no UI |
 | `messaging.sh` | Messaging platform configuration — UI prompts + validation |
+| `prereqs.sh` | Platform detection, tool auto-install — no network except install commands |
 | `deploy.sh` | Orchestration — combines all other modules |
 | `status.sh`, `logs.sh`, `doctor.sh`, `destroy.sh` | Single-command modules |
 
@@ -280,7 +281,7 @@ This includes:
 `HERMES_FLY_VERSION` is set in line 4 of `hermes-fly`:
 
 ```bash
-HERMES_FLY_VERSION="0.1.11"
+HERMES_FLY_VERSION="0.1.14"
 ```
 
 No automatic version bumping. Update manually when releasing.
