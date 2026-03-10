@@ -1694,13 +1694,29 @@ teardown() {
   assert_output --partial "v2.0.0-beta"
 }
 
-@test "deploy_resolve_hermes_ref warns on non-default override" {
+@test "deploy_resolve_hermes_ref warns on non-default override (stderr)" {
+  # C1: Capture combined stdout+stderr to verify warning reaches stderr
   export HERMES_AGENT_REF="custom-branch"
-  run deploy_resolve_hermes_ref
+  run bash -c '
+    source "'"${PROJECT_ROOT}/lib/ui.sh"'"
+    source "'"${PROJECT_ROOT}/lib/deploy.sh"'"
+    deploy_resolve_hermes_ref 2>&1
+  '
   assert_success
   assert_output --partial "custom-branch"
-  # Warning must be emitted for non-default overrides
   assert_output --partial "non-reproducible build"
+}
+
+@test "deploy_resolve_hermes_ref default path does not emit warning" {
+  # C1 companion: default path must not warn about non-reproducible build
+  unset HERMES_AGENT_REF
+  run bash -c '
+    source "'"${PROJECT_ROOT}/lib/ui.sh"'"
+    source "'"${PROJECT_ROOT}/lib/deploy.sh"'"
+    deploy_resolve_hermes_ref 2>&1
+  '
+  assert_success
+  refute_output --partial "non-reproducible build"
 }
 
 # --- deploy_create_build_context uses pinned ref ---
@@ -1795,4 +1811,57 @@ teardown() {
   assert_success
   assert_output --partial "Hermes ref"
   assert_output --partial "abc123de"
+}
+
+# --- REVIEW_1: M3 — ref export before failure point ---
+
+@test "deploy_create_build_context sets DEPLOY_HERMES_AGENT_REF even on Dockerfile failure" {
+  # M3: ref must be exported before docker_generate_dockerfile for diagnostics
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VM_SIZE="shared-cpu-1x"
+  export DEPLOY_VM_MEMORY="256mb"
+  export DEPLOY_VOLUME_SIZE="5"
+  unset HERMES_AGENT_REF
+
+  # Override template dir to force Dockerfile generation failure
+  DOCKER_HELPERS_TEMPLATE_DIR="/nonexistent"
+  run bash -c '
+    source "'"${PROJECT_ROOT}/lib/ui.sh"'"
+    source "'"${PROJECT_ROOT}/lib/docker-helpers.sh"'"
+    source "'"${PROJECT_ROOT}/lib/deploy.sh"'"
+    DOCKER_HELPERS_TEMPLATE_DIR="/nonexistent"
+    export DEPLOY_APP_NAME="test-app" DEPLOY_REGION="ord" DEPLOY_VM_SIZE="shared-cpu-1x"
+    export DEPLOY_VM_MEMORY="256mb" DEPLOY_VOLUME_SIZE="5"
+    deploy_create_build_context 2>/dev/null
+    echo "REF=${DEPLOY_HERMES_AGENT_REF:-EMPTY}"
+  '
+  # Even though build failed, ref should still be set for diagnostics
+  assert_output --partial "REF="
+  refute_output --partial "REF=EMPTY"
+}
+
+# --- REVIEW_1: L2 — summary fallback for unset ref ---
+
+@test "deploy_write_summary YAML uses unknown fallback when ref is unset" {
+  # L2: empty hermes_agent_ref field should render "unknown", not blank
+  export DEPLOY_APP_NAME="fallback-test" DEPLOY_REGION="ams" DEPLOY_VM_SIZE="shared-cpu-2x"
+  export DEPLOY_VOLUME_SIZE="5" DEPLOY_MODEL="anthropic/claude-sonnet-4"
+  export DEPLOY_LLM_PROVIDER="openrouter" DEPLOY_MESSAGING_PLATFORM="none"
+  export HERMES_FLY_VERSION="0.1.14"
+  unset DEPLOY_HERMES_AGENT_REF
+
+  deploy_write_summary
+
+  run cat "${HERMES_FLY_CONFIG_DIR}/deploys/fallback-test.yaml"
+  assert_success
+  assert_output --partial "hermes_agent_ref: unknown"
+}
+
+# --- REVIEW_1: L3 — constant integrity guard ---
+
+@test "HERMES_AGENT_DEFAULT_REF is a 40-char lowercase hex SHA (not main)" {
+  # L3: regression guard — pinned constant must never revert to moving branch
+  [[ "$HERMES_AGENT_DEFAULT_REF" =~ ^[0-9a-f]{40}$ ]]
+  [[ "$HERMES_AGENT_DEFAULT_REF" != "main" ]]
 }

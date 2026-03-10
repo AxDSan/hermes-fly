@@ -157,6 +157,24 @@ EOF
   refute_output --partial "HERMES_VERSION=main"
 }
 
+# --- REVIEW_1: M1 — sed-safe ref rendering ---
+
+@test "generate_dockerfile with pipe char in ref renders literally" {
+  # M1: refs containing | must not break sed delimiter
+  run docker_generate_dockerfile "$TEST_TEMP_DIR" "feature|pipe"
+  assert_success
+  run cat "$TEST_TEMP_DIR/Dockerfile"
+  assert_output --partial "HERMES_VERSION=feature|pipe"
+}
+
+@test "generate_dockerfile with ampersand in ref renders literally" {
+  # M1: & is a sed backreference; must be escaped for literal output
+  run docker_generate_dockerfile "$TEST_TEMP_DIR" "v1.0&hotfix"
+  assert_success
+  run cat "$TEST_TEMP_DIR/Dockerfile"
+  assert_output --partial "HERMES_VERSION=v1.0&hotfix"
+}
+
 @test "docker_generate_dockerfile works when lib is symlinked" {
   # Create symlink to docker-helpers.sh in temp dir
   ln -s "${PROJECT_ROOT}/lib/docker-helpers.sh" "${TEST_TEMP_DIR}/docker-helpers-link.sh"

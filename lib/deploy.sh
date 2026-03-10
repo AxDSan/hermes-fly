@@ -62,11 +62,13 @@ HERMES_AGENT_DEFAULT_REF="8eefbef91cd715cfe410bba8c13cfab4eb3040df"
 # --------------------------------------------------------------------------
 deploy_resolve_hermes_ref() {
   if [[ -n "${HERMES_AGENT_REF:-}" ]]; then
-    ui_warn "Using custom Hermes Agent ref: ${HERMES_AGENT_REF} (non-reproducible build)" >&2
+    # M2: ui_warn already writes to stderr; no redundant >&2
+    ui_warn "Using custom Hermes Agent ref: ${HERMES_AGENT_REF} (non-reproducible build)"
     printf '%s' "$HERMES_AGENT_REF"
   else
     printf '%s' "$HERMES_AGENT_DEFAULT_REF"
   fi
+  # L1: explicit return 0 — contract: always succeeds
   return 0
 }
 
@@ -1045,13 +1047,14 @@ deploy_create_build_context() {
   build_dir="$(docker_get_build_dir)"
   hermes_ref="$(deploy_resolve_hermes_ref)"
 
+  # M3: export ref before first failure point for diagnostics
+  DEPLOY_HERMES_AGENT_REF="$hermes_ref"
+  export DEPLOY_HERMES_AGENT_REF
+
   if ! docker_generate_dockerfile "$build_dir" "$hermes_ref"; then
     ui_error "Failed to generate Dockerfile"
     return 1
   fi
-
-  DEPLOY_HERMES_AGENT_REF="$hermes_ref"
-  export DEPLOY_HERMES_AGENT_REF
 
   if ! docker_generate_fly_toml "$build_dir" \
     "$DEPLOY_APP_NAME" "$DEPLOY_REGION" \
@@ -1316,7 +1319,7 @@ EOF
       printf '  reasoning_effort: %s\n' "${DEPLOY_REASONING_EFFORT}"
     fi
     cat <<EOF
-hermes_agent_ref: ${DEPLOY_HERMES_AGENT_REF:-}
+hermes_agent_ref: ${DEPLOY_HERMES_AGENT_REF:-unknown}
 deployed_at: ${ts}
 hermes_fly_version: ${HERMES_FLY_VERSION:-}
 management:
@@ -1339,7 +1342,7 @@ Deployed: ${ts}
 - **VM size:** ${DEPLOY_VM_SIZE:-}
 - **Volume:** ${DEPLOY_VOLUME_SIZE:-} GB
 - **Model:** ${DEPLOY_MODEL:-}
-- **Hermes ref:** ${DEPLOY_HERMES_AGENT_REF:-}
+- **Hermes ref:** ${DEPLOY_HERMES_AGENT_REF:-unknown}
 EOF
     if [[ -n "${DEPLOY_REASONING_EFFORT:-}" ]]; then
       printf -- '- **Reasoning effort:** %s\n' "${DEPLOY_REASONING_EFFORT}"
