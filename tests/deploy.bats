@@ -1695,7 +1695,7 @@ teardown() {
 }
 
 @test "deploy_resolve_hermes_ref warns on non-default override (stderr)" {
-  # REVIEW_3: use --separate-stderr to assert warning is on stderr, not stdout
+  # REVIEW_4: exact stdout contract — stdout must be exactly the resolved ref, nothing else
   export HERMES_AGENT_REF="custom-branch"
   run --separate-stderr bash -c '
     source "'"${PROJECT_ROOT}/lib/ui.sh"'"
@@ -1703,16 +1703,16 @@ teardown() {
     deploy_resolve_hermes_ref
   '
   assert_success
-  # stdout must contain only the resolved ref value
-  assert_output --partial "custom-branch"
+  # stdout must be exactly the override ref — no extra content, no warning text
+  assert_output "custom-branch"
   refute_output --partial "non-reproducible build"
-  # warning must be on stderr
+  # warning must be on stderr (not stdout)
   [[ "$stderr" == *"non-reproducible build"* ]]
   [[ "$stderr" == *"custom-branch"* ]]
 }
 
 @test "deploy_resolve_hermes_ref default path does not emit warning" {
-  # REVIEW_3: default path — stderr must be empty (no warning)
+  # REVIEW_4: strict empty stderr — default path must produce zero stderr output
   unset HERMES_AGENT_REF
   run --separate-stderr bash -c '
     source "'"${PROJECT_ROOT}/lib/ui.sh"'"
@@ -1720,10 +1720,10 @@ teardown() {
     deploy_resolve_hermes_ref
   '
   assert_success
-  # stdout is the pinned SHA — 40-char hex
+  # stdout is exactly the pinned SHA — 40-char hex
   [[ "$output" =~ ^[0-9a-f]{40}$ ]]
-  # stderr must not contain non-reproducible warning
-  [[ "$stderr" != *"non-reproducible build"* ]]
+  # stderr must be strictly empty on default path
+  [[ -z "$stderr" ]]
 }
 
 # --- deploy_create_build_context uses pinned ref ---
