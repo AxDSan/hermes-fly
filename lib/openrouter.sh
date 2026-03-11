@@ -98,6 +98,68 @@ openrouter_fetch_models() {
 # Returns: JSON-like model records (id, name, created)
 # Filters: only models matching provider prefix, non-empty ids, deduplicates
 # ==========================================================================
+_openrouter_model_records() {
+  local cache_file="$1"
+
+  [[ -z "$cache_file" ]] && return
+  [[ ! -f "$cache_file" ]] && return
+
+  # Normalize to a single logical record stream so compact JSON and pretty JSON
+  # are parsed consistently.
+  tr '\n' ' ' < "$cache_file" | sed 's/}[[:space:]]*,[[:space:]]*{/}\n{/g'
+}
+
+_openrouter_extract_string_field_from_record() {
+  local record="$1"
+  local field="$2"
+
+  printf '%s\n' "$record" | \
+    grep -o '"'${field}'"[[:space:]]*:[[:space:]]*"[^"]*"' | \
+    head -1 | \
+    sed -n 's/.*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
+_openrouter_extract_number_field_from_record() {
+  local record="$1"
+  local field="$2"
+
+  printf '%s\n' "$record" | \
+    grep -o '"'${field}'"[[:space:]]*:[[:space:]]*[0-9][0-9]*' | \
+    head -1 | \
+    sed -n 's/.*:[[:space:]]*\([0-9][0-9]*\).*/\1/p'
+}
+
+_openrouter_get_model_record() {
+  local cache_file="$1"
+  local model_id="$2"
+
+  [[ -z "$cache_file" ]] && return 1
+  [[ ! -f "$cache_file" ]] && return 1
+  [[ -z "$model_id" ]] && return 1
+
+  local record
+  local id
+  while IFS= read -r record || [[ -n "$record" ]]; do
+    id="$(_openrouter_extract_string_field_from_record "$record" "id")"
+    [[ -z "$id" ]] && continue
+    if [[ "$id" == "$model_id" ]]; then
+      printf '%s\n' "$record"
+      return 0
+    fi
+  done < <(_openrouter_model_records "$cache_file")
+
+  return 1
+}
+
+_openrouter_get_model_display_name() {
+  local cache_file="$1"
+  local model_id="$2"
+
+  local record
+  record="$(_openrouter_get_model_record "$cache_file" "$model_id")" || return
+  _openrouter_extract_string_field_from_record "$record" "name"
+}
+
 openrouter_extract_models_for_provider() {
   local cache_file="$1"
   local provider="$2"
@@ -106,19 +168,21 @@ openrouter_extract_models_for_provider() {
   [[ ! -f "$cache_file" ]] && return
   [[ -z "$provider" ]] && return
 
-  # Build sed pattern to match models with this provider prefix
-  # Handle both "provider/..." and standalone models (provider="other")
-  if [[ "$provider" == "other" ]]; then
-    # Match IDs without a slash
-    grep -o '"id"[[:space:]]*:[[:space:]]*"[^/]*"' "$cache_file" | \
-      grep -v '/' | \
-      sed 's/"id"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' | sort -u
-  else
-    # Match IDs starting with "provider/"
-    # Use extended grep to match the provider prefix followed by /
-    grep -E '"id"[[:space:]]*:[[:space:]]*"'"${provider}"'\/' "$cache_file" | \
-      sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sort -u
-  fi
+  local model_id
+  _openrouter_model_records "$cache_file" | while IFS= read -r record || [[ -n "$record" ]]; do
+    model_id="$(_openrouter_extract_string_field_from_record "$record" "id")"
+    [[ -z "$model_id" ]] && continue
+
+    if [[ "$provider" == "other" ]]; then
+      [[ "$model_id" == */* ]] && continue
+      printf '%s\n' "$model_id"
+      continue
+    fi
+
+    if [[ "$model_id" == "$provider/"* ]]; then
+      printf '%s\n' "$model_id"
+    fi
+  done | sort -u
 }
 
 # ==========================================================================
@@ -133,15 +197,9 @@ _openrouter_get_model_created_timestamp() {
   [[ -z "$cache_file" ]] && return
   [[ ! -f "$cache_file" ]] && return
 
-  # Escape special regex characters in model_id
-  local escaped_id
-  escaped_id="$(printf '%s' "$model_id" | sed 's/[[\.*^$/]/\\&/g')"
-
-  # Find the model entry and extract created timestamp
-  grep -A 3 '"id"[[:space:]]*:[[:space:]]*"'"${escaped_id}"'"' "$cache_file" | \
-    grep -o '"created"[[:space:]]*:[[:space:]]*[0-9]*' | \
-    head -1 | \
-    sed 's/.*:[[:space:]]*\([0-9]*\).*/\1/'
+  local record
+  record="$(_openrouter_get_model_record "$cache_file" "$model_id")" || return
+  _openrouter_extract_number_field_from_record "$record" "created"
 }
 
 # ==========================================================================
@@ -270,8 +328,7 @@ openrouter_build_model_menu() {
     [[ -z "$model_id" ]] && continue
     # Extract display name from cache
     local display_name
-    display_name=$(grep -A 1 '"id"[[:space:]]*:[[:space:]]*"'"$(printf '%s' "$model_id" | sed 's/[[\.*^$/]/\\&/g')"'"' "$cache_file" | \
-      grep '"name"' | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    display_name="$(_openrouter_get_model_display_name "$cache_file" "$model_id")"
     [[ -z "$display_name" ]] && display_name="$model_id"
     menu_items+=("$display_name [$model_id]")
   done <<< "$top_models"
@@ -292,8 +349,7 @@ openrouter_build_model_menu() {
       [[ -z "$model_id" ]] && continue
       # Extract display name from cache
       local display_name
-      display_name=$(grep -A 1 '"id"[[:space:]]*:[[:space:]]*"'"$(printf '%s' "$model_id" | sed 's/[[\.*^$/]/\\&/g')"'"' "$cache_file" | \
-        grep '"name"' | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+      display_name="$(_openrouter_get_model_display_name "$cache_file" "$model_id")"
       [[ -z "$display_name" ]] && display_name="$model_id"
       menu_items+=("$display_name [$model_id]")
     done <<< "$sorted_models"

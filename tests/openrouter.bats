@@ -188,6 +188,22 @@ teardown() {
   rm -f "$cache_file"
 }
 
+@test "openrouter_extract_models_for_provider: compact JSON does not leak cross-provider IDs" {
+  local payload='{"data":[{"id":"openai/gpt-3.5-turbo","name":"OpenAI: GPT-3.5 Turbo","created":3000},{"id":"z-ai/glm-4.5","name":"Z-AI 4.5","created":2000},{"id":"z-ai/glm-4.0","name":"Z-AI 4.0","created":1500}]}'
+
+  local cache_file="$(mktemp)"
+  echo "$payload" > "$cache_file"
+
+  local models
+  models="$(openrouter_extract_models_for_provider "$cache_file" "z-ai")"
+
+  [[ "$models" == *"z-ai/glm-4.5"* ]]
+  [[ "$models" == *"z-ai/glm-4.0"* ]]
+  [[ "$models" != *"openai/gpt-3.5-turbo"* ]]
+
+  rm -f "$cache_file"
+}
+
 # ============================================================================
 # Recency sorting tests (top 15 models)
 # ============================================================================
@@ -244,6 +260,22 @@ teardown() {
 
   [ "$first_model" = "openai/new" ]
   [ "$last_model" = "openai/old" ]
+
+  rm -f "$cache_file"
+}
+
+@test "_openrouter_get_model_created_timestamp: compact JSON returns per-model timestamp" {
+  local payload='{"data":[{"id":"z-ai/old","name":"Old","created":1000},{"id":"z-ai/new","name":"New","created":2000}]}'
+
+  local cache_file="$(mktemp)"
+  echo "$payload" > "$cache_file"
+
+  local old_ts new_ts
+  old_ts="$(_openrouter_get_model_created_timestamp "$cache_file" "z-ai/old")"
+  new_ts="$(_openrouter_get_model_created_timestamp "$cache_file" "z-ai/new")"
+
+  [ "$old_ts" = "1000" ]
+  [ "$new_ts" = "2000" ]
 
   rm -f "$cache_file"
 }
@@ -535,6 +567,35 @@ teardown() {
   [ $status -ne 0 ]  # Verify non-zero exit code
 
   rm -f "$cache_file"
+}
+
+@test "openrouter_build_model_menu: compact JSON shows provider-correct labels and ID" {
+  local payload='{"data":[{"id":"z-ai/glm-4.0","name":"Z-AI 4.0","created":1500},{"id":"z-ai/glm-4.5","name":"Z-AI 4.5","created":2000},{"id":"openai/gpt-3.5-turbo","name":"OpenAI: GPT-3.5 Turbo","created":3000}]}'
+  local cache_file="$(mktemp)"
+  echo "$payload" > "$cache_file"
+
+  local menu_capture
+  menu_capture="$(mktemp)"
+  export OPENROUTER_MENU_CAPTURE="$menu_capture"
+
+  ui_select() {
+    local varname="$2"
+    shift 2
+    printf '%s\n' "$@" > "$OPENROUTER_MENU_CAPTURE"
+    eval "$varname='$1'"
+  }
+  export -f ui_select
+
+  local selected_model
+  selected_model="$(openrouter_build_model_menu "$cache_file" "z-ai")"
+  local first_item
+  first_item="$(head -1 "$menu_capture")"
+
+  [ "$selected_model" = "z-ai/glm-4.5" ]
+  [ "$first_item" = "Z-AI 4.5 [z-ai/glm-4.5]" ]
+
+  rm -f "$menu_capture" "$cache_file"
+  unset OPENROUTER_MENU_CAPTURE
 }
 
 @test "openrouter_manual_fallback: exits gracefully on EOF (no hard loop)" {
