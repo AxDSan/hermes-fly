@@ -277,3 +277,33 @@ teardown() {
   assert_success
   assert_output --partial "HERMES_REASONING_EFFORT"
 }
+
+# --- REVIEW_1: schema alignment + safe serialization ---
+
+@test "entrypoint.sh manifest uses compatibility_policy_version key (REVIEW_1)" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "compatibility_policy_version"
+}
+
+@test "entrypoint.sh manifest does NOT contain bare compat_policy_version key (REVIEW_1)" {
+  # The old short key must be gone; only the full name is valid
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  refute_output --partial '"compat_policy_version"'
+}
+
+@test "entrypoint.sh manifest includes llm_provider field (REVIEW_1)" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "llm_provider"
+}
+
+@test "entrypoint.sh manifest write uses python3 json.dump for safe serialization (REVIEW_1)" {
+  # The manifest writer must use python3 + json.dump (not printf) to safely encode
+  # arbitrary string values including quotes and backslashes.
+  # The manifest comment must be immediately followed by a python3 heredoc, not a printf block.
+  run grep -A 3 "Write deploy provenance manifest" "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "python3"
+}

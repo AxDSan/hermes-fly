@@ -1938,21 +1938,116 @@ teardown() {
   assert_output --partial "stable"
 }
 
-@test "deploy_provision_resources sets HERMES_FLY_VERSION secret (PR-04)" {
-  # Secrets must include provenance env vars so the runtime manifest can be written.
-  run grep "HERMES_FLY_VERSION" "${PROJECT_ROOT}/lib/deploy.sh"
+@test "deploy_provision_resources secrets payload contains all provenance keys (REVIEW_1)" {
+  # Behavior test: execute deploy_provision_resources and inspect actual secrets passed
+  export DEPLOY_APP_NAME="test-r1-app"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VOLUME_SIZE="5"
+  export DEPLOY_API_KEY="sk-test-key"
+  export DEPLOY_MODEL="openai/gpt-5-mini"
+  export DEPLOY_REASONING_EFFORT="medium"
+  export DEPLOY_LLM_PROVIDER="openrouter"
+  export HERMES_FLY_VERSION="0.1.14"
+  export DEPLOY_HERMES_AGENT_REF="abc123def456abc123"
+  export DEPLOY_CHANNEL="stable"
+
+  local secrets_log="${TEST_TEMP_DIR}/secrets_log_r1_all"
+  fly_set_secrets() {
+    local app="$1"; shift
+    for arg in "$@"; do
+      printf '%s\n' "$arg" >>"${HERMES_SECRETS_LOG}"
+    done
+    return 0
+  }
+  export -f fly_set_secrets
+  export HERMES_SECRETS_LOG="$secrets_log"
+
+  run deploy_provision_resources
   assert_success
-  assert_output --partial 'HERMES_FLY_VERSION'
+  run cat "$secrets_log"
+  assert_output --partial "HERMES_FLY_VERSION=0.1.14"
+  assert_output --partial "HERMES_AGENT_REF=abc123def456abc123"
+  assert_output --partial "HERMES_DEPLOY_CHANNEL=stable"
+  assert_output --partial "HERMES_LLM_PROVIDER=openrouter"
 }
 
-@test "deploy_provision_resources sets HERMES_AGENT_REF secret (PR-04)" {
-  run grep "HERMES_AGENT_REF" "${PROJECT_ROOT}/lib/deploy.sh"
+@test "deploy_provision_resources HERMES_DEPLOY_CHANNEL defaults to stable when DEPLOY_CHANNEL unset (REVIEW_1)" {
+  export DEPLOY_APP_NAME="test-r1-channel"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VOLUME_SIZE="5"
+  export DEPLOY_API_KEY="sk-test-key"
+  export DEPLOY_MODEL="openai/gpt-5-mini"
+  export DEPLOY_REASONING_EFFORT="medium"
+  export DEPLOY_LLM_PROVIDER="openrouter"
+  unset DEPLOY_CHANNEL
+
+  local secrets_log="${TEST_TEMP_DIR}/secrets_log_r1_channel"
+  fly_set_secrets() {
+    local app="$1"; shift
+    for arg in "$@"; do
+      printf '%s\n' "$arg" >>"${HERMES_SECRETS_LOG}"
+    done
+    return 0
+  }
+  export -f fly_set_secrets
+  export HERMES_SECRETS_LOG="$secrets_log"
+
+  run deploy_provision_resources
   assert_success
-  assert_output --partial 'HERMES_AGENT_REF'
+  run cat "$secrets_log"
+  assert_output --partial "HERMES_DEPLOY_CHANNEL=stable"
 }
 
-@test "deploy_provision_resources sets HERMES_DEPLOY_CHANNEL secret (PR-04)" {
-  run grep "HERMES_DEPLOY_CHANNEL" "${PROJECT_ROOT}/lib/deploy.sh"
+@test "deploy_provision_resources includes HERMES_COMPAT_POLICY when REASONING_SNAPSHOT_VERSION set (REVIEW_1)" {
+  export DEPLOY_APP_NAME="test-r1-compat"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VOLUME_SIZE="5"
+  export DEPLOY_API_KEY="sk-test-key"
+  export DEPLOY_MODEL="openai/gpt-5-mini"
+  export DEPLOY_REASONING_EFFORT="medium"
+  export DEPLOY_LLM_PROVIDER="openrouter"
+  export REASONING_SNAPSHOT_VERSION="2025-01"
+
+  local secrets_log="${TEST_TEMP_DIR}/secrets_log_r1_compat"
+  fly_set_secrets() {
+    local app="$1"; shift
+    for arg in "$@"; do
+      printf '%s\n' "$arg" >>"${HERMES_SECRETS_LOG}"
+    done
+    return 0
+  }
+  export -f fly_set_secrets
+  export HERMES_SECRETS_LOG="$secrets_log"
+
+  run deploy_provision_resources
   assert_success
-  assert_output --partial 'HERMES_DEPLOY_CHANNEL'
+  run cat "$secrets_log"
+  assert_output --partial "HERMES_COMPAT_POLICY=2025-01"
+}
+
+@test "deploy_provision_resources omits HERMES_COMPAT_POLICY when REASONING_SNAPSHOT_VERSION unset (REVIEW_1)" {
+  export DEPLOY_APP_NAME="test-r1-nocompat"
+  export DEPLOY_REGION="ord"
+  export DEPLOY_VOLUME_SIZE="5"
+  export DEPLOY_API_KEY="sk-test-key"
+  export DEPLOY_MODEL="openai/gpt-5-mini"
+  export DEPLOY_REASONING_EFFORT="medium"
+  export DEPLOY_LLM_PROVIDER="openrouter"
+  unset REASONING_SNAPSHOT_VERSION
+
+  local secrets_log="${TEST_TEMP_DIR}/secrets_log_r1_nocompat"
+  fly_set_secrets() {
+    local app="$1"; shift
+    for arg in "$@"; do
+      printf '%s\n' "$arg" >>"${HERMES_SECRETS_LOG}"
+    done
+    return 0
+  }
+  export -f fly_set_secrets
+  export HERMES_SECRETS_LOG="$secrets_log"
+
+  run deploy_provision_resources
+  assert_success
+  run cat "$secrets_log"
+  refute_output --partial "HERMES_COMPAT_POLICY="
 }

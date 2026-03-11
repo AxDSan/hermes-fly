@@ -103,16 +103,21 @@ if entries:
 PYEOF
 fi
 # Write deploy provenance manifest on every boot (idempotent — latest config always wins)
-{
-  printf '{\n'
-  printf '  "hermes_fly_version": "%s",\n' "${HERMES_FLY_VERSION:-}"
-  printf '  "hermes_agent_ref": "%s",\n' "${HERMES_AGENT_REF:-}"
-  printf '  "deploy_channel": "%s",\n' "${HERMES_DEPLOY_CHANNEL:-stable}"
-  printf '  "compat_policy_version": "%s",\n' "${HERMES_COMPAT_POLICY:-}"
-  printf '  "reasoning_effort": "%s",\n' "${HERMES_REASONING_EFFORT:-}"
-  printf '  "llm_model": "%s",\n' "${LLM_MODEL:-}"
-  printf '  "written_at": "%s"\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  printf '}\n'
-} > /root/.hermes/deploy-manifest.json
+python3 - <<'PYEOF'
+import os, json
+from datetime import datetime, timezone
+_manifest = {
+    'hermes_fly_version': os.environ.get('HERMES_FLY_VERSION', ''),
+    'hermes_agent_ref': os.environ.get('HERMES_AGENT_REF', ''),
+    'deploy_channel': os.environ.get('HERMES_DEPLOY_CHANNEL', 'stable'),
+    'compatibility_policy_version': os.environ.get('HERMES_COMPAT_POLICY', ''),
+    'reasoning_effort': os.environ.get('HERMES_REASONING_EFFORT', ''),
+    'llm_provider': os.environ.get('HERMES_LLM_PROVIDER', ''),
+    'llm_model': os.environ.get('LLM_MODEL', ''),
+    'written_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+}
+with open('/root/.hermes/deploy-manifest.json', 'w') as _fh:
+    json.dump(_manifest, _fh, indent=2)
+PYEOF
 # Start hermes gateway
 exec /opt/hermes/hermes-agent/venv/bin/hermes gateway "$@"

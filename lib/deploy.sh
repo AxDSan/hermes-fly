@@ -1148,6 +1148,7 @@ deploy_provision_resources() {
   secrets+=("HERMES_FLY_VERSION=${HERMES_FLY_VERSION:-}")
   secrets+=("HERMES_AGENT_REF=${DEPLOY_HERMES_AGENT_REF:-}")
   secrets+=("HERMES_DEPLOY_CHANNEL=${DEPLOY_CHANNEL:-stable}")
+  secrets+=("HERMES_LLM_PROVIDER=${DEPLOY_LLM_PROVIDER:-}")
   if [[ -n "${REASONING_SNAPSHOT_VERSION:-}" ]]; then
     secrets+=("HERMES_COMPAT_POLICY=${REASONING_SNAPSHOT_VERSION}")
   fi
