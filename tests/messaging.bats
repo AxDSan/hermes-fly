@@ -228,6 +228,26 @@ teardown() {
   assert_failure
 }
 
+@test "messaging_detect_telegram_poll_conflict returns 0 on active long-poll conflict" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; export MOCK_TELEGRAM_GETUPDATES_CONFLICT=true;
+    source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/messaging.sh;
+    messaging_detect_telegram_poll_conflict "123456:ValidToken";
+    echo "RC=$?"'
+  assert_success
+  assert_output --partial "RC=0"
+}
+
+@test "messaging_setup_telegram re-prompts when poll conflict detected and override is declined" {
+  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; export MOCK_TELEGRAM_GETUPDATES_CONFLICT=true;
+    source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/messaging.sh;
+    messaging_setup_telegram < <(printf "123456:ValidToken\nn\n123456:ValidToken\ny\ny\n1\n123456789\n") 2>&1;
+    echo "TOKEN=$DEPLOY_TELEGRAM_BOT_TOKEN USERS=$DEPLOY_TELEGRAM_ALLOWED_USERS"'
+  assert_success
+  assert_output --partial "another deployment is already polling this bot"
+  assert_output --partial "Please provide a different bot token"
+  assert_output --partial "TOKEN=123456:ValidToken USERS=123456789"
+}
+
 @test "messaging_setup_telegram re-prompts on non-numeric user ID until valid" {
   # token, confirm bot, access=1(Only me), bad ID, good ID
   run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'";

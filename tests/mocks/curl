@@ -11,6 +11,20 @@ if printf '%s' "$*" | grep -q "api.telegram.org.*getMe"; then
     exit 0
 fi
 
+# getUpdates endpoint — detect long-poll token conflicts
+if printf '%s' "$*" | grep -q "api.telegram.org.*getUpdates"; then
+    if [[ "${MOCK_TELEGRAM_GETUPDATES_FAIL:-false}" == "true" ]]; then
+        echo "curl: (7) Failed to connect" >&2
+        exit 7
+    fi
+    if [[ "${MOCK_TELEGRAM_GETUPDATES_CONFLICT:-false}" == "true" ]]; then
+        printf '{"ok":false,"error_code":409,"description":"Conflict: terminated by other getUpdates request; make sure that only one bot instance is running"}\n'
+        exit 0
+    fi
+    printf '{"ok":true,"result":[]}\n'
+    exit 0
+fi
+
 # OpenRouter key validation
 if printf '%s' "$*" | grep -q "openrouter.ai/api/v1/key"; then
     if [[ "${MOCK_CURL_FAIL:-false}" == "true" ]]; then

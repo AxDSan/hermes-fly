@@ -45,6 +45,24 @@ messaging_validate_telegram_token_api() {
   return 0
 }
 
+# Probe Telegram getUpdates to detect active long-poll conflicts.
+# Returns:
+#   0 => conflict detected (error_code 409)
+#   1 => no conflict detected
+#   2 => probe failed / inconclusive
+messaging_detect_telegram_poll_conflict() {
+  local token="$1"
+  local response
+  response="$(curl -s --max-time 6 "https://api.telegram.org/bot${token}/getUpdates?offset=-1&limit=1&timeout=1" 2>/dev/null)" || return 2
+  if printf '%s' "$response" | grep -q '"error_code"[[:space:]]*:[[:space:]]*409'; then
+    return 0
+  fi
+  if printf '%s' "$response" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
+    return 1
+  fi
+  return 2
+}
+
 # Validate user IDs are numeric (comma-separated).
 # Empty input is valid (allow all users).
 # Returns 0 if valid, 1 if any ID is non-numeric.
@@ -119,6 +137,19 @@ messaging_setup_telegram() {
     if ! messaging_validate_telegram_token_api "$token"; then
       printf 'Error: Telegram rejected this token. Check it and try again.\n' >&2
       continue
+    fi
+    local poll_conflict_rc
+    messaging_detect_telegram_poll_conflict "$token"
+    poll_conflict_rc=$?
+    if [[ "$poll_conflict_rc" -eq 0 ]]; then
+      ui_warn "another deployment is already polling this bot."
+      printf 'Telegram allows only one active long-poll consumer per bot token.\n' >&2
+      if ! ui_confirm "Use this token anyway?"; then
+        printf 'Please provide a different bot token.\n' >&2
+        continue
+      fi
+    elif [[ "$poll_conflict_rc" -eq 2 ]]; then
+      ui_warn "could not verify whether this bot token is already being polled."
     fi
     printf 'Found bot: @%s (%s)\n' "$DEPLOY_TELEGRAM_BOT_USERNAME" "$DEPLOY_TELEGRAM_BOT_NAME" >&2
     if ui_confirm "Continue with this bot?"; then
