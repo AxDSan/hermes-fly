@@ -25,7 +25,7 @@ This document covers the main `hermes-fly` executable — the single entry point
 
 ```text
 1. set -euo pipefail
-2. HERMES_FLY_VERSION="0.1.14"
+2. HERMES_FLY_VERSION="0.1.16"
 3. Resolve symlinks to find real script location → SCRIPT_DIR
 4. Source lib/ui.sh
 5. Source lib/prereqs.sh

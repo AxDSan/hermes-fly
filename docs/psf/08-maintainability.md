@@ -282,7 +282,7 @@ This includes:
 `HERMES_FLY_VERSION` is set in line 4 of `hermes-fly`:
 
 ```bash
-HERMES_FLY_VERSION="0.1.14"
+HERMES_FLY_VERSION="0.1.16"
 ```
 
 No automatic version bumping. Update manually when releasing.
@@ -290,7 +290,9 @@ No automatic version bumping. Update manually when releasing.
 ## 10. Release Checklist
 
 1. Update `HERMES_FLY_VERSION` in `hermes-fly`
-2. Run full test suite: `./tests/bats/bin/bats tests/`
-3. Test a real deploy on Fly.io (manual)
-4. Update README if commands/options changed
-5. Tag and push: `git tag v0.1.X && git push --tags`
+2. Run release guard: `./scripts/release-guard.sh v0.1.X`
+3. Run full test suite: `./tests/bats/bin/bats tests/`
+4. Test a real deploy on Fly.io (manual)
+5. Update README/docs if commands/options changed
+6. Tag and push: `git tag v0.1.X && git push origin v0.1.X`
+7. Publish GitHub release for the same tag.
