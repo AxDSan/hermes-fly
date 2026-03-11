@@ -455,3 +455,117 @@ EOF
 @test "doctor_read_runtime_manifest function exists in lib/doctor.sh (REVIEW_3)" {
   declare -f doctor_read_runtime_manifest >/dev/null 2>&1
 }
+
+# ==========================================================================
+# REVIEW_4: Finding 1 — fail-closed for missing fields in readable manifest
+# ==========================================================================
+
+@test "doctor_check_drift fails when readable runtime manifest is missing deploy_channel (REVIEW_4)" {
+  mkdir -p "${HERMES_FLY_CONFIG_DIR}/deploys"
+  cat > "${HERMES_FLY_CONFIG_DIR}/deploys/nodchan-app.yaml" <<'EOF'
+app_name: nodchan-app
+deploy_channel: stable
+hermes_agent_ref: abc123def456abc123def456abc123def456abc1
+EOF
+  export MOCK_FLY_RUNTIME_MANIFEST='{"hermes_agent_ref":"abc123def456abc123def456abc123def456abc1","hermes_fly_version":"0.1.14"}'
+  local secrets_json='[{"Name":"HERMES_AGENT_REF","Digest":"abc123"},{"Name":"HERMES_DEPLOY_CHANNEL","Digest":"chan_hash"}]'
+  run doctor_check_drift "nodchan-app" "$secrets_json"
+  assert_failure
+  assert_output --partial "deploy_channel"
+  unset MOCK_FLY_RUNTIME_MANIFEST
+}
+
+@test "doctor_check_drift fails when readable runtime manifest is missing hermes_agent_ref (REVIEW_4)" {
+  mkdir -p "${HERMES_FLY_CONFIG_DIR}/deploys"
+  cat > "${HERMES_FLY_CONFIG_DIR}/deploys/noref-app.yaml" <<'EOF'
+app_name: noref-app
+deploy_channel: stable
+hermes_agent_ref: abc123def456abc123def456abc123def456abc1
+EOF
+  export MOCK_FLY_RUNTIME_MANIFEST='{"deploy_channel":"stable","hermes_fly_version":"0.1.14"}'
+  local secrets_json='[{"Name":"HERMES_AGENT_REF","Digest":"abc123"},{"Name":"HERMES_DEPLOY_CHANNEL","Digest":"chan_hash"}]'
+  run doctor_check_drift "noref-app" "$secrets_json"
+  assert_failure
+  assert_output --partial "hermes_agent_ref"
+  unset MOCK_FLY_RUNTIME_MANIFEST
+}
+
+@test "doctor_check_drift fails when local summary is missing hermes_agent_ref and runtime is readable (REVIEW_4)" {
+  mkdir -p "${HERMES_FLY_CONFIG_DIR}/deploys"
+  cat > "${HERMES_FLY_CONFIG_DIR}/deploys/nolocalref-app.yaml" <<'EOF'
+app_name: nolocalref-app
+deploy_channel: stable
+EOF
+  export MOCK_FLY_RUNTIME_MANIFEST='{"deploy_channel":"stable","hermes_agent_ref":"abc123def456abc123def456abc123def456abc1","hermes_fly_version":"0.1.14"}'
+  local secrets_json='[{"Name":"HERMES_AGENT_REF","Digest":"abc123"},{"Name":"HERMES_DEPLOY_CHANNEL","Digest":"chan_hash"}]'
+  run doctor_check_drift "nolocalref-app" "$secrets_json"
+  assert_failure
+  assert_output --partial "hermes_agent_ref"
+  unset MOCK_FLY_RUNTIME_MANIFEST
+}
+
+# ==========================================================================
+# REVIEW_4: Finding 2 — compatibility_policy_version drift detection
+# ==========================================================================
+
+@test "doctor_check_drift detects compatibility_policy_version mismatch (REVIEW_4)" {
+  mkdir -p "${HERMES_FLY_CONFIG_DIR}/deploys"
+  cat > "${HERMES_FLY_CONFIG_DIR}/deploys/compat-drift-app.yaml" <<'EOF'
+app_name: compat-drift-app
+deploy_channel: stable
+hermes_agent_ref: abc123def456abc123def456abc123def456abc1
+compatibility_policy_version: openrouter-reasoning-v1.0
+EOF
+  export MOCK_FLY_RUNTIME_MANIFEST='{"deploy_channel":"stable","hermes_agent_ref":"abc123def456abc123def456abc123def456abc1","compatibility_policy_version":"openrouter-reasoning-v2.0","hermes_fly_version":"0.1.14"}'
+  local secrets_json='[{"Name":"HERMES_AGENT_REF","Digest":"abc123"},{"Name":"HERMES_DEPLOY_CHANNEL","Digest":"chan_hash"}]'
+  run doctor_check_drift "compat-drift-app" "$secrets_json"
+  assert_failure
+  assert_output --partial "Compat policy drift"
+  unset MOCK_FLY_RUNTIME_MANIFEST
+}
+
+@test "doctor_check_drift passes when compatibility_policy_version matches (REVIEW_4)" {
+  mkdir -p "${HERMES_FLY_CONFIG_DIR}/deploys"
+  cat > "${HERMES_FLY_CONFIG_DIR}/deploys/compat-match-app.yaml" <<'EOF'
+app_name: compat-match-app
+deploy_channel: stable
+hermes_agent_ref: abc123def456abc123def456abc123def456abc1
+compatibility_policy_version: openrouter-reasoning-v1.0
+EOF
+  export MOCK_FLY_RUNTIME_MANIFEST='{"deploy_channel":"stable","hermes_agent_ref":"abc123def456abc123def456abc123def456abc1","compatibility_policy_version":"openrouter-reasoning-v1.0","hermes_fly_version":"0.1.14"}'
+  local secrets_json='[{"Name":"HERMES_AGENT_REF","Digest":"abc123"},{"Name":"HERMES_DEPLOY_CHANNEL","Digest":"chan_hash"}]'
+  run doctor_check_drift "compat-match-app" "$secrets_json"
+  assert_success
+  unset MOCK_FLY_RUNTIME_MANIFEST
+}
+
+@test "doctor_check_drift passes when compatibility_policy_version is absent from both (REVIEW_4)" {
+  mkdir -p "${HERMES_FLY_CONFIG_DIR}/deploys"
+  cat > "${HERMES_FLY_CONFIG_DIR}/deploys/nocompat-app.yaml" <<'EOF'
+app_name: nocompat-app
+deploy_channel: stable
+hermes_agent_ref: abc123def456abc123def456abc123def456abc1
+EOF
+  export MOCK_FLY_RUNTIME_MANIFEST='{"deploy_channel":"stable","hermes_agent_ref":"abc123def456abc123def456abc123def456abc1","hermes_fly_version":"0.1.14"}'
+  local secrets_json='[{"Name":"HERMES_AGENT_REF","Digest":"abc123"},{"Name":"HERMES_DEPLOY_CHANNEL","Digest":"chan_hash"}]'
+  run doctor_check_drift "nocompat-app" "$secrets_json"
+  assert_success
+  unset MOCK_FLY_RUNTIME_MANIFEST
+}
+
+@test "doctor_check_drift detects compat drift when local has policy but runtime does not (REVIEW_4)" {
+  mkdir -p "${HERMES_FLY_CONFIG_DIR}/deploys"
+  cat > "${HERMES_FLY_CONFIG_DIR}/deploys/compat-gone-app.yaml" <<'EOF'
+app_name: compat-gone-app
+deploy_channel: stable
+hermes_agent_ref: abc123def456abc123def456abc123def456abc1
+compatibility_policy_version: openrouter-reasoning-v1.0
+EOF
+  # Runtime has compat policy env var unset → empty string in manifest
+  export MOCK_FLY_RUNTIME_MANIFEST='{"deploy_channel":"stable","hermes_agent_ref":"abc123def456abc123def456abc123def456abc1","compatibility_policy_version":"","hermes_fly_version":"0.1.14"}'
+  local secrets_json='[{"Name":"HERMES_AGENT_REF","Digest":"abc123"},{"Name":"HERMES_DEPLOY_CHANNEL","Digest":"chan_hash"}]'
+  run doctor_check_drift "compat-gone-app" "$secrets_json"
+  assert_failure
+  assert_output --partial "Compat policy drift"
+  unset MOCK_FLY_RUNTIME_MANIFEST
+}
