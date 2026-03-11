@@ -867,6 +867,7 @@ EOF
   local _manifest="$MOCK_FLY_RUNTIME_MANIFEST"
   run bash -c "
     set -euo pipefail
+    export PATH=\"${_mocks_dir}:\$PATH\"
     export HERMES_FLY_CONFIG_DIR='${_config_dir}'
     export MOCK_FLY_RUNTIME_MANIFEST='${_manifest}'
     source '${_project_root}/lib/ui.sh'
