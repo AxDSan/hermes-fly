@@ -814,3 +814,67 @@ EOF
   assert_equal "$_DOCTOR_HERMES_AGENT_STABLE_REF" "$HERMES_AGENT_DEFAULT_REF"
   assert_equal "$_DOCTOR_HERMES_AGENT_PREVIEW_REF" "$HERMES_AGENT_PREVIEW_REF"
 }
+
+# REVIEW_9: Finding 1 — edge channel local_ref field presence
+#           Finding 2 — parsing helper safety under set -euo pipefail
+
+@test "doctor_check_drift fails for edge channel when local summary is missing hermes_agent_ref (REVIEW_9)" {
+  mkdir -p "${HERMES_FLY_CONFIG_DIR}/deploys"
+  cat > "${HERMES_FLY_CONFIG_DIR}/deploys/edge-noref.yaml" <<'EOF'
+app_name: edge-noref
+deploy_channel: edge
+# hermes_agent_ref intentionally absent
+EOF
+  # No MOCK_FLY_RUNTIME_MANIFEST → unverified early-return path
+  local secrets_json='[{"Name":"HERMES_AGENT_REF","Digest":"abc123"},{"Name":"HERMES_DEPLOY_CHANNEL","Digest":"chan_hash"}]'
+  run doctor_check_drift "edge-noref" "$secrets_json"
+  assert_failure
+  assert_output --partial "local summary missing hermes_agent_ref"
+}
+
+@test "_doctor_extract_yaml_field returns value on match and 0 on miss (REVIEW_9)" {
+  run _doctor_extract_yaml_field 'deploy_channel' 'deploy_channel: stable'
+  assert_success
+  assert_output "stable"
+  # No-match case: exits 0, emits empty
+  run _doctor_extract_yaml_field 'deploy_channel' 'other_field: value'
+  assert_success
+  assert_output ""
+}
+
+@test "_doctor_extract_json_field returns value on match and 0 on miss (REVIEW_9)" {
+  run _doctor_extract_json_field 'deploy_channel' '{"deploy_channel":"stable","foo":"bar"}'
+  assert_success
+  assert_output "stable"
+  # No-match case: exits 0, emits empty
+  run _doctor_extract_json_field 'deploy_channel' '{"other_field":"value"}'
+  assert_success
+  assert_output ""
+}
+
+@test "doctor_check_drift produces explicit message under set -euo pipefail when local ref absent (REVIEW_9)" {
+  mkdir -p "${HERMES_FLY_CONFIG_DIR}/deploys"
+  cat > "${HERMES_FLY_CONFIG_DIR}/deploys/strict-noref.yaml" <<'EOF'
+app_name: strict-noref
+deploy_channel: stable
+# hermes_agent_ref intentionally absent
+EOF
+  export MOCK_FLY_RUNTIME_MANIFEST='{"deploy_channel":"stable","hermes_agent_ref":"8eefbef91cd715cfe410bba8c13cfab4eb3040df","hermes_fly_version":"0.1.14"}'
+  local _config_dir="$HERMES_FLY_CONFIG_DIR"
+  local _project_root="$PROJECT_ROOT"
+  local _mocks_dir="${BATS_TEST_DIRNAME}/mocks"
+  local _secrets='[{"Name":"HERMES_AGENT_REF","Digest":"abc123"},{"Name":"HERMES_DEPLOY_CHANNEL","Digest":"chan_hash"}]'
+  local _manifest="$MOCK_FLY_RUNTIME_MANIFEST"
+  run bash -c "
+    set -euo pipefail
+    export HERMES_FLY_CONFIG_DIR='${_config_dir}'
+    export MOCK_FLY_RUNTIME_MANIFEST='${_manifest}'
+    source '${_project_root}/lib/ui.sh'
+    source '${_project_root}/lib/fly-helpers.sh'
+    source '${_project_root}/lib/doctor.sh'
+    doctor_check_drift 'strict-noref' '${_secrets}'
+  "
+  unset MOCK_FLY_RUNTIME_MANIFEST
+  assert_failure
+  assert_output --partial "local summary missing hermes_agent_ref"
+}

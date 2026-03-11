@@ -25,6 +25,32 @@ fi
 _DOCTOR_HERMES_AGENT_STABLE_REF="8eefbef91cd715cfe410bba8c13cfab4eb3040df"
 _DOCTOR_HERMES_AGENT_PREVIEW_REF="${_DOCTOR_HERMES_AGENT_STABLE_REF}"
 
+# Extract a scalar value from YAML "field: value" text.
+# CONTRACT: always returns 0; emits empty string on no-match.
+# Using || true ensures pipelines are safe under set -euo pipefail.
+_doctor_extract_yaml_field() {
+  local _field="$1" _text="$2"
+  printf '%s' "$_text" \
+    | grep -E "^${_field}:[[:space:]]*" \
+    | sed "s/^${_field}:[[:space:]]*//" \
+    | head -1 \
+    || true
+  return 0
+}
+
+# Extract a quoted string value from JSON {"field": "value"} text.
+# CONTRACT: always returns 0; emits empty string on no-match.
+# Using || true ensures pipelines are safe under set -euo pipefail.
+_doctor_extract_json_field() {
+  local _field="$1" _text="$2"
+  printf '%s' "$_text" \
+    | grep -oE "\"${_field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
+    | sed "s/.*\"${_field}\"[[:space:]]*:[[:space:]]*\"//;s/\"//" \
+    | head -1 \
+    || true
+  return 0
+}
+
 # Resolve supported compatibility policy versions from the bundled snapshot.
 # Returns newline-separated list of supported versions (e.g. "1.0.0").
 # Sources data/reasoning-snapshot.json relative to the lib/ directory.
@@ -258,7 +284,7 @@ doctor_check_drift() {
 
   # Check 3: validate deploy_channel shape in local summary.
   local local_channel
-  local_channel="$(printf '%s' "$summary" | grep -E '^deploy_channel:' | sed 's/^deploy_channel:[[:space:]]*//' | head -1)"
+  local_channel="$(_doctor_extract_yaml_field 'deploy_channel' "$summary")"
 
   if [[ -z "$local_channel" ]]; then
     printf 'Missing deploy_channel in local summary: cannot verify provenance\n' >&2
@@ -279,8 +305,7 @@ doctor_check_drift() {
   # intended ref. This catches coordinated drift where both local summary and runtime
   # manifest agree on a non-canonical ref (bypassing the local-vs-runtime comparison).
   local local_ref
-  local_ref="$(printf '%s' "$summary" | grep -E '^hermes_agent_ref:' \
-    | sed 's/^hermes_agent_ref:[[:space:]]*//' | head -1)"
+  local_ref="$(_doctor_extract_yaml_field 'hermes_agent_ref' "$summary")"
 
   case "$local_channel" in
     stable | preview)
@@ -305,7 +330,12 @@ doctor_check_drift() {
       fi
       ;;
     edge)
-      # Edge tracks moving upstream — any ref is expected; skip canonical check.
+      # Edge tracks moving upstream — any ref value is expected; skip canonical check.
+      # Still require field presence: an edge summary without hermes_agent_ref is incomplete.
+      if [[ -z "$local_ref" ]]; then
+        printf 'local summary missing hermes_agent_ref — cannot verify ref for edge channel\n' >&2
+        return 1
+      fi
       ;;
   esac
 
@@ -331,10 +361,7 @@ doctor_check_drift() {
 
   # Extract deploy_channel from runtime manifest JSON
   local runtime_channel
-  runtime_channel="$(printf '%s' "$runtime_manifest" \
-    | grep -oE '"deploy_channel"[[:space:]]*:[[:space:]]*"[^"]*"' \
-    | sed 's/.*"deploy_channel"[[:space:]]*:[[:space:]]*"//;s/"//' \
-    | head -1)"
+  runtime_channel="$(_doctor_extract_json_field 'deploy_channel' "$runtime_manifest")"
 
   # Fail-closed: readable manifest must contain deploy_channel
   if [[ -z "$runtime_channel" ]]; then
@@ -344,10 +371,7 @@ doctor_check_drift() {
 
   # Extract hermes_agent_ref from runtime manifest JSON
   local runtime_ref
-  runtime_ref="$(printf '%s' "$runtime_manifest" \
-    | grep -oE '"hermes_agent_ref"[[:space:]]*:[[:space:]]*"[^"]*"' \
-    | sed 's/.*"hermes_agent_ref"[[:space:]]*:[[:space:]]*"//;s/"//' \
-    | head -1)"
+  runtime_ref="$(_doctor_extract_json_field 'hermes_agent_ref' "$runtime_manifest")"
 
   # Fail-closed: readable manifest must contain hermes_agent_ref
   if [[ -z "$runtime_ref" ]]; then
@@ -377,15 +401,11 @@ doctor_check_drift() {
 
   # Extract compatibility_policy_version from runtime manifest JSON
   local runtime_compat
-  runtime_compat="$(printf '%s' "$runtime_manifest" \
-    | grep -oE '"compatibility_policy_version"[[:space:]]*:[[:space:]]*"[^"]*"' \
-    | sed 's/.*"compatibility_policy_version"[[:space:]]*:[[:space:]]*"//;s/"//' \
-    | head -1)"
+  runtime_compat="$(_doctor_extract_json_field 'compatibility_policy_version' "$runtime_manifest")"
 
   # Extract compatibility_policy_version from local summary YAML
   local local_compat
-  local_compat="$(printf '%s' "$summary" | grep -E '^compatibility_policy_version:' \
-    | sed 's/^compatibility_policy_version:[[:space:]]*//' | head -1)"
+  local_compat="$(_doctor_extract_yaml_field 'compatibility_policy_version' "$summary")"
 
   # Compare compat policy versions (skip when both absent; fail when one or both set and differ)
   if [[ -n "$local_compat" || -n "$runtime_compat" ]]; then
