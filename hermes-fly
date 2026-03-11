@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HERMES_FLY_VERSION="0.1.17"
+HERMES_FLY_VERSION="0.1.18"
 # Resolve symlinks so lib/ is found relative to the real file location
 _self="${BASH_SOURCE[0]}"
 while [[ -L "$_self" ]]; do
@@ -38,6 +38,7 @@ Usage:
 
 Commands:
   deploy              Interactive deployment wizard
+  resume [-a APP]     Resume checks after interrupted deploy
   list                List all deployed agents
   status [-a APP]     Check deployment health
   logs [-a APP]       View application logs
@@ -54,6 +55,7 @@ Options:
 
 Examples:
   hermes-fly deploy                  # Start deployment wizard
+  hermes-fly resume                  # Resume checks for current app
   hermes-fly status                  # Check current app status
   hermes-fly status -a my-hermes     # Check specific app
   hermes-fly doctor                  # Run diagnostics
@@ -131,6 +133,14 @@ main() {
                 return 1
             }
             cmd_status "$app"
+            ;;
+        resume)
+            local app
+            app="$(config_resolve_app "$@" 2>/dev/null)" || {
+                ui_error "No app specified. Use -a APP or run 'hermes-fly deploy' first."
+                return 1
+            }
+            cmd_deploy_resume "$app"
             ;;
         logs)
             local app

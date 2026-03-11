@@ -785,6 +785,39 @@ teardown() {
   assert_output --partial "hermes-fly doctor"
 }
 
+@test "deploy_run_deploy treats connection-closed as recoverable when remote app is running" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_BUILD_DIR="$TEST_TEMP_DIR"
+  export MOCK_FLY_MACHINE_STATE="started"
+  fly_deploy() {
+    echo "Error: connection closed" >&2
+    return 1
+  }
+  export -f fly_deploy
+
+  run deploy_run_deploy
+  assert_success
+  assert_output --partial "connection dropped"
+  assert_output --partial "Deployment complete"
+}
+
+@test "deploy_run_deploy suggests resume when connection closes and remote state is not healthy" {
+  export DEPLOY_APP_NAME="test-app"
+  export DEPLOY_BUILD_DIR="$TEST_TEMP_DIR"
+  export MOCK_FLY_MACHINE_STATE="stopped"
+  fly_deploy() {
+    echo "Error: connection closed" >&2
+    return 1
+  }
+  export -f fly_deploy
+  _run_with_stdin() { printf 'n\n' | deploy_run_deploy; }
+
+  run _run_with_stdin
+  assert_failure
+  assert_output --partial "connection dropped"
+  assert_output --partial "hermes-fly resume -a test-app"
+}
+
 # --- deploy_post_deploy_check retry ---
 
 @test "deploy_post_deploy_check retries when user approves and succeeds" {
@@ -852,6 +885,48 @@ teardown() {
   MOCK_CURL_FAIL=true run deploy_post_deploy_check
   assert_success
   assert_output --partial "App is running"
+}
+
+@test "cmd_deploy preserves resources when deploy step fails (no cleanup)" {
+  deploy_preflight() { return 0; }
+  deploy_collect_config() {
+    DEPLOY_APP_NAME="test-app"
+    DEPLOY_REGION="ord"
+    return 0
+  }
+  deploy_create_build_context() {
+    DEPLOY_BUILD_DIR="$TEST_TEMP_DIR"
+    return 0
+  }
+  deploy_provision_resources() { return 0; }
+  deploy_run_deploy() { return 1; }
+  deploy_cleanup_on_failure() {
+    echo "CLEANUP_CALLED"
+    return 0
+  }
+  config_save_app() {
+    echo "CONFIG_SAVED:$1:$2"
+    return 0
+  }
+
+  run cmd_deploy
+  assert_failure
+  assert_output --partial "CONFIG_SAVED:test-app:ord"
+  refute_output --partial "CLEANUP_CALLED"
+}
+
+@test "cmd_deploy_resume succeeds when app is already running" {
+  run cmd_deploy_resume "resume-app"
+  assert_success
+  assert_output --partial "Resuming deployment checks"
+  assert_output --partial "App is running"
+}
+
+@test "cmd_deploy_resume fails when app status cannot be fetched" {
+  export MOCK_FLY_STATUS=fail
+  run cmd_deploy_resume "missing-app"
+  assert_failure
+  assert_output --partial "Could not fetch status"
 }
 
 @test "deploy_provision_resources shows hint when name has already been taken" {

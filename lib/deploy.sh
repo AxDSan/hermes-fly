@@ -1221,6 +1221,52 @@ deploy_provision_resources() {
 # deploy_run_deploy — run fly deploy with optional timeout
 # Uses DEPLOY_TIMEOUT if set (default: 5m0s).
 # --------------------------------------------------------------------------
+deploy_is_transient_transport_error() {
+  local text="$1"
+  local lower
+  lower="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
+
+  [[ "$lower" == *"connection closed"* ]] && return 0
+  [[ "$lower" == *"unexpected eof"* ]] && return 0
+  [[ "$lower" == *"context canceled"* ]] && return 0
+  [[ "$lower" == *"connection reset by peer"* ]] && return 0
+  [[ "$lower" == *"broken pipe"* ]] && return 0
+
+  return 1
+}
+
+_deploy_extract_region_from_status() {
+  local status_json="$1"
+  printf '%s' "$status_json" | tr -d '\n' | \
+    sed -n 's/.*"region"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
+deploy_remote_appears_running() {
+  local app_name="$1"
+  local status_json
+
+  status_json="$(fly_status "$app_name" 2>/dev/null)" || return 1
+
+  local app_status
+  app_status="$(printf '%s' "$status_json" | tr -d '\n' | \
+    sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+
+  local machine_state
+  machine_state="$(printf '%s' "$status_json" | tr -d '\n' | \
+    grep -oE '"state"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | \
+    sed 's/.*"state"[[:space:]]*:[[:space:]]*"//;s/"//')"
+
+  case "${app_status:-}" in
+    running | deployed | started) return 0 ;;
+  esac
+
+  case "${machine_state:-}" in
+    running | started) return 0 ;;
+  esac
+
+  return 1
+}
+
 deploy_run_deploy() {
   ui_info "Deploying ${DEPLOY_APP_NAME}..."
 
@@ -1228,6 +1274,28 @@ deploy_run_deploy() {
   if deploy_output="$(fly_retry 3 fly_deploy "$DEPLOY_APP_NAME" "$DEPLOY_BUILD_DIR" "${DEPLOY_TIMEOUT:-5m0s}" 2>&1)"; then
     ui_success "Deployment complete"
     return 0
+  fi
+
+  # A dropped CLI stream can still result in a healthy remote deployment.
+  if deploy_is_transient_transport_error "$deploy_output"; then
+    ui_warn "Deploy connection dropped before completion was confirmed."
+
+    if deploy_remote_appears_running "$DEPLOY_APP_NAME"; then
+      ui_warn "Remote status indicates the app is running; resuming deploy flow."
+      ui_success "Deployment complete (recovered)"
+      return 0
+    fi
+
+    ui_warn "Remote status is not healthy yet."
+    if ui_confirm "Retry deployment now?"; then
+      if deploy_output="$(fly_retry 2 fly_deploy "$DEPLOY_APP_NAME" "$DEPLOY_BUILD_DIR" "${DEPLOY_TIMEOUT:-5m0s}" 2>&1)"; then
+        ui_success "Deployment complete"
+        return 0
+      fi
+    fi
+
+    printf '  Resume when your connection is stable:\n' >&2
+    printf '    hermes-fly resume -a %s\n' "$DEPLOY_APP_NAME" >&2
   fi
 
   ui_error "Deployment failed"
@@ -1448,6 +1516,45 @@ deploy_cleanup_on_failure() {
   return 0
 }
 
+# --------------------------------------------------------------------------
+# cmd_deploy_resume [app] — resume verification for an interrupted deploy
+# Uses saved app (-a via entrypoint) or current app from config when omitted.
+# --------------------------------------------------------------------------
+cmd_deploy_resume() {
+  local app_name="${1:-}"
+  if [[ -z "$app_name" ]]; then
+    app_name="$(config_get_current_app)"
+  fi
+  if [[ -z "$app_name" ]]; then
+    ui_error "No app specified. Use -a APP or run 'hermes-fly deploy' first."
+    return 1
+  fi
+
+  DEPLOY_APP_NAME="$app_name"
+  ui_info "Resuming deployment checks for ${DEPLOY_APP_NAME}..."
+
+  local status_json
+  if ! status_json="$(fly_status "$DEPLOY_APP_NAME" 2>/dev/null)"; then
+    ui_error "Could not fetch status for '${DEPLOY_APP_NAME}'"
+    return 1
+  fi
+
+  local detected_region
+  detected_region="$(_deploy_extract_region_from_status "$status_json")"
+  if [[ -n "$detected_region" ]]; then
+    DEPLOY_REGION="$detected_region"
+  fi
+
+  if ! deploy_post_deploy_check; then
+    [[ -n "${DEPLOY_REGION:-}" ]] && config_save_app "$DEPLOY_APP_NAME" "$DEPLOY_REGION"
+    return 1
+  fi
+
+  [[ -n "${DEPLOY_REGION:-}" ]] && config_save_app "$DEPLOY_APP_NAME" "$DEPLOY_REGION"
+  ui_success "Resume complete"
+  return 0
+}
+
 # ==========================================================================
 # Step 4.4: Main entry point
 # ==========================================================================
@@ -1490,7 +1597,10 @@ cmd_deploy() {
 
   # Deploy
   if ! deploy_run_deploy; then
-    deploy_cleanup_on_failure "$DEPLOY_APP_NAME"
+    # Keep resources so users can inspect/retry/resume after transient failures.
+    config_save_app "$DEPLOY_APP_NAME" "$DEPLOY_REGION"
+    ui_warn "Deployment did not complete; resources were preserved for recovery."
+    printf '  Resume with: hermes-fly resume -a %s\n' "$DEPLOY_APP_NAME" >&2
     return 1
   fi
 

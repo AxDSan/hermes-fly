@@ -15,13 +15,13 @@ teardown() {
 @test "hermes-fly --version outputs version string" {
   run "${PROJECT_ROOT}/hermes-fly" --version
   assert_success
-  assert_output --partial "hermes-fly 0.1.16"
+  assert_output --partial "hermes-fly 0.1.18"
 }
 
 @test "hermes-fly version outputs version string" {
   run "${PROJECT_ROOT}/hermes-fly" version
   assert_success
-  assert_output --partial "hermes-fly 0.1.16"
+  assert_output --partial "hermes-fly 0.1.18"
 }
 
 # --- Help ---
@@ -30,6 +30,7 @@ teardown() {
   run "${PROJECT_ROOT}/hermes-fly" help
   assert_success
   assert_output --partial "deploy"
+  assert_output --partial "resume"
   assert_output --partial "status"
   assert_output --partial "logs"
   assert_output --partial "doctor"
@@ -75,6 +76,13 @@ teardown() {
   run "${PROJECT_ROOT}/hermes-fly" status -a test-app
   assert_success
   assert_output --partial "test-app"
+}
+
+@test "hermes-fly resume with -a flag runs deploy resume checks" {
+  run "${PROJECT_ROOT}/hermes-fly" resume -a test-app
+  assert_success
+  assert_output --partial "Resuming deployment checks"
+  assert_output --partial "App is running"
 }
 
 # --- Deploy with --no-auto-install flag ---
