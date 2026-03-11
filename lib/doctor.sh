@@ -190,12 +190,14 @@ doctor_check_drift() {
   local app_name="$1"
   local secrets_json="${2:-}"
 
-  # Check 1: provenance secrets must be present in fly secrets list
+  # Check 1: provenance secrets must be present in fly secrets list.
+  # Use quote-anchored patterns to prevent substring false-positives (e.g.
+  # NOT_HERMES_AGENT_REF must not satisfy the HERMES_AGENT_REF check).
   local has_agent_ref=false has_deploy_channel=false
-  if printf '%s' "$secrets_json" | grep -q 'HERMES_AGENT_REF'; then
+  if printf '%s' "$secrets_json" | grep -q '"HERMES_AGENT_REF"'; then
     has_agent_ref=true
   fi
-  if printf '%s' "$secrets_json" | grep -q 'HERMES_DEPLOY_CHANNEL'; then
+  if printf '%s' "$secrets_json" | grep -q '"HERMES_DEPLOY_CHANNEL"'; then
     has_deploy_channel=true
   fi
 
@@ -216,17 +218,21 @@ doctor_check_drift() {
   local local_channel
   local_channel="$(printf '%s' "$summary" | grep -E '^deploy_channel:' | sed 's/^deploy_channel:[[:space:]]*//' | head -1)"
 
-  if [[ -n "$local_channel" ]]; then
-    case "$local_channel" in
-      stable | preview | edge)
-        # Recognized channel — no drift
-        ;;
-      *)
-        printf 'Unexpected deploy channel in local summary: %s\n' "$local_channel" >&2
-        return 1
-        ;;
-    esac
+  # Missing deploy_channel is itself a provenance gap — fail rather than silently pass.
+  if [[ -z "$local_channel" ]]; then
+    printf 'Missing deploy_channel in local summary: cannot verify provenance\n' >&2
+    return 1
   fi
+
+  case "$local_channel" in
+    stable | preview | edge)
+      # Recognized channel — no drift
+      ;;
+    *)
+      printf 'Unexpected deploy channel in local summary: %s\n' "$local_channel" >&2
+      return 1
+      ;;
+  esac
 
   return 0
 }

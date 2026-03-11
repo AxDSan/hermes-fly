@@ -2120,3 +2120,37 @@ teardown() {
   assert_success
   assert_output "stable"
 }
+
+# ==========================================================================
+# REVIEW_2: Finding 1 — channel-aware ref selection
+# ==========================================================================
+
+@test "HERMES_AGENT_EDGE_REF constant is 'main' (REVIEW_2)" {
+  [[ "$HERMES_AGENT_EDGE_REF" == "main" ]]
+}
+
+@test "deploy_resolve_hermes_ref returns 'main' for edge channel (REVIEW_2)" {
+  export DEPLOY_CHANNEL="edge"
+  run deploy_resolve_hermes_ref
+  assert_output "main"
+}
+
+@test "deploy_resolve_hermes_ref returns pinned SHA for stable channel (REVIEW_2)" {
+  export DEPLOY_CHANNEL="stable"
+  run deploy_resolve_hermes_ref
+  assert_output "$HERMES_AGENT_DEFAULT_REF"
+}
+
+@test "deploy_resolve_hermes_ref returns preview ref for preview channel (REVIEW_2)" {
+  export DEPLOY_CHANNEL="preview"
+  run deploy_resolve_hermes_ref
+  assert_output "$HERMES_AGENT_PREVIEW_REF"
+}
+
+@test "deploy_resolve_hermes_ref HERMES_AGENT_REF override still takes precedence over channel (REVIEW_2)" {
+  export DEPLOY_CHANNEL="stable"
+  export HERMES_AGENT_REF="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+  run deploy_resolve_hermes_ref
+  assert_output --partial "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+  unset HERMES_AGENT_REF
+}

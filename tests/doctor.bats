@@ -336,3 +336,37 @@ EOF
   run cmd_doctor "test-app"
   assert_output --partial "drift"
 }
+
+# ==========================================================================
+# REVIEW_2: Finding 2 — exact-name matching for provenance secrets
+# ==========================================================================
+
+@test "doctor_check_drift rejects superset name NOT_HERMES_AGENT_REF (REVIEW_2)" {
+  # Substring match bug: NOT_HERMES_AGENT_REF must not satisfy HERMES_AGENT_REF check
+  local secrets_json='[{"Name":"NOT_HERMES_AGENT_REF","Digest":"x"},{"Name":"HERMES_DEPLOY_CHANNEL","Digest":"y"}]'
+  run doctor_check_drift "test-app" "$secrets_json"
+  assert_failure
+}
+
+@test "doctor_check_drift rejects superset name NOT_HERMES_DEPLOY_CHANNEL (REVIEW_2)" {
+  # Substring match bug: NOT_HERMES_DEPLOY_CHANNEL must not satisfy HERMES_DEPLOY_CHANNEL check
+  local secrets_json='[{"Name":"HERMES_AGENT_REF","Digest":"x"},{"Name":"NOT_HERMES_DEPLOY_CHANNEL","Digest":"y"}]'
+  run doctor_check_drift "test-app" "$secrets_json"
+  assert_failure
+}
+
+# ==========================================================================
+# REVIEW_2: Finding 3 — missing deploy_channel in local summary fails
+# ==========================================================================
+
+@test "doctor_check_drift fails when local summary exists but deploy_channel is absent (REVIEW_2)" {
+  mkdir -p "${HERMES_FLY_CONFIG_DIR}/deploys"
+  cat > "${HERMES_FLY_CONFIG_DIR}/deploys/no-channel-app.yaml" <<'EOF'
+app_name: no-channel-app
+hermes_agent_ref: abc123def456
+EOF
+  local secrets_json='[{"Name":"HERMES_AGENT_REF","Digest":"abc123"},{"Name":"HERMES_DEPLOY_CHANNEL","Digest":"chan_hash"}]'
+  run doctor_check_drift "no-channel-app" "$secrets_json"
+  assert_failure
+  assert_output --partial "deploy_channel"
+}
