@@ -12,6 +12,7 @@ fi
 _config_file() {
   if [[ -n "${HERMES_FLY_CONFIG_DIR:-}" ]]; then
     local config_dir="${HERMES_FLY_CONFIG_DIR}"
+    config_dir="$(printf '%s' "${config_dir}" | sed 's://*:/:g')"
     while [[ "${config_dir}" != "/" && "${config_dir}" == */ ]]; do
       config_dir="${config_dir%/}"
     done

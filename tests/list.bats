@@ -71,3 +71,13 @@ teardown() {
   '
   assert_success
 }
+
+@test "_config_file canonicalizes internal duplicate separators in HERMES_FLY_CONFIG_DIR" {
+  run bash -c '
+    set -euo pipefail
+    source "${PROJECT_ROOT}/lib/config.sh"
+    export HERMES_FLY_CONFIG_DIR="/tmp//nested//"
+    test "$(_config_file)" = "/tmp/nested/config.yaml"
+  '
+  assert_success
+}
