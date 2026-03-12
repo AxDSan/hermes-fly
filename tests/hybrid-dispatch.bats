@@ -56,3 +56,45 @@ teardown() {
   assert_line --index 0 "Warning: Unknown HERMES_FLY_IMPL_MODE 'invalid', using legacy"
   assert_line --index 1 "hermes-fly ${EXPECTED_VERSION}"
 }
+
+@test "default help output is byte-identical to explicit legacy mode" {
+  run bash -c '
+    default_out="$(mktemp)"
+    legacy_out="$(mktemp)"
+    trap "rm -f \"${default_out}\" \"${legacy_out}\"" EXIT
+    "${PROJECT_ROOT}/hermes-fly" help >"${default_out}"
+    HERMES_FLY_IMPL_MODE=legacy "${PROJECT_ROOT}/hermes-fly" help >"${legacy_out}"
+    cmp -s "${default_out}" "${legacy_out}"
+  '
+  assert_success
+}
+
+@test "default deploy help output is byte-identical to explicit legacy mode" {
+  run bash -c '
+    default_out="$(mktemp)"
+    legacy_out="$(mktemp)"
+    trap "rm -f \"${default_out}\" \"${legacy_out}\"" EXIT
+    "${PROJECT_ROOT}/hermes-fly" deploy --help >"${default_out}"
+    HERMES_FLY_IMPL_MODE=legacy "${PROJECT_ROOT}/hermes-fly" deploy --help >"${legacy_out}"
+    cmp -s "${default_out}" "${legacy_out}"
+  '
+  assert_success
+}
+
+@test "hybrid fallback emits one stderr warning line and preserves stdout contract" {
+  run bash -c '
+    out_file="$(mktemp)"
+    err_file="$(mktemp)"
+    trap "rm -f \"${out_file}\" \"${err_file}\"" EXIT
+    rm -f "${PROJECT_ROOT}/dist/cli.js"
+    HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=version \
+      "${PROJECT_ROOT}/hermes-fly" version >"${out_file}" 2>"${err_file}"
+    printf "STDOUT=%s\n" "$(cat "${out_file}")"
+    printf "STDERR_LINES=%s\n" "$(wc -l < "${err_file}" | tr -d "[:space:]")"
+    printf "STDERR_FIRST=%s\n" "$(head -n 1 "${err_file}")"
+  '
+  assert_success
+  assert_line --index 0 "STDOUT=hermes-fly ${EXPECTED_VERSION}"
+  assert_line --index 1 "STDERR_LINES=1"
+  assert_line --index 2 "STDERR_FIRST=Warning: TS implementation unavailable for command 'version'; falling back to legacy"
+}

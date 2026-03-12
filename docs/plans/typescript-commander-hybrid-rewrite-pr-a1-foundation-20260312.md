@@ -5,7 +5,13 @@ Parent plan: `docs/plans/typescript-commander-hybrid-rewrite-20260311.md`
 Parent phase: Phase 0 (Foundation and Safety Rails)  
 Timebox: 60 minutes (single session)  
 Assignee profile: Junior developer  
-Target branch: `feat/ts-pr-a1-foundation`
+Target branch: `feat/ts-pr-a1-foundation` (recommended)  
+Implementation branch used: `main` (completed on commit `ec13e14`)
+
+## Implementation Status
+
+Status: Implemented  
+Evidence report: `docs/plans/typescript-commander-hybrid-rewrite-pr-a1-foundation-20260312-implementation-report.md`
 
 ---
 
