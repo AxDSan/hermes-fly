@@ -20,8 +20,11 @@ module.exports = {
       name: "only-bash-bridge-can-import-child-process",
       severity: "error",
       comment:
-        "Only the anti-corruption layer (bash-bridge) may use child_process directly.",
-      from: { pathNot: "^src/legacy/bash-bridge\\.ts$" },
+        "Only bash-bridge and process adapter may use child_process directly.",
+      from: {
+        pathNot:
+          "^(src/legacy/bash-bridge\\.ts|src/adapters/process\\.ts)$"
+      },
       to: { path: "^(node:)?child_process$" }
     }
   ],

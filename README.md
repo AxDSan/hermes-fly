@@ -146,6 +146,15 @@ HERMES_FLY_IMPL_MODE=legacy ./hermes-fly version
 HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=version ./hermes-fly version
 ```
 
+### TS List Canary
+
+Use this opt-in path to validate TypeScript list parity while default behavior remains legacy.
+
+```bash
+npm run build
+HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=list ./hermes-fly list
+```
+
 ### Architecture Boundary Check
 
 Run this check to enforce DDD layer boundaries in `src/contexts` during migration.
