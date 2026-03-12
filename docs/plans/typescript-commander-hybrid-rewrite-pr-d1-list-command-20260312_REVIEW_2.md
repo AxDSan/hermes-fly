@@ -348,3 +348,18 @@ Expected: behavior returns to prior REVIEW-1 baseline.
 ### VERIFY_ALL
 - Test suite: pass (1 iteration)
 - Criteria walk: all satisfied
+
+## Historical TDD Addendum
+
+This addendum records the historical process deviation and its closure path.
+
+1. Historical deviation:
+- Slice 4 (`Harden one-command verifier with version parity checks`) logged S5 as a presence-check style workflow.
+- Slice 5 (`Create review-2 implementation report`) logged S5 as file existence check.
+2. Closure evidence (behavioral/content assertions now enforced):
+- `scripts/verify-pr-d1-list-command.sh` enforces version parity and dist-missing fallback behavior with explicit stdout/stderr/exit assertions.
+- `tests/hybrid-dispatch.bats` includes deterministic version parity and fallback behavior checks for hybrid and ts modes.
+- REVIEW-3 verifier checks require report-content assertions, including the section-5 pass sentence.
+3. Conclusion:
+- Historical log entries remain immutable as execution history.
+- The active verification surface is now behavior-first and content-assertive.

@@ -472,3 +472,18 @@ Expected: behavior returns to prior PR-D1 baseline.
 ### VERIFY_ALL
 - Test suite: pass (1 iteration)
 - Criteria walk: all satisfied
+
+## Historical TDD Addendum
+
+This addendum records the historical process deviation and its closure path.
+
+1. Historical deviation:
+- Slice 7 (`verifier-script-hardening`) logged S5 as a missing-assertion/presence check workflow.
+- Slice 8 (`implementation-report-file`) logged S5 as file existence check.
+2. Closure evidence (behavioral/content assertions now enforced):
+- `scripts/verify-pr-d1-list-command.sh` asserts runtime behavior contracts for version/list parity and fallback scenarios.
+- `scripts/verify-pr-d1-list-command.sh` asserts review report content markers for REVIEW-3 evidence quality.
+- `tests/hybrid-dispatch.bats` contains deterministic behavior checks for dist-present and dist-missing version permutations.
+3. Conclusion:
+- Historical log entries remain immutable as execution history.
+- The regression-prevention surface is now behavioral/content-based in active gates.
