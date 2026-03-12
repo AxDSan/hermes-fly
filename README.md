@@ -162,6 +162,14 @@ npm run test:domain-primitives
 
 These tests validate domain invariants with zero IO mocks.
 
+### Parity Harness
+
+```bash
+npm run parity:check
+```
+
+Captures deterministic command snapshots and compares them to the committed parity baseline.
+
 
 ## License
 

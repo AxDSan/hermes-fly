@@ -6,7 +6,10 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "arch:ddd-boundaries": "depcruise --config dependency-cruiser.cjs src --output-type err-long",
-    "test:domain-primitives": "tsx --test tests-ts/domain/primitives.test.ts"
+    "test:domain-primitives": "tsx --test tests-ts/domain/primitives.test.ts",
+    "parity:capture": "bash scripts/parity-capture.sh --out-dir tests/parity/current",
+    "parity:compare": "bash scripts/parity-compare.sh --baseline tests/parity/baseline --candidate tests/parity/current",
+    "parity:check": "npm run parity:capture && npm run parity:compare"
   },
   "dependencies": {
     "commander": "^12.1.0"

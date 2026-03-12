@@ -433,3 +433,81 @@ Expected: behavior returns to PR-B1 baseline.
 - [GNU diffutils manual](https://www.gnu.org/software/diffutils/manual/)
 - [Bash Reference Manual](https://www.gnu.org/software/bash/manual/bash.html)
 - [Bats-core documentation](https://bats-core.readthedocs.io/)
+
+## Execution Log
+
+### Slice 1: package-json-parity-scripts
+- [x] S4 ANALYZE_CRITERIA: 4 criteria extracted
+- [x] S5 WRITE_TEST: inline Node assertion against `package.json` scripts
+- [x] S6 CONFIRM_RED: test fails as expected
+- [x] S7 IMPLEMENT: `package.json` modified
+- [x] S8 RUN_TESTS: pass (1 iterations)
+- [x] S9 REFACTOR: no refactoring needed
+- Anomalies: none
+
+### Slice 2: gitignore-transient-parity-outputs
+- [x] S4 ANALYZE_CRITERIA: 2 criteria extracted
+- [x] S5 WRITE_TEST: inline Node assertion against `.gitignore` required/forbidden entries
+- [x] S6 CONFIRM_RED: test fails as expected
+- [x] S7 IMPLEMENT: `.gitignore` modified
+- [x] S8 RUN_TESTS: pass (1 iterations)
+- [x] S9 REFACTOR: no refactoring needed
+- Anomalies: none
+
+### Slice 3: scenario-manifest
+- [x] S4 ANALYZE_CRITERIA: 2 criteria extracted
+- [x] S5 WRITE_TEST: shell file+content diff assertion for `tests/parity/scenarios/non_destructive_commands.list`
+- [x] S6 CONFIRM_RED: test fails as expected
+- [x] S7 IMPLEMENT: `tests/parity/scenarios/non_destructive_commands.list` created
+- [x] S8 RUN_TESTS: pass (1 iterations)
+- [x] S9 REFACTOR: no refactoring needed
+- Anomalies: none
+
+### Slice 4: parity-capture-script
+- [x] S4 ANALYZE_CRITERIA: 7 criteria extracted
+- [x] S5 WRITE_TEST: shell behavior assertions for `scripts/parity-capture.sh`
+- [x] S6 CONFIRM_RED: test fails as expected
+- [x] S7 IMPLEMENT: `scripts/parity-capture.sh` created (executable)
+- [x] S8 RUN_TESTS: pass (1 iterations)
+- [x] S9 REFACTOR: no refactoring needed
+- Anomalies: none
+
+### Slice 5: parity-compare-script
+- [x] S4 ANALYZE_CRITERIA: 5 criteria extracted
+- [x] S5 WRITE_TEST: shell behavior assertions for `scripts/parity-compare.sh` (match/mismatch/missing)
+- [x] S6 CONFIRM_RED: test fails as expected
+- [x] S7 IMPLEMENT: `scripts/parity-compare.sh` created (executable)
+- [x] S8 RUN_TESTS: pass (2 iterations)
+- [x] S9 REFACTOR: no refactoring needed
+- Anomalies: S8a adjusted test assertion to escape `rg` pattern beginning with `---`
+
+### Slice 6: baseline-snapshots
+- [x] S4 ANALYZE_CRITERIA: 7 criteria extracted
+- [x] S5 WRITE_TEST: shell assertions for all 15 baseline files and required contents
+- [x] S6 CONFIRM_RED: test fails as expected
+- [x] S7 IMPLEMENT: `tests/parity/baseline/*` generated via `bash scripts/parity-capture.sh --out-dir tests/parity/baseline`
+- [x] S8 RUN_TESTS: pass (1 iterations)
+- [x] S9 REFACTOR: no refactoring needed
+- Anomalies: S7 used direct capture generation without pre-delete after policy blocked `rm -rf` attempt
+
+### Slice 7: readme-parity-harness
+- [x] S4 ANALYZE_CRITERIA: 3 criteria extracted
+- [x] S5 WRITE_TEST: `rg` assertions for README title/command/sentence
+- [x] S6 CONFIRM_RED: test fails as expected
+- [x] S7 IMPLEMENT: `README.md` modified
+- [x] S8 RUN_TESTS: pass (1 iterations)
+- [x] S9 REFACTOR: no refactoring needed
+- Anomalies: none
+
+### Slice 8: verifier-script
+- [x] S4 ANALYZE_CRITERIA: 6 criteria extracted
+- [x] S5 WRITE_TEST: executable+success-output assertion for `scripts/verify-pr-c1-parity-harness.sh`
+- [x] S6 CONFIRM_RED: test fails as expected
+- [x] S7 IMPLEMENT: `scripts/verify-pr-c1-parity-harness.sh` created (executable)
+- [x] S8 RUN_TESTS: pass (1 iterations)
+- [x] S9 REFACTOR: no refactoring needed
+- Anomalies: none
+
+### VERIFY_ALL
+- Test suite: pass (1 iteration)
+- Criteria walk: all satisfied

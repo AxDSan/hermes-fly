@@ -9,3 +9,7 @@ dist/*
 !dist/.gitkeep
 *.tsbuildinfo
 node_modules/
+tests/parity/current/
+tests/parity/_tmp_run1/
+tests/parity/_tmp_run2/
+tests/parity/_tmp_mutation/
