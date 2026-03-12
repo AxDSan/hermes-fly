@@ -2,7 +2,7 @@
 
 Date: 2026-03-11
 Scope: `/Users/alex/Documents/GitHub/hermes-fly` only
-Status: Ready for implementation
+Status: Ready for implementation (revalidated on 2026-03-12; execution not started)
 
 ## Objective
 
@@ -34,6 +34,63 @@ Yes, the rewrite will be modular and releaseable throughout:
 3. Existing release process (`scripts/release-guard.sh`, semver tags, GitHub Releases) must remain usable in every migration phase.
 4. No regressions in secret handling (do not print keys/tokens to stdout/stderr or logs).
 5. Existing bash implementation remains the source of truth fallback until each command is promoted.
+
+## Implementation Audit Update (2026-03-12)
+
+This section records plan-vs-codebase audit findings without changing the intended migration design below.
+
+### Snapshot conclusion
+
+- Overall completion: not started (pre-PR-A).
+- The plan document exists, but no TypeScript hybrid migration artifacts are present in runtime, test, or CI.
+
+### Evidence summary
+
+1. Missing TS foundation artifacts:
+- `package.json`
+- `tsconfig.json`
+- `src/` tree (`cli.ts`, `version.ts`, command files, contexts)
+- `dist/cli.js` and `dist/.gitkeep`
+2. Missing hybrid dispatcher wiring in `hermes-fly`:
+- no `HERMES_FLY_IMPL_MODE`
+- no `HERMES_FLY_TS_COMMANDS`
+- no `node` + `dist/cli.js` execution path
+- no TS-to-bash fallback signal handling path
+3. Missing parity harness and migration control artifacts:
+- no `scripts/parity-capture.sh`
+- no `scripts/parity-compare.sh`
+- no `tests/parity/baseline/*.snap`
+- no `data/ts-migration-state.json`
+4. Missing TS/architecture CI jobs:
+- no `test:ts`
+- no `build:ts`
+- no `parity:promoted-commands`
+- no `arch:ddd-boundaries`
+- no repository workflow files implementing these gates
+5. Install/release scripts are still bash-only migration baseline:
+- `scripts/install.sh` does not install `dist/` or migration metadata.
+- `scripts/release-guard.sh` does not validate TS artifact/version parity or parity evidence files.
+
+### Phase completion matrix (audited 2026-03-12)
+
+| Phase | Name | Status |
+| --- | --- | --- |
+| 0 | Foundation and Safety Rails | Not started |
+| 0.5 | DDD Model Bootstrap | Not started |
+| 1 | Command Contract Snapshot (Parity Harness) | Not started |
+| 2 | Migrate `list` | Not started |
+| 3 | Migrate `status` and `logs` | Not started |
+| 4 | Migrate `doctor` | Not started |
+| 5 | Migrate `destroy` | Not started |
+| 6 | Shared Provider/Messaging Libraries in TS | Not started |
+| 7 | Migrate `resume` | Not started |
+| 8 | Incremental `deploy` Rewrite | Not started |
+| 9 | Default Flip to TS for Safe Commands | Not started |
+| 10 | Full Cutover and Legacy Removal | Not started |
+
+### Revalidated immediate execution start (unchanged intent)
+
+Begin with PR A exactly as defined in this plan: TS toolchain + Commander skeleton + hybrid dispatcher scaffolding + boundary checks, with zero user-facing behavior change and full existing bats suite green.
 
 ## Current State Inventory (Baseline)
 
@@ -236,6 +293,7 @@ During hybrid:
 
 - `scripts/install.sh` continues copying `hermes-fly`, `lib/`, `templates/`, `data/`.
 - Add copying `dist/` and minimal runtime metadata (`package.json` optional for diagnostics).
+  - **Finding** [MEDIUM]: `package.json` provides diagnostic metadata for `doctor` checks and release guard version verification at ~1KB overhead. Since `src/version.ts` compiles into `dist/cli.js`, `package.json` serves as a secondary verification source. **Recommendation**: Include `package.json` in install artifacts (change from 'optional' to 'included').
 - No install-time dependency install step.
 - Runtime fallback protects users without Node.
 
@@ -259,6 +317,7 @@ During hybrid:
 - `src/legacy/bash-bridge.ts`
 - `src/contexts/` skeleton per bounded context
 - `eslint` import-boundary configuration (or equivalent) to enforce layer rules
+  - **Finding** [HIGH]: Both `eslint-plugin-boundaries` and `dependency-cruiser` are mature tools for DDD layer enforcement. `dependency-cruiser` offers richer regex-based path matching that maps directly to `src/contexts/<context>/<layer>/` structure, standalone CI integration, and cross-context isolation via group matching. `eslint-plugin-boundaries` integrates into ESLint for in-editor feedback but requires more complex config for 5+ bounded contexts ([dependency-cruiser](https://github.com/sverweij/dependency-cruiser), [eslint-plugin-boundaries](https://github.com/javierbrea/eslint-plugin-boundaries)). **Recommendation**: Use `dependency-cruiser` as the primary CI boundary check; optionally add `eslint-plugin-boundaries` for editor-time feedback.
 - `dist/.gitkeep` (or generated artifact policy file)
 2. Update:
 - `hermes-fly` (hybrid dispatch wrapper, defaulting to legacy behavior)
@@ -367,6 +426,7 @@ Implement read-only operational commands in TS.
 - `src/commands/status.ts`
 - `src/commands/logs.ts`
 - shared table renderer in `src/shared/core/` if needed
+  - **Finding** [MEDIUM]: Three commands (`list`, `status`, `doctor`) need tabular output. A shared renderer in `src/shared/core/table.ts` avoids duplication. Recommend adding it during Phase 2 (`list` migration) using either a thin `cli-table3` wrapper or a minimal custom formatter. **Recommendation**: Promote from 'if needed' to planned deliverable in Phase 2.
 - use-cases under `src/contexts/runtime/application/use-cases/`
 2. Update parity fixtures for both commands.
 
@@ -438,7 +498,8 @@ Extract provider/model/messaging logic into TS modules before full `deploy` migr
 1. Add modules:
 - `src/contexts/deploy/infrastructure/adapters/openrouter-catalog.ts`
 - `src/contexts/messaging/infrastructure/adapters/telegram-api.ts`
-- `src/contexts/messaging/infrastructure/adapters/discord-api.ts` (if applicable in current code)
+- ~~`src/contexts/messaging/infrastructure/adapters/discord-api.ts`~~ (not applicable -- Discord was removed from `lib/messaging.sh`; only backward-compat secret bridging remains in `templates/entrypoint.sh`)
+  - **Finding** [HIGH]: Codebase confirms Discord fully removed from messaging module. No Discord setup flow, validation, or behavior exists to port. Only `DISCORD_BOT_TOKEN`/`DISCORD_ALLOWED_USERS` env bridging remains in entrypoint template for backward compat. **Recommendation**: Drop this adapter from Phase 6 scope.
 2. Add domain/application modules:
 - `src/contexts/messaging/domain/*`
 - `src/contexts/messaging/application/use-cases/*`
@@ -578,6 +639,7 @@ Enable TS by default for low/medium-risk commands while keeping fallback and ove
 
 1. Switch `hermes-fly` to exec TS CLI directly (or keep thin bash shim).
 2. Archive/remove legacy bash modules from runtime path (optionally move to `legacy/` for one release).
+  - **Finding** [MEDIUM]: The plan's own rollback mechanism (`HERMES_FLY_IMPL_MODE=legacy`) requires bash modules in the runtime path. Moving to `legacy/` (not removing) preserves rollback during the deprecation window. Full removal should follow one release after the deprecation window closes. **Recommendation**: Commit to 'move to `legacy/`' for at least one release rather than leaving it optional; schedule full removal for the subsequent release.
 3. Simplify release/install scripts around new runtime contract.
 
 ### Deterministic verification criteria
@@ -769,3 +831,17 @@ Start with PR A (foundation):
 3. Add `HERMES_FLY_IMPL_MODE` and `HERMES_FLY_TS_COMMANDS` docs in README developer section.
 4. Add DDD folder skeleton + import-boundary lint rules.
 5. Prove zero user-facing behavior change via full existing bats suite.
+
+---
+
+## References
+
+- [dependency-cruiser GitHub repository](https://github.com/sverweij/dependency-cruiser)
+- [eslint-plugin-boundaries GitHub repository](https://github.com/javierbrea/eslint-plugin-boundaries)
+- [dependency-cruiser rules reference (DDD patterns)](https://github.com/sverweij/dependency-cruiser/blob/main/doc/rules-reference.md)
+- [eslint-plugin-boundaries element-types rule docs](https://github.com/javierbrea/eslint-plugin-boundaries/blob/master/docs/rules/element-types.md)
+- [Jest vs Vitest comparison (2025)](https://medium.com/@ruverd/jest-vs-vitest-which-test-runner-should-you-use-in-2025-5c85e4f2bda9)
+- [Vitest official comparisons page](https://vitest.dev/guide/comparisons)
+- [Enforcing DDD Bounded Contexts with boundaries enforcement (Medium)](https://medium.com/@sergioausin1993/boundaries-enforcement-in-ts-e2597c65bc4d)
+- [Three Ways to Enforce Module Boundaries (Nx comparison)](https://www.stefanos-lignos.dev/posts/nx-module-boundaries)
+- [Modern Node.js Patterns for 2025](https://kashv1n.com/blog/nodejs-2025/)

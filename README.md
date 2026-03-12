@@ -123,6 +123,29 @@ The prerequisite auto-install feature is tested across diverse environments:
 **See [docs/EDGE_CASE_HANDLING.md](docs/EDGE_CASE_HANDLING.md)** for details
 on edge case handling and test coverage.
 
+## Developer Migration Flags
+
+TypeScript migration scaffolding is present, but runtime defaults remain on legacy bash.
+
+- `HERMES_FLY_IMPL_MODE` controls dispatch mode:
+  - `legacy` (default): always run bash implementations.
+  - `hybrid`: run TypeScript only for allowlisted commands, otherwise bash.
+  - `ts`: same allowlist behavior for now; non-allowlisted commands still use bash.
+- `HERMES_FLY_TS_COMMANDS` is a comma-separated allowlist for TS-routed commands
+  (for example: `list,status,doctor`).
+
+Current PR scope keeps command behavior unchanged by default. If a command is
+allowlisted but TS runtime/artifact is unavailable, `hermes-fly` prints a
+single fallback warning and executes the bash implementation.
+
+```bash
+# Force legacy path explicitly (same as default)
+HERMES_FLY_IMPL_MODE=legacy ./hermes-fly version
+
+# Hybrid mode + allowlisted command; falls back when dist/cli.js is absent
+HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=version ./hermes-fly version
+```
+
 ## License
 
 [MIT](LICENSE)

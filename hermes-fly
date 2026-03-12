@@ -93,10 +93,85 @@ The wizard will prompt for all required information interactively.
 EOF
 }
 
+resolve_impl_mode() {
+    local mode="${HERMES_FLY_IMPL_MODE:-legacy}"
+    [[ -z "$mode" ]] && mode="legacy"
+
+    case "$mode" in
+        legacy | hybrid | ts)
+            printf '%s\n' "$mode"
+            ;;
+        *)
+            printf "Warning: Unknown HERMES_FLY_IMPL_MODE '%s', using legacy\n" "$mode" >&2
+            printf 'legacy\n'
+            ;;
+    esac
+}
+
+command_in_ts_allowlist() {
+    local command_name="${1:-}"
+    local raw_list="${HERMES_FLY_TS_COMMANDS:-}"
+    [[ -z "$command_name" || -z "$raw_list" ]] && return 1
+
+    local entry
+    IFS=',' read -r -a _ts_commands <<<"$raw_list"
+    for entry in "${_ts_commands[@]}"; do
+        entry="$(printf '%s' "$entry" | tr -d '[:space:]')"
+        [[ -z "$entry" ]] && continue
+        [[ "$entry" == "$command_name" ]] && return 0
+    done
+
+    return 1
+}
+
+ts_runtime_available() {
+    command -v node >/dev/null 2>&1 || return 1
+    [[ -f "${SCRIPT_DIR}/dist/cli.js" ]] || return 1
+    return 0
+}
+
+maybe_run_ts_command() {
+    local impl_mode="${1:-legacy}"
+    local command_name="${2:-}"
+    shift 2 || true
+
+    case "$impl_mode" in
+        legacy)
+            return 10
+            ;;
+        hybrid | ts)
+            if ! command_in_ts_allowlist "$command_name"; then
+                return 10
+            fi
+            ;;
+        *)
+            return 10
+            ;;
+    esac
+
+    if ! ts_runtime_available; then
+        printf "Warning: TS implementation unavailable for command '%s'; falling back to legacy\n" "$command_name" >&2
+        return 10
+    fi
+
+    node "${SCRIPT_DIR}/dist/cli.js" "$command_name" "$@"
+}
+
 # --- Main dispatch ---
 main() {
     local cmd="${1:-help}"
     shift || true
+
+    local impl_mode ts_rc
+    impl_mode="$(resolve_impl_mode)"
+    ts_rc=0
+    maybe_run_ts_command "$impl_mode" "$cmd" "$@" || ts_rc=$?
+    if [[ "$ts_rc" -eq 0 ]]; then
+        return 0
+    fi
+    if [[ "$ts_rc" -ne 10 ]]; then
+        return "$ts_rc"
+    fi
 
     case "$cmd" in
         deploy)

@@ -3,3 +3,9 @@
 # macOS Finder metadata
 .DS_Store
 **/.DS_Store
+
+# TypeScript migration artifacts
+dist/*
+!dist/.gitkeep
+*.tsbuildinfo
+node_modules/
