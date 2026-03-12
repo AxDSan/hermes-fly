@@ -27,6 +27,15 @@ require_pattern() {
   fi
 }
 
+reject_pattern() {
+  local pattern="$1"
+  local path="$2"
+  if grep -Eiq "${pattern}" "${path}"; then
+    printf "Found forbidden pattern '%s' in %s\n" "${pattern}" "${path}" >&2
+    exit 1
+  fi
+}
+
 require_file "${review3_report}"
 require_file "${review1_plan}"
 require_file "${review2_plan}"
@@ -35,6 +44,8 @@ require_file "${review2_plan}"
 grep -x "## Summary" "${review3_report}" >/dev/null
 grep -x "## Section 5 Verification Command Log Summary" "${review3_report}" >/dev/null
 require_pattern "section[[:space:]]*5.*(criteria|checks).*(pass|passed)" "${review3_report}"
+reject_pattern "section[[:space:]]*5.*(did[[:space:]]+not|didn't|not|never|without).*(pass|passed)" "${review3_report}"
+reject_pattern "(did[[:space:]]+not|didn't|not|never|without).*(pass|passed).*section[[:space:]]*5" "${review3_report}"
 grep -F "scripts/install.sh" "${review3_report}" >/dev/null
 grep -F "scripts/release-guard.sh" "${review3_report}" >/dev/null
 

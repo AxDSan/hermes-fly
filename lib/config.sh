@@ -12,10 +12,14 @@ fi
 _config_file() {
   if [[ -n "${HERMES_FLY_CONFIG_DIR:-}" ]]; then
     local config_dir="${HERMES_FLY_CONFIG_DIR}"
-    if [[ "${config_dir}" != "/" ]]; then
+    while [[ "${config_dir}" != "/" && "${config_dir}" == */ ]]; do
       config_dir="${config_dir%/}"
+    done
+    if [[ "${config_dir}" == "/" ]]; then
+      echo "/config.yaml"
+    else
+      echo "${config_dir}/config.yaml"
     fi
-    echo "${config_dir}/config.yaml"
     return
   fi
 

@@ -61,3 +61,13 @@ teardown() {
   '
   assert_success
 }
+
+@test "_config_file canonicalizes repeated trailing slashes in HERMES_FLY_CONFIG_DIR" {
+  run bash -c '
+    set -euo pipefail
+    source "${PROJECT_ROOT}/lib/config.sh"
+    export HERMES_FLY_CONFIG_DIR="/tmp///"
+    test "$(_config_file)" = "/tmp/config.yaml"
+  '
+  assert_success
+}
