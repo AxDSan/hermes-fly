@@ -41,7 +41,8 @@ tests/bats/bin/bats \
   tests/logs-ts-hybrid.bats \
   tests/status.bats \
   tests/logs.bats \
-  tests/hybrid-dispatch.bats
+  tests/hybrid-dispatch.bats \
+  tests/verify-pr-d2-status-logs.bats
 
 npm run build
 

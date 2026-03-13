@@ -38,11 +38,33 @@ teardown() {
 
 @test "verify-pr-d2-status-logs.sh exits 0 and prints success message" {
   run bash -c '
+    set -euo pipefail
+    out_file="$(mktemp)"
+    trap "rm -f \"${out_file}\"" EXIT
     cd "${PROJECT_ROOT}"
-    "${PROJECT_ROOT}/scripts/verify-pr-d2-status-logs.sh" 2>&1 | tail -1
+    "${PROJECT_ROOT}/scripts/verify-pr-d2-status-logs.sh" >"${out_file}" 2>&1
+    exit_code="$?"
+    if [[ "${exit_code}" -ne 0 ]]; then
+      printf "Verifier exited %s\n" "${exit_code}" >&2
+      exit 1
+    fi
+    tail -1 "${out_file}"
   '
   assert_success
   assert_output "PR-D2 status/logs verification passed."
+}
+
+@test "verify-pr-d2-status-logs.sh bats invocation includes verify-pr-d2-status-logs.bats" {
+  run bash -c '
+    set -euo pipefail
+    script="${PROJECT_ROOT}/scripts/verify-pr-d2-status-logs.sh"
+    count="$(grep -c "verify-pr-d2-status-logs.bats" "${script}")"
+    if ! printf "%s\n" "${count}" | grep -q "[2-9]"; then
+      echo "MISSING: verify-pr-d2-status-logs.bats appears only once (not in bats invocation)"
+      exit 1
+    fi
+  '
+  assert_success
 }
 
 @test "verify-pr-d2-status-logs.sh includes status -a test-app diff assertions" {
