@@ -23,18 +23,32 @@ export async function runLogsCommand(args: string[], options: LogsCommandOptions
     return 1;
   }
 
-  const result = await useCase.execute(appName);
+  // Deterministic chunk policy:
+  // - stdout chunks: write immediately to command stdout sink
+  // - stderr chunks: buffer in memory during stream
+  // - exitCode=0: flush buffered stderr exactly as captured
+  // - exitCode!=0 or spawn error: drop buffered stderr; emit only contract failure line
+  const stderrBuffer: string[] = [];
 
-  if (result.exitCode !== 0) {
+  let exitCode: number;
+  try {
+    const result = await useCase.stream(appName, {
+      onStdoutChunk: (chunk: string) => { stdout.write(chunk); },
+      onStderrChunk: (chunk: string) => { stderrBuffer.push(chunk); }
+    });
+    exitCode = result.exitCode;
+  } catch {
     stderr.write(`[error] Failed to fetch logs for app '${appName}'\n`);
     return 1;
   }
 
-  if (result.stdout.length > 0) {
-    stdout.write(result.stdout);
+  if (exitCode !== 0) {
+    stderr.write(`[error] Failed to fetch logs for app '${appName}'\n`);
+    return 1;
   }
-  if (result.stderr.length > 0) {
-    stderr.write(result.stderr);
+
+  for (const chunk of stderrBuffer) {
+    stderr.write(chunk);
   }
 
   return 0;

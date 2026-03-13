@@ -20,8 +20,10 @@ export async function resolveApp(args: string[], options: ResolveAppOptions = {}
       if (typeof next === "string" && next.length > 0 && !next.startsWith("-")) {
         appName = next;
         i++;
+      } else {
+        // -a with missing/invalid value resets any previously stored explicit app
+        appName = null;
       }
-      // -a without a value: continue (falls through to current_app)
     }
     // all other args are ignored
   }

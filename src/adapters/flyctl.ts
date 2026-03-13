@@ -1,4 +1,4 @@
-import type { ProcessResult, ProcessRunner } from "./process.js";
+import type { ProcessResult, ProcessRunOptions, ProcessRunner } from "./process.js";
 
 export type AppStatusOk = {
   ok: true;
@@ -20,6 +20,7 @@ export interface FlyctlPort {
   getMachineState(appName: string): Promise<string | null>;
   getAppStatus(appName: string): Promise<AppStatusResult>;
   getAppLogs(appName: string): Promise<ProcessResult>;
+  streamAppLogs(appName: string, options?: ProcessRunOptions): Promise<{ exitCode: number }>;
 }
 
 export class FlyctlAdapter implements FlyctlPort {
@@ -137,5 +138,9 @@ export class FlyctlAdapter implements FlyctlPort {
 
   async getAppLogs(appName: string): Promise<ProcessResult> {
     return this.processRunner.run("fly", ["logs", "--app", appName]);
+  }
+
+  async streamAppLogs(appName: string, options?: ProcessRunOptions): Promise<{ exitCode: number }> {
+    return this.processRunner.runStreaming("fly", ["logs", "--app", appName], options);
   }
 }
