@@ -91,6 +91,48 @@ teardown() {
   assert_success
 }
 
+@test "hybrid allowlisted logs streams output incrementally before process exit" {
+  run bash -c 'set -euo pipefail
+    cd "${PROJECT_ROOT}"
+    npm run build >/dev/null
+    tmp="$(mktemp -d)"
+    trap "rm -rf \"${tmp}\"" EXIT
+    mkdir -p "${tmp}/config" "${tmp}/logs" "${tmp}/mockbin"
+
+    printf '"'"'#!/usr/bin/env bash\nif [ "$1" = "logs" ]; then\n  printf "line-1\\n"\n  sleep 1\n  printf "line-2\\n"\n  exit 0\nfi\n'"'"' > "${tmp}/mockbin/fly"
+    chmod +x "${tmp}/mockbin/fly"
+
+    PATH="${tmp}/mockbin:tests/mocks:${PATH}" \
+      HERMES_FLY_CONFIG_DIR="${tmp}/config" HERMES_FLY_LOG_DIR="${tmp}/logs" \
+      HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=logs \
+      ./hermes-fly logs -a test-app >"${tmp}/out" 2>"${tmp}/err" &
+    bg_pid=$!
+
+    sleep 0.2
+    if ! grep -qF "line-1" "${tmp}/out"; then
+      printf "FAIL: line-1 not visible after 0.2s (streaming not working)\n" >&2
+      kill "${bg_pid}" 2>/dev/null || true
+      exit 1
+    fi
+    if ! kill -0 "${bg_pid}" 2>/dev/null; then
+      printf "FAIL: process already exited after 0.2s (expected still running)\n" >&2
+      exit 1
+    fi
+
+    set +e
+    wait "${bg_pid}"
+    bg_exit=$?
+    set -e
+
+    grep -qF "line-2" "${tmp}/out"
+    if grep -qF "falling back to legacy" "${tmp}/err"; then
+      printf "FAIL: unexpected fallback warning in stderr\n" >&2
+      exit 1
+    fi
+    test "${bg_exit}" = "0"'
+  assert_success
+}
+
 @test "hybrid allowlisted logs falls back when dist artifact is missing" {
   run bash -c 'set -euo pipefail
     cd "${PROJECT_ROOT}"
