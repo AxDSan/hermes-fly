@@ -391,9 +391,9 @@ Expected: behavior returns to prior REVIEW-2 baseline.
 - [x] S5 WRITE_TEST: `tests/hybrid-dispatch.bats`
 - [x] S6 CONFIRM_RED: test fails as expected
 - [x] S7 IMPLEMENT: modified `tests/hybrid-dispatch.bats`
-- [x] S8 RUN_TESTS: pass (1 iteration)
+- [x] S8 RUN_TESTS: pass (5 iterations — see VERIFY_ALL for root cause of non-determinism)
 - [x] S9 REFACTOR: no refactoring needed
-- Anomalies: none
+- Anomalies: [S8a] Non-deterministic failures across 14 dist-missing fallback tests (tests 22-35) caused by (1) `mv dist/ bak_dir/dist` + `rm -rf dist` failing on macOS with "Directory not empty" and (2) `--separate-stderr` BATS flag producing `stderr_lines=0`. Fixed by switching all 14 tests to `mv dist/cli.js bak_dir/cli.js` (move file only, not directory) and `run bash -c '... 2>&1'` with combined output assertion. [S10] Further non-determinism traced to orphaned `npm run build` background processes from previous test runs that were rebuilding `dist/cli.js` while tests had it moved; resolved by killing orphan processes.
 
 ### Slice 3: Harden one-command verifier for review-3 edge cases
 - [x] S4 ANALYZE_CRITERIA: 5 criteria extracted
@@ -414,5 +414,5 @@ Expected: behavior returns to prior REVIEW-2 baseline.
 - Anomalies: none
 
 ### VERIFY_ALL
-- Test suite: pass (1 iteration)
-- Criteria walk: all satisfied
+- Test suite: pass (3 clean consecutive runs after orphan process cleanup; 57/57 hybrid-dispatch.bats + 94/94 across all BATS suites)
+- Criteria walk: all satisfied (5.1 files present, 5.2 parity matrix all diffs exit 0, 5.3 dist-missing contracts verified, 5.4 REVIEW-2 gates green, 5.5 verifier exits 0 with "PR-D1 verification passed.", 5.6 report content checks pass)
