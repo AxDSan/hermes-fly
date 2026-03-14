@@ -192,9 +192,18 @@ printf "current_app: fallback-app\n" > "${tmp}/config/config.yaml"
 PATH="tests/mocks:${PATH}" HERMES_FLY_CONFIG_DIR="${tmp}/config" HERMES_FLY_LOG_DIR="${tmp}/logs" \
   TMP_DIR="${tmp}" bash -c '
     MOCK_FLY_STATUS=fail HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=status \
-      ./hermes-fly status -a --unknown-flag >"${TMP_DIR}/malformed-status.out" 2>"${TMP_DIR}/malformed-status.err" || true
+      ./hermes-fly status -a --unknown-flag >"${TMP_DIR}/malformed-status.out" 2>"${TMP_DIR}/malformed-status.err"
+    printf "%s\n" "$?" >"${TMP_DIR}/malformed-status.exit"
   '
 
+if [[ "$(cat "${tmp}/malformed-status.exit")" != "1" ]]; then
+  printf "Unexpected malformed-status exit: %s\n" "$(cat "${tmp}/malformed-status.exit")" >&2
+  exit 1
+fi
+if [[ -s "${tmp}/malformed-status.out" ]]; then
+  printf "Unexpected malformed-status stdout: %s\n" "$(cat "${tmp}/malformed-status.out")" >&2
+  exit 1
+fi
 if ! grep -qF "Failed to get status for app '--unknown-flag'" "${tmp}/malformed-status.err"; then
   printf "Missing explicit malformed-flag error in status stderr: %s\n" "$(cat "${tmp}/malformed-status.err")" >&2
   exit 1
@@ -214,9 +223,18 @@ printf "current_app: fallback-app\n" > "${tmp}/config/config.yaml"
 PATH="tests/mocks:${PATH}" HERMES_FLY_CONFIG_DIR="${tmp}/config" HERMES_FLY_LOG_DIR="${tmp}/logs" \
   TMP_DIR="${tmp}" bash -c '
     MOCK_FLY_LOGS=fail HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=logs \
-      ./hermes-fly logs -a --unknown-flag >"${TMP_DIR}/malformed-logs.out" 2>"${TMP_DIR}/malformed-logs.err" || true
+      ./hermes-fly logs -a --unknown-flag >"${TMP_DIR}/malformed-logs.out" 2>"${TMP_DIR}/malformed-logs.err"
+    printf "%s\n" "$?" >"${TMP_DIR}/malformed-logs.exit"
   '
 
+if [[ "$(cat "${tmp}/malformed-logs.exit")" != "1" ]]; then
+  printf "Unexpected malformed-logs exit: %s\n" "$(cat "${tmp}/malformed-logs.exit")" >&2
+  exit 1
+fi
+if [[ -s "${tmp}/malformed-logs.out" ]]; then
+  printf "Unexpected malformed-logs stdout: %s\n" "$(cat "${tmp}/malformed-logs.out")" >&2
+  exit 1
+fi
 if ! grep -qF "Failed to fetch logs for app '--unknown-flag'" "${tmp}/malformed-logs.err"; then
   printf "Missing explicit malformed-flag error in logs stderr: %s\n" "$(cat "${tmp}/malformed-logs.err")" >&2
   exit 1

@@ -181,6 +181,30 @@ teardown() {
       echo "MISSING: negative No app specified assertions (found fewer than 3)"
       exit 1
     fi
+    if ! grep -q "malformed-status.exit" "${script}"; then
+      echo "MISSING: malformed-status.exit assertion"
+      exit 1
+    fi
+    if ! grep -q "Unexpected malformed-status exit" "${script}"; then
+      echo "MISSING: Unexpected malformed-status exit check"
+      exit 1
+    fi
+    if ! grep -q "Unexpected malformed-status stdout" "${script}"; then
+      echo "MISSING: Unexpected malformed-status stdout check"
+      exit 1
+    fi
+    if ! grep -q "malformed-logs.exit" "${script}"; then
+      echo "MISSING: malformed-logs.exit assertion"
+      exit 1
+    fi
+    if ! grep -q "Unexpected malformed-logs exit" "${script}"; then
+      echo "MISSING: Unexpected malformed-logs exit check"
+      exit 1
+    fi
+    if ! grep -q "Unexpected malformed-logs stdout" "${script}"; then
+      echo "MISSING: Unexpected malformed-logs stdout check"
+      exit 1
+    fi
   '
   assert_success
 }
