@@ -159,6 +159,32 @@ teardown() {
   assert_success
 }
 
+@test "verify-pr-d2-status-logs.sh includes explicit malformed-flag assertions for status and logs" {
+  run bash -c '
+    set -euo pipefail
+    script="${PROJECT_ROOT}/scripts/verify-pr-d2-status-logs.sh"
+    if ! grep -q "status -a --unknown-flag" "${script}"; then
+      echo "MISSING: status -a --unknown-flag assertion block"
+      exit 1
+    fi
+    if ! grep -q "logs -a --unknown-flag" "${script}"; then
+      echo "MISSING: logs -a --unknown-flag assertion block"
+      exit 1
+    fi
+    count_fallback="$(grep -c "fallback-app" "${script}")"
+    if (( count_fallback < 2 )); then
+      echo "MISSING: negative fallback-app assertions (found fewer than 2)"
+      exit 1
+    fi
+    count_noapp="$(grep -c "No app specified" "${script}")"
+    if (( count_noapp < 3 )); then
+      echo "MISSING: negative No app specified assertions (found fewer than 3)"
+      exit 1
+    fi
+  '
+  assert_success
+}
+
 @test "verify-pr-d2-status-logs.sh includes dist-missing fallback checks for status and logs" {
   run bash -c '
     set -euo pipefail

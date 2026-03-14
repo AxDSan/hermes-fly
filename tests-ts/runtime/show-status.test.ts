@@ -67,7 +67,7 @@ describe("resolve-app", () => {
     }
   });
 
-  it("-a without a value falls back to current app", async () => {
+  it("-a without a value returns null", async () => {
     const root = await mkdtemp(join(tmpdir(), "hermes-resolve-app-"));
     try {
       await mkdir(join(root, "config"), { recursive: true });
@@ -79,7 +79,7 @@ describe("resolve-app", () => {
       const app = await resolveApp(["-a"], {
         env: { ...process.env, HERMES_FLY_CONFIG_DIR: join(root, "config") }
       });
-      assert.equal(app, "fallback-app");
+      assert.equal(app, null);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -111,7 +111,7 @@ describe("resolve-app", () => {
     }
   });
 
-  it("resolveApp([\"-a\", \"first\", \"-a\"], envWithCurrentApp) falls back to current app", async () => {
+  it("resolveApp([\"-a\", \"first\", \"-a\"], envWithCurrentApp) returns null", async () => {
     const root = await mkdtemp(join(tmpdir(), "hermes-resolve-app-trail-"));
     try {
       await mkdir(join(root, "config"), { recursive: true });
@@ -120,16 +120,15 @@ describe("resolve-app", () => {
         "current_app: fallback-app\n",
         "utf8"
       );
-      const app = await resolveApp(["-a", "first", "-a"], {
-        env: { ...process.env, HERMES_FLY_CONFIG_DIR: join(root, "config") }
-      });
-      assert.equal(app, "fallback-app");
+      const envWithCurrentApp = { env: { ...process.env, HERMES_FLY_CONFIG_DIR: join(root, "config") } };
+      const app = await resolveApp(["-a", "first", "-a"], envWithCurrentApp);
+      assert.equal(app, null);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("resolveApp([\"-a\", \"--unknown-flag\"], envWithCurrentApp) falls back to current app", async () => {
+  it("resolveApp([\"-a\", \"--unknown-flag\"], envWithCurrentApp) uses --unknown-flag as explicit app", async () => {
     const root = await mkdtemp(join(tmpdir(), "hermes-resolve-app-flag-"));
     try {
       await mkdir(join(root, "config"), { recursive: true });
@@ -138,10 +137,9 @@ describe("resolve-app", () => {
         "current_app: fallback-app\n",
         "utf8"
       );
-      const app = await resolveApp(["-a", "--unknown-flag"], {
-        env: { ...process.env, HERMES_FLY_CONFIG_DIR: join(root, "config") }
-      });
-      assert.equal(app, "fallback-app");
+      const envWithCurrentApp = { env: { ...process.env, HERMES_FLY_CONFIG_DIR: join(root, "config") } };
+      const app = await resolveApp(["-a", "--unknown-flag"], envWithCurrentApp);
+      assert.equal(app, "--unknown-flag");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -186,6 +186,50 @@ if ! grep -q "Failed to fetch logs for app" "${tmp}/fail-logs.err"; then
   exit 1
 fi
 
+# status: explicit malformed-flag (-a --unknown-flag must not fall back to current_app)
+printf "current_app: fallback-app\n" > "${tmp}/config/config.yaml"
+
+PATH="tests/mocks:${PATH}" HERMES_FLY_CONFIG_DIR="${tmp}/config" HERMES_FLY_LOG_DIR="${tmp}/logs" \
+  TMP_DIR="${tmp}" bash -c '
+    MOCK_FLY_STATUS=fail HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=status \
+      ./hermes-fly status -a --unknown-flag >"${TMP_DIR}/malformed-status.out" 2>"${TMP_DIR}/malformed-status.err" || true
+  '
+
+if ! grep -qF "Failed to get status for app '--unknown-flag'" "${tmp}/malformed-status.err"; then
+  printf "Missing explicit malformed-flag error in status stderr: %s\n" "$(cat "${tmp}/malformed-status.err")" >&2
+  exit 1
+fi
+if grep -q "fallback-app" "${tmp}/malformed-status.err"; then
+  printf "Unexpected fallback-app in status stderr: %s\n" "$(cat "${tmp}/malformed-status.err")" >&2
+  exit 1
+fi
+if grep -q "No app specified" "${tmp}/malformed-status.err"; then
+  printf "Unexpected 'No app specified' in status stderr: %s\n" "$(cat "${tmp}/malformed-status.err")" >&2
+  exit 1
+fi
+
+# logs: explicit malformed-flag (-a --unknown-flag must not fall back to current_app)
+printf "current_app: fallback-app\n" > "${tmp}/config/config.yaml"
+
+PATH="tests/mocks:${PATH}" HERMES_FLY_CONFIG_DIR="${tmp}/config" HERMES_FLY_LOG_DIR="${tmp}/logs" \
+  TMP_DIR="${tmp}" bash -c '
+    MOCK_FLY_LOGS=fail HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=logs \
+      ./hermes-fly logs -a --unknown-flag >"${TMP_DIR}/malformed-logs.out" 2>"${TMP_DIR}/malformed-logs.err" || true
+  '
+
+if ! grep -qF "Failed to fetch logs for app '--unknown-flag'" "${tmp}/malformed-logs.err"; then
+  printf "Missing explicit malformed-flag error in logs stderr: %s\n" "$(cat "${tmp}/malformed-logs.err")" >&2
+  exit 1
+fi
+if grep -q "fallback-app" "${tmp}/malformed-logs.err"; then
+  printf "Unexpected fallback-app in logs stderr: %s\n" "$(cat "${tmp}/malformed-logs.err")" >&2
+  exit 1
+fi
+if grep -q "No app specified" "${tmp}/malformed-logs.err"; then
+  printf "Unexpected 'No app specified' in logs stderr: %s\n" "$(cat "${tmp}/malformed-logs.err")" >&2
+  exit 1
+fi
+
 # dist-missing fallback: status
 (
   set -euo pipefail

@@ -5,30 +5,33 @@ interface ResolveAppOptions {
 }
 
 /**
- * Mirrors bash config_resolve_app semantics exactly.
+ * Resolves the target app name from CLI args and config.
  * Resolution order:
- *   1. -a APP from args (last occurrence wins)
- *   2. current_app from config.yaml
- *   3. null
+ *   1. If -a never appears: return current_app from config.yaml (or null if absent).
+ *   2. If -a appears and a following token exists (any token, including hyphen-prefixed):
+ *      treat that token as the explicit app name. Last -a wins.
+ *   3. If -a appears but has no following token: return null.
  */
 export async function resolveApp(args: string[], options: ResolveAppOptions = {}): Promise<string | null> {
+  let seenExplicitFlag = false;
   let appName: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "-a") {
+      seenExplicitFlag = true;
       const next = args[i + 1];
-      if (typeof next === "string" && next.length > 0 && !next.startsWith("-")) {
+      if (typeof next === "string" && next.length > 0) {
         appName = next;
         i++;
       } else {
-        // -a with missing/invalid value resets any previously stored explicit app
+        // -a with no following token: explicit flag present but value missing
         appName = null;
       }
     }
     // all other args are ignored
   }
 
-  if (appName !== null) {
+  if (seenExplicitFlag) {
     return appName;
   }
 

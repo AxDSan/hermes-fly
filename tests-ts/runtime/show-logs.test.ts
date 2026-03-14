@@ -174,7 +174,7 @@ describe("runLogsCommand", () => {
     assert.equal(outChunks.join(""), "logs for my-app\n");
   });
 
-  it("-a without value falls back to current app", async () => {
+  it("-a without value returns no-app error", async () => {
     const root = await mkdtemp(join(tmpdir(), "hermes-logs-fallback-"));
     try {
       await mkdir(join(root, "config"), { recursive: true });
@@ -193,8 +193,9 @@ describe("runLogsCommand", () => {
       };
 
       const outChunks: string[] = [];
+      const errChunks: string[] = [];
       const stdout = { write: (s: string) => { outChunks.push(s); } };
-      const stderr = { write: () => {} };
+      const stderr = { write: (s: string) => { errChunks.push(s); } };
 
       const code = await runLogsCommand(["-a"], {
         useCase: new ShowLogsUseCase(reader),
@@ -203,8 +204,47 @@ describe("runLogsCommand", () => {
         env: { ...process.env, HERMES_FLY_CONFIG_DIR: join(root, "config") }
       });
 
+      assert.equal(code, 1);
+      assert.equal(outChunks.join(""), "");
+      assert.equal(errChunks.join(""), "[error] No app specified. Use -a APP or run 'hermes-fly deploy' first.\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("-a with hyphen-prefixed token uses token as explicit app", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hermes-logs-hyphen-"));
+    try {
+      await mkdir(join(root, "config"), { recursive: true });
+      await writeFile(
+        join(root, "config", "config.yaml"),
+        "current_app: fallback-app\n",
+        "utf8"
+      );
+
+      const reader: LogsReaderPort = {
+        getLogs: async (app: string) => ({ stdout: `logs for ${app}\n`, stderr: "", exitCode: 0 }),
+        streamLogs: async (app, opts) => {
+          opts?.onStdoutChunk?.(`logs for ${app}\n`);
+          return { exitCode: 0 };
+        }
+      };
+
+      const outChunks: string[] = [];
+      const errChunks: string[] = [];
+      const stdout = { write: (s: string) => { outChunks.push(s); } };
+      const stderr = { write: (s: string) => { errChunks.push(s); } };
+
+      const code = await runLogsCommand(["-a", "--unknown-flag"], {
+        useCase: new ShowLogsUseCase(reader),
+        stdout,
+        stderr,
+        env: { ...process.env, HERMES_FLY_CONFIG_DIR: join(root, "config") }
+      });
+
       assert.equal(code, 0);
-      assert.equal(outChunks.join(""), "logs for fallback-app\n");
+      assert.equal(outChunks.join(""), "logs for --unknown-flag\n");
+      assert.equal(errChunks.join(""), "");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
