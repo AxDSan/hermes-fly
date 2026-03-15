@@ -205,9 +205,6 @@ install_files() {
   _run mkdir -p "$dest_dir"
   _run cp "$src_dir/hermes-fly" "$dest_dir/"
   _run chmod +x "$dest_dir/hermes-fly"
-  if [[ -d "$src_dir/lib" ]]; then
-    _run cp -r "$src_dir/lib" "$dest_dir/"
-  fi
   if [[ -d "$src_dir/templates" ]]; then
     _run cp -r "$src_dir/templates" "$dest_dir/"
   fi

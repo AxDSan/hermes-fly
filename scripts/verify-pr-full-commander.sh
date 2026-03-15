@@ -138,7 +138,7 @@ regression_checks() {
 # ============================================================
 # Run all checks
 # ============================================================
-npm run build --prefix "${PROJECT_ROOT}" >/dev/null 2>&1 || true
+npm run build --prefix "${PROJECT_ROOT}" >/dev/null 2>&1
 
 happy_checks
 edge_checks
