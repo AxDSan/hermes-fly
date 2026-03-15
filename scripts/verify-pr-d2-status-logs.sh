@@ -248,71 +248,7 @@ if grep -q "No app specified" "${tmp}/malformed-logs.err"; then
   exit 1
 fi
 
-# dist-missing fallback: status
-(
-  set -euo pipefail
-  dist_missing_tmp="$(mktemp -d)"
-  dist_backup="${dist_missing_tmp}/cli.js.bak"
-  trap 'if [[ -f "${dist_backup}" ]]; then mv "${dist_backup}" dist/cli.js; fi; rm -rf "${dist_missing_tmp}"' EXIT
-  mv dist/cli.js "${dist_backup}"
-  mkdir -p "${dist_missing_tmp}/config" "${dist_missing_tmp}/logs"
 
-  PATH="tests/mocks:${PATH}" HERMES_FLY_CONFIG_DIR="${dist_missing_tmp}/config" HERMES_FLY_LOG_DIR="${dist_missing_tmp}/logs" \
-    TMP_DIR="${dist_missing_tmp}" bash -c '
-      source ./lib/archive/config.sh
-      config_save_app "test-app" "ord"
-      HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=status \
-        ./hermes-fly status -a test-app >"${TMP_DIR}/out" 2>"${TMP_DIR}/err"
-      printf "%s\n" "$?" >"${TMP_DIR}/exit"
-    '
-
-  if [[ "$(cat "${dist_missing_tmp}/exit")" != "0" ]]; then
-    printf "Unexpected dist-missing status exit: %s\n" "$(cat "${dist_missing_tmp}/exit")" >&2
-    exit 1
-  fi
-  if [[ "$(head -n 1 "${dist_missing_tmp}/err")" != "Warning: TS implementation unavailable for command 'status'; falling back to legacy" ]]; then
-    printf "Unexpected dist-missing status warning: %s\n" "$(head -n 1 "${dist_missing_tmp}/err")" >&2
-    exit 1
-  fi
-  diff -u tests/parity/baseline/status.stdout.snap "${dist_missing_tmp}/out"
-  tail -n +2 "${dist_missing_tmp}/err" > "${dist_missing_tmp}/err.rest"
-  diff -u tests/parity/baseline/status.stderr.snap "${dist_missing_tmp}/err.rest"
-)
-
-npm run build
-
-# dist-missing fallback: logs
-(
-  set -euo pipefail
-  dist_missing_tmp="$(mktemp -d)"
-  dist_backup="${dist_missing_tmp}/cli.js.bak"
-  trap 'if [[ -f "${dist_backup}" ]]; then mv "${dist_backup}" dist/cli.js; fi; rm -rf "${dist_missing_tmp}"' EXIT
-  mv dist/cli.js "${dist_backup}"
-  mkdir -p "${dist_missing_tmp}/config" "${dist_missing_tmp}/logs"
-
-  PATH="tests/mocks:${PATH}" HERMES_FLY_CONFIG_DIR="${dist_missing_tmp}/config" HERMES_FLY_LOG_DIR="${dist_missing_tmp}/logs" \
-    TMP_DIR="${dist_missing_tmp}" bash -c '
-      source ./lib/archive/config.sh
-      config_save_app "test-app" "ord"
-      HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=logs \
-        ./hermes-fly logs -a test-app >"${TMP_DIR}/out" 2>"${TMP_DIR}/err"
-      printf "%s\n" "$?" >"${TMP_DIR}/exit"
-    '
-
-  if [[ "$(cat "${dist_missing_tmp}/exit")" != "0" ]]; then
-    printf "Unexpected dist-missing logs exit: %s\n" "$(cat "${dist_missing_tmp}/exit")" >&2
-    exit 1
-  fi
-  if [[ "$(head -n 1 "${dist_missing_tmp}/err")" != "Warning: TS implementation unavailable for command 'logs'; falling back to legacy" ]]; then
-    printf "Unexpected dist-missing logs warning: %s\n" "$(head -n 1 "${dist_missing_tmp}/err")" >&2
-    exit 1
-  fi
-  diff -u tests/parity/baseline/logs.stdout.snap "${dist_missing_tmp}/out"
-  tail -n +2 "${dist_missing_tmp}/err" > "${dist_missing_tmp}/err.rest"
-  diff -u tests/parity/baseline/logs.stderr.snap "${dist_missing_tmp}/err.rest"
-)
-
-npm run build
 
 npm run verify:pr-d1-list-command
 

@@ -182,3 +182,40 @@ describe("RunDeployWizardUseCase - channel resolution", () => {
     assert.equal(captured[0], "stable");
   });
 });
+
+import { FlyDeployWizard } from "../../src/contexts/deploy/infrastructure/adapters/fly-deploy-wizard.ts";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+describe("FlyDeployWizard.saveApp - persistence contract", () => {
+  it("saveApp writes current_app and apps region entry", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "saveapp-test-"));
+    try {
+      const wizard = new FlyDeployWizard({ HERMES_FLY_CONFIG_DIR: dir, HOME: dir });
+      await wizard.saveApp("my-app", "iad");
+      const content = await readFile(join(dir, "config.yaml"), "utf8");
+      assert.ok(content.includes("current_app:"), `current_app: not found in:\n${content}`);
+      assert.ok(content.includes("apps:"), `apps: not found in:\n${content}`);
+      assert.ok(content.includes("- name:"), `- name: not found in:\n${content}`);
+      assert.ok(content.includes("region:"), `region: not found in:\n${content}`);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("saveApp rewrites existing app entry without duplicates", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "saveapp-test-"));
+    try {
+      const wizard = new FlyDeployWizard({ HERMES_FLY_CONFIG_DIR: dir, HOME: dir });
+      await wizard.saveApp("my-app", "iad");
+      await wizard.saveApp("my-app", "lax");
+      const content = await readFile(join(dir, "config.yaml"), "utf8");
+      const nameMatches = (content.match(/  - name: my-app/g) ?? []).length;
+      assert.equal(nameMatches, 1, `expected exactly 1 name entry, got ${nameMatches} in:\n${content}`);
+      assert.ok(content.includes("region: lax"), `expected region lax in:\n${content}`);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+});

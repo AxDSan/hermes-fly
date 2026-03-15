@@ -124,9 +124,37 @@ export class FlyDeployWizard implements DeployWizardPort {
     let existing = "";
     try { existing = await readFile(configPath, "utf8"); } catch { /* file may not exist */ }
 
-    const lines = existing.split(/\r?\n/).filter(l => !/^current_app:/.test(l));
-    lines.push(`current_app: ${appName}`);
-    const content = lines.filter(l => l.trim() !== "").join("\n") + "\n";
-    await writeFile(configPath, content, "utf8");
+    const allLines = existing.split(/\r?\n/).filter(l => l.trim() !== "");
+    const withoutCurrentApp = allLines.filter(l => !/^current_app:/.test(l));
+
+    // Split at apps: header
+    const appsIdx = withoutCurrentApp.findIndex(l => /^apps:$/.test(l.trimEnd()));
+    const preLines = appsIdx === -1 ? withoutCurrentApp : withoutCurrentApp.slice(0, appsIdx);
+    const appsBodyLines = appsIdx === -1 ? [] : withoutCurrentApp.slice(appsIdx + 1);
+
+    // Parse existing entries (each starts with "  - name:")
+    const entries: string[][] = [];
+    let current: string[] = [];
+    for (const line of appsBodyLines) {
+      if (/^  - name:/.test(line)) {
+        if (current.length > 0) entries.push(current);
+        current = [line];
+      } else if (current.length > 0) {
+        current.push(line);
+      }
+    }
+    if (current.length > 0) entries.push(current);
+
+    // Dedup: remove existing entry for this appName, then append updated entry
+    const filtered = entries.filter(e => !e.some(l => l === `  - name: ${appName}`));
+    filtered.push([`  - name: ${appName}`, `    region: ${region}`]);
+
+    const newLines = [
+      `current_app: ${appName}`,
+      ...preLines,
+      "apps:",
+      ...filtered.flat(),
+    ];
+    await writeFile(configPath, newLines.join("\n") + "\n", "utf8");
   }
 }
