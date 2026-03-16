@@ -101,7 +101,7 @@ teardown() {
     NODE_DIR="$(dirname "$(command -v node)")"
     tmp_no_fly="$(mktemp -d)"
     trap "rm -rf \"${tmp_no_fly}\"" EXIT
-    printf "#!/usr/bin/env bash\nif [[ \"${1:-}\" == \"fly\" ]]; then exit 1; fi\nexec /usr/bin/which \"$@\"\n" > "${tmp_no_fly}/which"
+    printf '\''#!/usr/bin/env bash\nif [[ "${1:-}" == "fly" ]]; then exit 1; fi\nexec /usr/bin/which "$@"\n'\'' > "${tmp_no_fly}/which"
     chmod +x "${tmp_no_fly}/which"
     OPENROUTER_API_KEY=test-key PATH="${tmp_no_fly}:${NODE_DIR}:/usr/bin:/bin" \
       "${PROJECT_ROOT}/hermes-fly" deploy --no-auto-install 2>&1
@@ -126,7 +126,7 @@ teardown() {
     NODE_DIR="$(dirname "$(command -v node)")"
     tmp_no_fly="$(mktemp -d)"
     trap "rm -rf \"${tmp_no_fly}\"" EXIT
-    printf "#!/usr/bin/env bash\nif [[ \"${1:-}\" == \"fly\" ]]; then exit 1; fi\nexec /usr/bin/which \"$@\"\n" > "${tmp_no_fly}/which"
+    printf '\''#!/usr/bin/env bash\nif [[ "${1:-}" == "fly" ]]; then exit 1; fi\nexec /usr/bin/which "$@"\n'\'' > "${tmp_no_fly}/which"
     chmod +x "${tmp_no_fly}/which"
     OPENROUTER_API_KEY=test-key PATH="${tmp_no_fly}:${NODE_DIR}:/usr/bin:/bin" \
       "${PROJECT_ROOT}/hermes-fly" deploy --channel badvalue --no-auto-install 2>&1
@@ -143,7 +143,7 @@ teardown() {
     NODE_DIR="$(dirname "$(command -v node)")"
     tmp_no_fly="$(mktemp -d)"
     trap "rm -rf \"${tmp_no_fly}\"" EXIT
-    printf "#!/usr/bin/env bash\nif [[ \"${1:-}\" == \"fly\" ]]; then exit 1; fi\nexec /usr/bin/which \"$@\"\n" > "${tmp_no_fly}/which"
+    printf '\''#!/usr/bin/env bash\nif [[ "${1:-}" == "fly" ]]; then exit 1; fi\nexec /usr/bin/which "$@"\n'\'' > "${tmp_no_fly}/which"
     chmod +x "${tmp_no_fly}/which"
     OPENROUTER_API_KEY=test-key PATH="${tmp_no_fly}:${NODE_DIR}:/usr/bin:/bin" \
       "${PROJECT_ROOT}/hermes-fly" deploy --channel preview --no-auto-install 2>&1
