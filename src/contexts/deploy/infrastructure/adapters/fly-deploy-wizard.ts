@@ -45,11 +45,19 @@ type ModelOption = {
   value: string;
   label: string;
   bestFor: string;
+  providerKey: string;
+  providerLabel: string;
 };
 
 type OpenRouterModelRecord = {
   id: string;
   name: string;
+};
+
+type ProviderOption = {
+  key: string;
+  label: string;
+  description: string;
 };
 
 const STATIC_REGIONS: RegionOption[] = [
@@ -115,18 +123,45 @@ const STATIC_VOLUME_OPTIONS: VolumeOption[] = [
 const STATIC_MODEL_OPTIONS: ModelOption[] = [
   {
     value: "anthropic/claude-3-5-sonnet",
-    label: "Balanced (recommended)",
-    bestFor: "Best default for quality and reliability",
+    label: "Claude 3.5 Sonnet",
+    bestFor: "Balanced and reliable",
+    providerKey: "anthropic",
+    providerLabel: "Anthropic",
   },
   {
     value: "anthropic/claude-3-5-haiku",
-    label: "Fast and lower cost",
-    bestFor: "Quicker responses at lower cost",
+    label: "Claude 3.5 Haiku",
+    bestFor: "Fast and lower cost",
+    providerKey: "anthropic",
+    providerLabel: "Anthropic",
   },
   {
     value: "openai/gpt-4.1-mini",
-    label: "OpenAI fast alternative",
+    label: "GPT-4.1 Mini",
     bestFor: "Good general-purpose fallback",
+    providerKey: "openai",
+    providerLabel: "OpenAI",
+  },
+  {
+    value: "google/gemini-2.5-flash",
+    label: "Gemini 2.5 Flash",
+    bestFor: "Fast Google option",
+    providerKey: "google",
+    providerLabel: "Google",
+  },
+  {
+    value: "meta-llama/llama-4-maverick",
+    label: "Llama 4 Maverick",
+    bestFor: "Open source option",
+    providerKey: "meta-llama",
+    providerLabel: "Meta",
+  },
+  {
+    value: "mistralai/mistral-large",
+    label: "Mistral Large",
+    bestFor: "Strong multilingual fallback",
+    providerKey: "mistralai",
+    providerLabel: "Mistral",
   },
 ];
 
@@ -139,6 +174,8 @@ const PREFERRED_DYNAMIC_MODELS: Array<{ id: string; bestFor: string }> = [
   { id: "openai/gpt-5", bestFor: "Higher capability" },
   { id: "mistralai/mistral-large", bestFor: "Strong multilingual fallback" },
 ];
+
+const PROVIDER_ORDER = ["anthropic", "openai", "google", "meta-llama", "mistralai"];
 
 export interface FlyDeployWizardDeps {
   process?: ForegroundProcessRunner;
@@ -525,14 +562,33 @@ export class FlyDeployWizard implements DeployWizardPort {
       return DEFAULT_MODEL;
     }
 
-    const dynamicOptions = await this.fetchCuratedOpenRouterModels(apiKey);
-    const options = dynamicOptions ?? STATIC_MODEL_OPTIONS;
+    const catalog = await this.fetchCuratedOpenRouterModels(apiKey);
+    const provider = await this.collectProviderChoice(catalog);
+    const providerModels = catalog.filter((option) => option.providerKey === provider.key);
+    return await this.collectProviderModelChoice(provider, providerModels);
+  }
 
-    this.prompts.write("Which AI model should your agent use?\n\n");
-    options.forEach((option, index) => {
+  private async collectProviderChoice(catalog: ModelOption[]): Promise<ProviderOption> {
+    const providers = this.buildProviderOptions(catalog);
+    const defaultIndex = Math.max(0, providers.findIndex((provider) => provider.key === "anthropic"));
+
+    this.prompts.write("Which AI provider do you want to use through OpenRouter?\n");
+    this.prompts.write("You'll pick a specific model from that provider next.\n\n");
+    providers.forEach((provider, index) => {
+      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${provider.label.padEnd(12, " ")} ${provider.description}\n`);
+    });
+    this.prompts.write("\n");
+
+    const selectedIndex = await this.chooseNumber(`Choose a provider [${defaultIndex + 1}]: `, providers.length, defaultIndex + 1);
+    return providers[selectedIndex - 1];
+  }
+
+  private async collectProviderModelChoice(provider: ProviderOption, models: ModelOption[]): Promise<string> {
+    this.prompts.write(`Which ${provider.label} model should your agent use?\n\n`);
+    models.forEach((option, index) => {
       this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}\n`);
     });
-    const manualIndex = options.length + 1;
+    const manualIndex = models.length + 1;
     this.prompts.write(`  ${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually\n\n`);
 
     const selectedIndex = await this.chooseNumber(`Choose a model [1]: `, manualIndex, 1);
@@ -548,7 +604,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    return options[selectedIndex - 1].value;
+    return models[selectedIndex - 1].value;
   }
 
   private async collectTelegramToken(envValue: string | undefined): Promise<string> {
@@ -730,7 +786,7 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   }
 
-  private async fetchCuratedOpenRouterModels(apiKey: string): Promise<ModelOption[] | null> {
+  private async fetchCuratedOpenRouterModels(apiKey: string): Promise<ModelOption[]> {
     this.prompts.write("Fetching available models from OpenRouter...\n");
 
     try {
@@ -787,6 +843,8 @@ export class FlyDeployWizard implements DeployWizardPort {
         value: model.id,
         label: this.cleanModelName(model.name, model.id),
         bestFor: preferred.bestFor,
+        providerKey: this.providerKeyForModel(model.id),
+        providerLabel: this.providerLabelForModel(model.id),
       });
       seen.add(model.id);
     }
@@ -799,6 +857,8 @@ export class FlyDeployWizard implements DeployWizardPort {
         value: model.id,
         label: this.cleanModelName(model.name, model.id),
         bestFor: `${this.formatProviderName(model.id)} model`,
+        providerKey: this.providerKeyForModel(model.id),
+        providerLabel: this.providerLabelForModel(model.id),
       }));
 
     const options = [...selected, ...extras];
@@ -815,22 +875,68 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private formatProviderName(modelId: string): string {
-    const provider = modelId.split("/", 1)[0] ?? "Model";
-    switch (provider) {
-      case "openai":
-        return "OpenAI";
-      case "meta-llama":
-        return "Meta";
-      default:
-        return provider
-          .split("-")
-          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-          .join(" ");
-    }
+    return this.providerPresentation(this.providerKeyForModel(modelId)).label;
   }
 
   private isSupportedDynamicModel(modelId: string): boolean {
     return /^(anthropic|openai|google|meta-llama|mistralai)\//.test(modelId);
+  }
+
+  private providerKeyForModel(modelId: string): string {
+    return modelId.split("/", 1)[0] ?? "other";
+  }
+
+  private providerLabelForModel(modelId: string): string {
+    return this.providerPresentation(this.providerKeyForModel(modelId)).label;
+  }
+
+  private providerPresentation(providerKey: string): { label: string; description: string } {
+    switch (providerKey) {
+      case "anthropic":
+        return { label: "Anthropic", description: "Claude models with strong quality" };
+      case "openai":
+        return { label: "OpenAI", description: "GPT models with broad general capability" };
+      case "google":
+        return { label: "Google", description: "Gemini models focused on speed" };
+      case "meta-llama":
+        return { label: "Meta", description: "Llama models with open weights" };
+      case "mistralai":
+        return { label: "Mistral", description: "Mistral models for multilingual use" };
+      default:
+        return {
+          label: providerKey
+            .split("-")
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join(" "),
+          description: "Additional models",
+        };
+    }
+  }
+
+  private buildProviderOptions(catalog: ModelOption[]): ProviderOption[] {
+    const grouped = new Map<string, ProviderOption>();
+    for (const option of catalog) {
+      if (grouped.has(option.providerKey)) {
+        continue;
+      }
+      const presentation = this.providerPresentation(option.providerKey);
+      grouped.set(option.providerKey, {
+        key: option.providerKey,
+        label: option.providerLabel,
+        description: presentation.description,
+      });
+    }
+
+    return [...grouped.values()].sort((left, right) => {
+      const leftIndex = PROVIDER_ORDER.indexOf(left.key);
+      const rightIndex = PROVIDER_ORDER.indexOf(right.key);
+      const normalizedLeft = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex;
+      const normalizedRight = rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex;
+      if (normalizedLeft !== normalizedRight) {
+        return normalizedLeft - normalizedRight;
+      }
+      return left.label.localeCompare(right.label);
+    });
   }
 
   private rememberModelOptions(options: ModelOption[]): void {

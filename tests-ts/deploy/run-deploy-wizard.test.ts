@@ -470,7 +470,8 @@ describe("FlyDeployWizard.collectConfig", () => {
       "2",
       "3",
       "sk-live",
-      "3",
+      "2",
+      "1",
       "1",
       "123:abc",
       "y"
@@ -521,11 +522,13 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /How powerful should your agent's server be/);
     assert.match(guidedCopy, /How much storage should your agent have/);
     assert.match(guidedCopy, /Get your OpenRouter API key at: https:\/\/openrouter\.ai\/settings\/keys/);
+    assert.match(guidedCopy, /Which AI provider do you want to use through OpenRouter/);
+    assert.match(guidedCopy, /Which OpenAI model should your agent use/);
     assert.match(guidedCopy, /Do you want to connect Telegram now/);
     assert.match(guidedCopy, /Review your setup/);
   });
 
-  it("fetches a dynamic curated OpenRouter model list after the API key is entered", async () => {
+  it("fetches a dynamic OpenRouter catalog and lets the user choose provider then model", async () => {
     const prompts = makePromptPort([
       "",
       "",
@@ -534,6 +537,7 @@ describe("FlyDeployWizard.collectConfig", () => {
       "",
       "sk-live",
       "2",
+      "1",
       "",
       "y"
     ], { interactive: true });
@@ -579,11 +583,14 @@ describe("FlyDeployWizard.collectConfig", () => {
     const guidedCopy = prompts.writes.join("");
     assert.match(guidedCopy, /Get your OpenRouter API key at: https:\/\/openrouter\.ai\/settings\/keys/);
     assert.match(guidedCopy, /Fetching available models from OpenRouter/);
-    assert.match(guidedCopy, /Claude Sonnet 4/);
+    assert.match(guidedCopy, /Which AI provider do you want to use through OpenRouter/);
+    assert.match(guidedCopy, /Anthropic/);
+    assert.match(guidedCopy, /OpenAI/);
+    assert.match(guidedCopy, /Which OpenAI model should your agent use/);
     assert.match(guidedCopy, /GPT-5 Mini/);
   });
 
-  it("falls back to a manual-friendly starter model list when OpenRouter model fetch fails", async () => {
+  it("falls back to a provider-first starter catalog when OpenRouter model fetch fails", async () => {
     const prompts = makePromptPort([
       "",
       "",
@@ -592,6 +599,7 @@ describe("FlyDeployWizard.collectConfig", () => {
       "",
       "sk-live",
       "1",
+      "2",
       "",
       "y"
     ], { interactive: true });
@@ -626,10 +634,12 @@ describe("FlyDeployWizard.collectConfig", () => {
 
     const config = await wizard.collectConfig({ channel: "stable" });
 
-    assert.equal(config.model, "anthropic/claude-3-5-sonnet");
+    assert.equal(config.model, "anthropic/claude-3-5-haiku");
     const guidedCopy = prompts.writes.join("");
     assert.match(guidedCopy, /I couldn't load the live OpenRouter model list/);
     assert.match(guidedCopy, /Browse every available model at: https:\/\/openrouter\.ai\/models/);
+    assert.match(guidedCopy, /Which AI provider do you want to use through OpenRouter/);
+    assert.match(guidedCopy, /Which Anthropic model should your agent use/);
   });
 
   it("fails in non-interactive mode when OPENROUTER_API_KEY is missing", async () => {
@@ -650,6 +660,7 @@ describe("FlyDeployWizard.collectConfig", () => {
       "",
       "",
       "sk-live",
+      "",
       "",
       "",
       "n"

@@ -280,17 +280,33 @@ MOCK
 
 # --- release resolution ---
 
-@test "resolve_install_channel defaults to stable" {
+@test "resolve_install_channel defaults to latest" {
   run bash -c '
     unset HERMES_FLY_CHANNEL
     source "'"${PROJECT_ROOT}"'/scripts/install.sh"
     resolve_install_channel
   '
   assert_success
-  assert_output "stable"
+  assert_output "latest"
 }
 
-@test "resolve_install_channel accepts preview and edge" {
+@test "resolve_install_channel accepts stable preview edge and latest" {
+  run bash -c '
+    export HERMES_FLY_CHANNEL="latest"
+    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
+    resolve_install_channel
+  '
+  assert_success
+  assert_output "latest"
+
+  run bash -c '
+    export HERMES_FLY_CHANNEL="stable"
+    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
+    resolve_install_channel
+  '
+  assert_success
+  assert_output "stable"
+
   run bash -c '
     export HERMES_FLY_CHANNEL="preview"
     source "'"${PROJECT_ROOT}"'/scripts/install.sh"
@@ -315,11 +331,21 @@ MOCK
     resolve_install_channel 2>&1
   '
   assert_success
-  assert_output --partial "stable"
+  assert_output --partial "latest"
   assert_output --partial "Warning"
 }
 
-@test "resolve_install_ref uses latest GitHub release by default" {
+@test "resolve_install_ref uses main by default" {
+  run bash -c '
+    unset HERMES_FLY_VERSION
+    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
+    resolve_install_ref latest
+  '
+  assert_success
+  assert_output "main"
+}
+
+@test "resolve_install_ref uses latest GitHub release for stable channel" {
   local mock_dir="${TEST_TEMP_DIR}/mock_bin"
   mkdir -p "$mock_dir"
   cat > "$mock_dir/curl" <<'MOCK'
@@ -331,7 +357,7 @@ MOCK
   run bash -c '
     export PATH="'"$mock_dir"':${PATH}"
     source "'"${PROJECT_ROOT}"'/scripts/install.sh"
-    resolve_install_ref
+    resolve_install_ref stable
   '
   assert_success
   assert_output "v0.1.12"
@@ -435,6 +461,7 @@ MOCK
   local install_home="${TEST_TEMP_DIR}/hermes_home"
   local install_bin="${TEST_TEMP_DIR}/install_bin"
   run bash -c '
+    export HERMES_FLY_CHANNEL="stable"
     export HERMES_FLY_HOME="'"$install_home"'"
     export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
     export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
@@ -456,7 +483,72 @@ MOCK
   assert_success
 }
 
-@test "install main falls back to source clone and build when packaged asset is unavailable" {
+@test "install main downloads the latest main snapshot and builds runtime by default" {
+  local mock_dir="${TEST_TEMP_DIR}/mock_bin"
+  mkdir -p "$mock_dir"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args_latest"
+  local node_args_file="${TEST_TEMP_DIR}/node_args_latest"
+  local snapshot_root="${TEST_TEMP_DIR}/snapshot_root"
+  local snapshot_archive="${TEST_TEMP_DIR}/main-snapshot.tar.gz"
+
+  mkdir -p "$snapshot_root/hermes-fly-main"
+  write_source_checkout "$snapshot_root/hermes-fly-main"
+  tar -czf "$snapshot_archive" -C "$snapshot_root" "hermes-fly-main"
+
+  cat > "$mock_dir/curl" <<'MOCK'
+#!/usr/bin/env bash
+out=""
+url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+if [[ "$url" == "https://codeload.github.com/alexfazio/hermes-fly/tar.gz/main" ]]; then
+  cat "${MOCK_SOURCE_ARCHIVE_FILE}" > "$out"
+  exit 0
+fi
+exit 1
+MOCK
+  chmod +x "$mock_dir/curl"
+  write_mock_npm "$mock_dir"
+  write_mock_node "$mock_dir" "0.1.29"
+
+  local install_home="${TEST_TEMP_DIR}/hermes_home_latest"
+  local install_bin="${TEST_TEMP_DIR}/install_bin_latest"
+  run bash -c '
+    export HERMES_FLY_HOME="'"$install_home"'"
+    export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
+    export MOCK_SOURCE_ARCHIVE_FILE="'"$snapshot_archive"'"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
+    export PATH="'"$mock_dir"':${PATH}"
+    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
+    main
+  '
+  assert_success
+  assert_output --partial "Channel: latest"
+  assert_output --partial "Release: main"
+  assert_output --partial "Downloading hermes-fly source..."
+  assert_output --partial "Preparing hermes-fly runtime dependencies"
+  assert [ -f "${install_home}/dist/cli.js" ]
+  assert [ -f "${install_home}/node_modules/commander/package.json" ]
+
+  run cat "$npm_args_file"
+  assert_success
+  assert_output --partial "ci"
+  assert_output --partial "run build"
+  assert_output --partial "prune --omit=dev"
+}
+
+@test "install stable falls back to source clone and build when packaged asset is unavailable" {
   local mock_dir="${TEST_TEMP_DIR}/mock_bin"
   mkdir -p "$mock_dir"
   local git_args_file="${TEST_TEMP_DIR}/git_args"
@@ -512,6 +604,7 @@ MOCK
   run bash -c '
     export HERMES_FLY_HOME="'"$install_home"'"
     export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
+    export HERMES_FLY_CHANNEL="stable"
     export MOCK_GIT_ARGS_FILE="'"$git_args_file"'"
     export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
     export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
@@ -643,6 +736,7 @@ MOCK
   local install_home="${TEST_TEMP_DIR}/hermes_home_mismatch"
   local install_bin="${TEST_TEMP_DIR}/install_bin_mismatch"
   run bash -c '
+    export HERMES_FLY_CHANNEL="stable"
     export HERMES_FLY_HOME="'"$install_home"'"
     export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
     export MOCK_GIT_ARGS_FILE="'"$git_args_file"'"

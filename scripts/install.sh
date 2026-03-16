@@ -82,30 +82,33 @@ resolve_latest_release_tag() {
 }
 
 resolve_install_channel() {
-  local channel="${HERMES_FLY_CHANNEL:-stable}"
+  local channel="${HERMES_FLY_CHANNEL:-latest}"
   if [[ -z "$channel" ]]; then
-    channel="stable"
+    channel="latest"
   fi
 
   case "$channel" in
-    stable | preview | edge)
+    latest | stable | preview | edge)
       printf '%s\n' "$channel"
       ;;
     *)
-      echo "Warning: Unknown HERMES_FLY_CHANNEL '${channel}', falling back to stable" >&2
-      printf 'stable\n'
+      echo "Warning: Unknown HERMES_FLY_CHANNEL '${channel}', falling back to latest" >&2
+      printf 'latest\n'
       ;;
   esac
 }
 
 resolve_install_ref() {
-  local channel="${1:-stable}"
+  local channel="${1:-latest}"
   if [[ -n "${HERMES_FLY_VERSION:-}" ]]; then
     normalize_install_ref "$HERMES_FLY_VERSION"
     return 0
   fi
 
   case "$channel" in
+    latest)
+      printf 'main\n'
+      ;;
     edge)
       # Edge is explicitly moving/non-reproducible.
       printf 'main\n'
@@ -118,6 +121,11 @@ resolve_install_ref() {
       resolve_latest_release_tag
       ;;
   esac
+}
+
+source_archive_url() {
+  local install_ref="$1"
+  printf 'https://codeload.github.com/%s/tar.gz/%s\n' "$REPO" "$install_ref"
 }
 
 require_command() {
@@ -232,8 +240,25 @@ prepare_runtime_artifacts() {
 download_source_tree() {
   local install_ref="$1" dest_dir="$2"
 
-  require_command git "to download hermes-fly source" || return 1
   echo "Downloading hermes-fly source..."
+  if command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+    local archive_path extract_root source_root
+    archive_path="${dest_dir}.tar.gz"
+    extract_root="${dest_dir}.extract"
+    rm -rf "$dest_dir" "$extract_root"
+    mkdir -p "$dest_dir" "$extract_root"
+    if curl -fsSL "$(source_archive_url "$install_ref")" -o "$archive_path" \
+      && tar -xzf "$archive_path" -C "$extract_root"; then
+      source_root="$(find "$extract_root" -mindepth 1 -maxdepth 1 -type d | head -1)"
+      if [[ -n "$source_root" && -d "$source_root" ]]; then
+        cp -R "$source_root"/. "$dest_dir"/
+        return 0
+      fi
+    fi
+    rm -rf "$extract_root" "$archive_path" "$dest_dir"
+  fi
+
+  require_command git "to download hermes-fly source" || return 1
   if ! git clone --depth 1 --branch "$install_ref" --single-branch \
     "https://github.com/${REPO}.git" "$dest_dir" 2>/dev/null; then
     echo "Error: Download failed" >&2
