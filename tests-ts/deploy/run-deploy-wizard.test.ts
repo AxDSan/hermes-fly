@@ -22,6 +22,7 @@ function makeIO() {
 }
 
 const DEFAULT_CONFIG: DeployConfig = {
+  orgSlug: "personal",
   appName: "test-app",
   region: "iad",
   vmSize: "shared-cpu-1x",
@@ -60,6 +61,20 @@ function makeProcessRunner(
   return {
     run: async (command, args, options) => {
       const result = await impl(command, args, options);
+      if (
+        command === "fly"
+        && args[0] === "orgs"
+        && args[1] === "list"
+        && result.exitCode !== 0
+        && (result.stdout ?? "") === ""
+        && (result.stderr ?? "") === ""
+      ) {
+        return {
+          stdout: JSON.stringify([{ name: "Personal", slug: "personal", type: "PERSONAL" }]),
+          stderr: "",
+          exitCode: 0
+        };
+      }
       return {
         stdout: result.stdout ?? "",
         stderr: result.stderr ?? "",
@@ -671,6 +686,64 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /GPT-5\s+/);
     assert.match(guidedCopy, /GPT-5 Pro/);
     assert.match(guidedCopy, /GPT-4o/);
+  });
+
+  it("prompts for a Fly.io organization when multiple orgs are available", async () => {
+    const prompts = makePromptPort([
+      "2",
+      "",
+      "",
+      "",
+      "",
+      "sk-live",
+      "1",
+      "1",
+      "2",
+      "y"
+    ], { interactive: true });
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command === "fly" && args[0] === "orgs" && args[1] === "list") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([
+            { name: "Personal", slug: "personal", type: "PERSONAL" },
+            { name: "Team Deployments", slug: "team-deployments", type: "SHARED" }
+          ])
+        };
+      }
+      if (command === "fly" && args[0] === "platform" && args[1] === "regions") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([{ code: "iad", name: "Ashburn, Virginia (US)" }])
+        };
+      }
+      if (command === "fly" && args[0] === "platform" && args[1] === "vm-sizes") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([{ name: "shared-cpu-1x", memory_mb: 256 }])
+        };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } })
+        };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/models")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ data: liveOpenRouterModelsFixture() })
+        };
+      }
+      return { exitCode: 1 };
+    });
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner });
+
+    const config = await wizard.collectConfig({ channel: "stable" });
+
+    assert.equal(config.orgSlug, "team-deployments");
+    assert.match(prompts.writes.join(""), /Which Fly\.io organization should own this deployment/);
+    assert.ok(prompts.asked.some((message) => message.includes("Choose an organization")));
   });
 
   it("shows a direct BotFather link and renders a QR code when Telegram setup is selected", async () => {

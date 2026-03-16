@@ -28,11 +28,11 @@ describe("FlyDeployRunner", () => {
     const runner = new StubProcessRunner([{ exitCode: 0, stdout: "{\"name\":\"test-app\"}", stderr: "" }]);
     const deployRunner = new FlyDeployRunner(runner, { TEST_ENV: "1" });
 
-    const result = await deployRunner.createApp("test-app", "fra");
+    const result = await deployRunner.createApp("test-app", "personal");
 
     assert.equal(result.ok, true);
     assert.equal(runner.calls.length, 1);
-    assert.deepEqual(runner.calls[0]?.args, ["apps", "create", "test-app", "--json"]);
+    assert.deepEqual(runner.calls[0]?.args, ["apps", "create", "test-app", "--org", "personal", "--json"]);
     assert.equal(runner.calls[0]?.env?.TEST_ENV, "1");
   });
 

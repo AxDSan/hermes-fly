@@ -9,7 +9,7 @@ export class ProvisionDeploymentUseCase {
     stderr: { write: (s: string) => void }
   ): Promise<{ ok: boolean; error?: string }> {
     // Step 1: Create app
-    const appResult = await this.runner.createApp(config.appName, config.region);
+    const appResult = await this.runner.createApp(config.appName, config.orgSlug);
     if (!appResult.ok) {
       const error = appResult.error ?? "failed to create app";
       if (error.includes("already") || error.includes("taken")) {

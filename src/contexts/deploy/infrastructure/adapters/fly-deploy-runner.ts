@@ -7,10 +7,10 @@ export class FlyDeployRunner implements DeployRunnerPort {
     private readonly env?: NodeJS.ProcessEnv
   ) {}
 
-  async createApp(appName: string, region: string): Promise<{ ok: boolean; error?: string }> {
+  async createApp(appName: string, orgSlug: string): Promise<{ ok: boolean; error?: string }> {
     const result = await this.runner.run(
       "fly",
-      ["apps", "create", appName, "--json"],
+      ["apps", "create", appName, "--org", orgSlug, "--json"],
       { env: this.env }
     );
     if (result.exitCode !== 0) {

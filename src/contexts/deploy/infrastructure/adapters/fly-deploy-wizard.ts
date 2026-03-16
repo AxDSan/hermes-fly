@@ -31,6 +31,12 @@ type RegionOption = {
   area: string;
 };
 
+type FlyOrgOption = {
+  slug: string;
+  name: string;
+  type?: string;
+};
+
 type VmOption = {
   value: string;
   tier: string;
@@ -318,6 +324,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       this.prompts.write("You can press Enter to accept a suggested option whenever one is shown.\n\n");
     }
 
+    const orgSlug = await this.collectOrgSlug(env.HERMES_FLY_ORG ?? env.DEPLOY_ORG ?? env.FLY_ORG);
     const appName = await this.collectAppName(env.HERMES_FLY_APP_NAME);
     const region = await this.collectRegion(env.HERMES_FLY_REGION);
     const vmSize = await this.collectVmSize(env.HERMES_FLY_VM_SIZE);
@@ -344,6 +351,7 @@ export class FlyDeployWizard implements DeployWizardPort {
     });
 
     const config: DeployConfig = {
+      orgSlug,
       appName: intent.appName,
       region: intent.region,
       vmSize: intent.vmSize,
@@ -373,7 +381,7 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   async provisionResources(config: DeployConfig): Promise<{ ok: boolean; error?: string }> {
-    const appResult = await this.runner.createApp(config.appName, config.region);
+    const appResult = await this.runner.createApp(config.appName, config.orgSlug);
     if (!appResult.ok) return appResult;
 
     const volResult = await this.runner.createVolume(config.appName, config.region, config.volumeSize);
@@ -498,6 +506,43 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   }
 
+  private async collectOrgSlug(envValue: string | undefined): Promise<string> {
+    const preset = envValue?.trim();
+    if (preset && preset.length > 0) {
+      return preset;
+    }
+
+    const orgs = await this.fetchFlyOrganizations();
+    if (orgs.length === 0) {
+      throw new Error("No Fly.io organizations were found for the current account.");
+    }
+
+    if (orgs.length === 1) {
+      if (this.prompts.isInteractive()) {
+        this.prompts.write(`Fly.io organization: ${orgs[0].name} (${orgs[0].slug})\n\n`);
+      }
+      return orgs[0].slug;
+    }
+
+    if (!this.prompts.isInteractive()) {
+      throw new Error(
+        `Multiple Fly.io organizations found. Export HERMES_FLY_ORG to one of: ${orgs.map((org) => org.slug).join(", ")}.`
+      );
+    }
+
+    this.prompts.write("Which Fly.io organization should own this deployment?\n");
+    this.prompts.write("If you only use Fly personally, the Personal organization is usually the right choice.\n\n");
+    this.prompts.write("  #  Organization                Slug\n");
+    orgs.forEach((org, index) => {
+      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${org.name.padEnd(26, " ")} ${org.slug}\n`);
+    });
+    this.prompts.write("\n");
+
+    const defaultIndex = Math.max(0, orgs.findIndex((org) => org.type?.toUpperCase() === "PERSONAL"));
+    const selected = orgs[await this.chooseNumber(`Choose an organization [${defaultIndex + 1}]: `, orgs.length, defaultIndex + 1) - 1];
+    return selected.slug;
+  }
+
   private async collectRegion(envValue: string | undefined): Promise<string> {
     const preset = envValue?.trim();
     if (preset && preset.length > 0) {
@@ -533,6 +578,48 @@ export class FlyDeployWizard implements DeployWizardPort {
     const defaultLocationIndex = Math.max(0, selectedArea.options.findIndex((region) => region.code === DEFAULT_REGION));
     const selectedLocation = selectedArea.options[await this.chooseNumber(`Choose a location [${defaultLocationIndex + 1}]: `, selectedArea.options.length, defaultLocationIndex + 1) - 1];
     return selectedLocation.code;
+  }
+
+  private async fetchFlyOrganizations(): Promise<FlyOrgOption[]> {
+    const result = await this.process.run("fly", ["orgs", "list", "--json"], { env: this.env });
+    if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
+      throw new Error("Failed to fetch Fly.io organizations.");
+    }
+
+    try {
+      const parsed = JSON.parse(result.stdout) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed
+          .flatMap((value) => {
+            if (!value || typeof value !== "object") {
+              return [];
+            }
+            const slug = String((value as { slug?: unknown }).slug ?? "").trim();
+            const name = String((value as { name?: unknown }).name ?? slug).trim();
+            const type = String((value as { type?: unknown }).type ?? "").trim() || undefined;
+            if (slug.length === 0) {
+              return [];
+            }
+            return [{ slug, name: name.length > 0 ? name : slug, type }];
+          });
+      }
+
+      if (parsed && typeof parsed === "object") {
+        return Object.entries(parsed as Record<string, unknown>)
+          .flatMap(([slug, name]) => {
+            const cleanSlug = slug.trim();
+            const cleanName = String(name ?? slug).trim();
+            if (cleanSlug.length === 0) {
+              return [];
+            }
+            return [{ slug: cleanSlug, name: cleanName.length > 0 ? cleanName : cleanSlug }];
+          });
+      }
+    } catch {
+      throw new Error("Fly.io organizations response could not be parsed.");
+    }
+
+    throw new Error("Fly.io organizations response was empty.");
   }
 
   private async collectVmSize(envValue: string | undefined): Promise<string> {
@@ -809,6 +896,7 @@ export class FlyDeployWizard implements DeployWizardPort {
 
   private async confirmConfig(config: DeployConfig, telegramSetup: TelegramSetup): Promise<void> {
     this.prompts.write("\nReview your setup\n");
+    this.prompts.write(`  Fly organization: ${config.orgSlug}\n`);
     this.prompts.write(`  Deployment name: ${config.appName}\n`);
     this.prompts.write(`  Location:        ${config.region}\n`);
     this.prompts.write(`  Server size:     ${this.describeVmSize(config.vmSize)}\n`);

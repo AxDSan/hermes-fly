@@ -5,6 +5,7 @@ import { runDeployCommand } from "../../src/commands/deploy.ts";
 import type { DeployWizardPort, DeployConfig } from "../../src/contexts/deploy/application/ports/deploy-wizard.port.ts";
 
 const DEFAULT_CONFIG: DeployConfig = {
+  orgSlug: "personal",
   appName: "test-app",
   region: "iad",
   vmSize: "shared-cpu-1x",

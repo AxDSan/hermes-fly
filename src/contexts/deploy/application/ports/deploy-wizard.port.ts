@@ -1,4 +1,5 @@
 export interface DeployConfig {
+  orgSlug: string;
   appName: string;
   region: string;
   vmSize: string;

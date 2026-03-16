@@ -6,6 +6,7 @@ import type { DeployRunnerPort } from "../../src/contexts/deploy/application/por
 import type { DeployConfig } from "../../src/contexts/deploy/application/ports/deploy-wizard.port.ts";
 
 const DEFAULT_CONFIG: DeployConfig = {
+  orgSlug: "personal",
   appName: "test-app",
   region: "iad",
   vmSize: "shared-cpu-1x",
