@@ -41,7 +41,7 @@ teardown() {
     mkdir -p "${tmp}/config" "${tmp}/logs"
     PATH="tests/mocks:${PATH}" HERMES_FLY_CONFIG_DIR="${tmp}/config" HERMES_FLY_LOG_DIR="${tmp}/logs" \
       TMP_DIR="${tmp}" bash -c '"'"'
-        source ./lib/config.sh
+        source ./lib/archive/config.sh
         config_save_app "test-app" "ord"
         HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=status \
           ./hermes-fly status >"${TMP_DIR}/out" 2>"${TMP_DIR}/err"
@@ -91,26 +91,3 @@ teardown() {
   assert_success
 }
 
-@test "hybrid allowlisted status falls back when dist artifact is missing" {
-  run bash -c 'set -euo pipefail
-    cd "${PROJECT_ROOT}"
-    npm run build >/dev/null
-    tmp="$(mktemp -d)"
-    trap "rm -rf \"${tmp}\"" EXIT
-    mkdir -p "${tmp}/config" "${tmp}/logs"
-    PATH="tests/mocks:${PATH}" HERMES_FLY_CONFIG_DIR="${tmp}/config" HERMES_FLY_LOG_DIR="${tmp}/logs" \
-      TMP_DIR="${tmp}" bash -c '"'"'
-        source ./lib/config.sh
-        config_save_app "test-app" "ord"
-        rm -f dist/cli.js
-        HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=status \
-          ./hermes-fly status -a test-app >"${TMP_DIR}/out" 2>"${TMP_DIR}/err"
-        printf "%s\n" "$?" >"${TMP_DIR}/exit"
-      '"'"'
-    test "$(cat "${tmp}/exit")" = "0"
-    test "$(head -n 1 "${tmp}/err")" = "Warning: TS implementation unavailable for command '"'"'status'"'"'; falling back to legacy"
-    diff -u tests/parity/baseline/status.stdout.snap "${tmp}/out"
-    tail -n +2 "${tmp}/err" > "${tmp}/err.rest"
-    diff -u tests/parity/baseline/status.stderr.snap "${tmp}/err.rest"'
-  assert_success
-}

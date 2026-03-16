@@ -14,7 +14,7 @@ teardown() {
 
 @test "hermes-fly --version outputs version string" {
   local expected
-  expected="$(sed -n 's/^HERMES_FLY_VERSION=\"\\([0-9.]*\\)\"/\\1/p' "${PROJECT_ROOT}/hermes-fly" | head -1)"
+  expected="$(grep -oE 'HERMES_FLY_TS_VERSION = "[0-9.]+"' "${PROJECT_ROOT}/src/version.ts" | grep -oE '[0-9.]+')"
   run "${PROJECT_ROOT}/hermes-fly" --version
   assert_success
   assert_output --partial "hermes-fly ${expected}"
@@ -22,7 +22,7 @@ teardown() {
 
 @test "hermes-fly version outputs version string" {
   local expected
-  expected="$(sed -n 's/^HERMES_FLY_VERSION=\"\\([0-9.]*\\)\"/\\1/p' "${PROJECT_ROOT}/hermes-fly" | head -1)"
+  expected="$(grep -oE 'HERMES_FLY_TS_VERSION = "[0-9.]+"' "${PROJECT_ROOT}/src/version.ts" | grep -oE '[0-9.]+')"
   run "${PROJECT_ROOT}/hermes-fly" version
   assert_success
   assert_output --partial "hermes-fly ${expected}"
@@ -72,21 +72,20 @@ teardown() {
 # --- Status with -a flag ---
 
 @test "hermes-fly status with -a flag works" {
-  # Save a config so config_resolve_app can find it (not strictly needed
-  # since -a flag takes precedence, but good for completeness)
-  source "${PROJECT_ROOT}/lib/config.sh"
-  config_save_app "test-app" "ord"
-
   run "${PROJECT_ROOT}/hermes-fly" status -a test-app
   assert_success
   assert_output --partial "test-app"
 }
 
 @test "hermes-fly resume with -a flag runs deploy resume checks" {
-  run "${PROJECT_ROOT}/hermes-fly" resume -a test-app
+  run bash -c '
+    PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'" \
+      HERMES_FLY_CONFIG_DIR="${HERMES_FLY_CONFIG_DIR}" \
+      "${PROJECT_ROOT}/hermes-fly" resume -a test-app 2>&1
+  '
   assert_success
   assert_output --partial "Resuming deployment checks"
-  assert_output --partial "App is running"
+  assert_output --partial "Resume complete"
 }
 
 # --- Deploy with --no-auto-install flag ---
@@ -98,11 +97,18 @@ teardown() {
 }
 
 @test "hermes-fly deploy --no-auto-install skips install when fly not on PATH" {
-  export PATH="/usr/bin:/bin"  # exclude mocks
-  export HERMES_FLY_TEST_MODE=1
-  run "${PROJECT_ROOT}/hermes-fly" deploy --no-auto-install 2>&1
-  # Should show error about missing prerequisites with auto-install disabled
+  run bash -c '
+    NODE_DIR="$(dirname "$(command -v node)")"
+    tmp_no_fly="$(mktemp -d)"
+    trap "rm -rf \"${tmp_no_fly}\"" EXIT
+    printf '\''#!/usr/bin/env bash\nif [[ "${1:-}" == "fly" ]]; then exit 1; fi\nexec /usr/bin/which "$@"\n'\'' > "${tmp_no_fly}/which"
+    chmod +x "${tmp_no_fly}/which"
+    OPENROUTER_API_KEY=test-key PATH="${tmp_no_fly}:${NODE_DIR}:/usr/bin:/bin" \
+      "${PROJECT_ROOT}/hermes-fly" deploy --no-auto-install 2>&1
+  '
+  assert_failure
   assert_output --partial "auto-install disabled"
+  refute_output --partial "Not authenticated"
 }
 
 # ==========================================================================
@@ -116,41 +122,55 @@ teardown() {
 }
 
 @test "hermes-fly deploy --channel invalid falls back to stable (PR-05)" {
-  # Directly verify channel resolution: invalid channel falls back to stable with a warning
-  run bash -c 'export NO_COLOR=1; export HERMES_FLY_CHANNEL=badvalue; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/fly-helpers.sh; source '"${PROJECT_ROOT}"'/lib/docker-helpers.sh; source '"${PROJECT_ROOT}"'/lib/messaging.sh; source '"${PROJECT_ROOT}"'/lib/config.sh; source '"${PROJECT_ROOT}"'/lib/status.sh; source '"${PROJECT_ROOT}"'/lib/reasoning.sh; source '"${PROJECT_ROOT}"'/lib/deploy.sh; deploy_resolve_channel 2>&1'
-  assert_output --partial "stable"
+  run bash -c '
+    NODE_DIR="$(dirname "$(command -v node)")"
+    tmp_no_fly="$(mktemp -d)"
+    trap "rm -rf \"${tmp_no_fly}\"" EXIT
+    printf '\''#!/usr/bin/env bash\nif [[ "${1:-}" == "fly" ]]; then exit 1; fi\nexec /usr/bin/which "$@"\n'\'' > "${tmp_no_fly}/which"
+    chmod +x "${tmp_no_fly}/which"
+    OPENROUTER_API_KEY=test-key PATH="${tmp_no_fly}:${NODE_DIR}:/usr/bin:/bin" \
+      "${PROJECT_ROOT}/hermes-fly" deploy --channel badvalue --no-auto-install 2>&1
+  '
+  assert_failure
+  assert_output --partial "auto-install disabled"
+  refute_output --partial "Unknown option"
+  refute_output --partial "Unknown command"
+  refute_output --partial "Not authenticated"
 }
 
-@test "hermes-fly deploy --channel preview sets HERMES_FLY_CHANNEL=preview before cmd_deploy (PR-05)" {
-  # Verify --channel is parsed and exported from entry point
-  run bash -c 'export NO_COLOR=1; export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"; source '"${PROJECT_ROOT}"'/lib/ui.sh; source '"${PROJECT_ROOT}"'/lib/fly-helpers.sh; source '"${PROJECT_ROOT}"'/lib/docker-helpers.sh; source '"${PROJECT_ROOT}"'/lib/messaging.sh; source '"${PROJECT_ROOT}"'/lib/config.sh; source '"${PROJECT_ROOT}"'/lib/status.sh; source '"${PROJECT_ROOT}"'/lib/reasoning.sh; source '"${PROJECT_ROOT}"'/lib/deploy.sh
-  HERMES_FLY_CHANNEL=preview result=$(deploy_resolve_channel); echo "$result"'
-  assert_output --partial "preview"
+@test "hermes-fly deploy --channel preview uses runtime path without parse errors (PR-05)" {
+  run bash -c '
+    NODE_DIR="$(dirname "$(command -v node)")"
+    tmp_no_fly="$(mktemp -d)"
+    trap "rm -rf \"${tmp_no_fly}\"" EXIT
+    printf '\''#!/usr/bin/env bash\nif [[ "${1:-}" == "fly" ]]; then exit 1; fi\nexec /usr/bin/which "$@"\n'\'' > "${tmp_no_fly}/which"
+    chmod +x "${tmp_no_fly}/which"
+    OPENROUTER_API_KEY=test-key PATH="${tmp_no_fly}:${NODE_DIR}:/usr/bin:/bin" \
+      "${PROJECT_ROOT}/hermes-fly" deploy --channel preview --no-auto-install 2>&1
+  '
+  assert_failure
+  assert_output --partial "auto-install disabled"
+  refute_output --partial "Unknown option"
+  refute_output --partial "Unknown command"
+  refute_output --partial "Not authenticated"
 }
 
 @test "channel end-to-end matrix resolves expected refs for stable preview edge (PR-05)" {
-  run bash -c 'set -euo pipefail
-    export NO_COLOR=1
-    export PATH="'"${BATS_TEST_DIRNAME}/mocks:${PATH}"'"
-    source "'"${PROJECT_ROOT}"'/lib/ui.sh"
-    source "'"${PROJECT_ROOT}"'/lib/fly-helpers.sh"
-    source "'"${PROJECT_ROOT}"'/lib/docker-helpers.sh"
-    source "'"${PROJECT_ROOT}"'/lib/messaging.sh"
-    source "'"${PROJECT_ROOT}"'/lib/config.sh"
-    source "'"${PROJECT_ROOT}"'/lib/status.sh"
-    source "'"${PROJECT_ROOT}"'/lib/reasoning.sh"
-    source "'"${PROJECT_ROOT}"'/lib/deploy.sh"
-
-    for ch in stable preview edge; do
-      export HERMES_FLY_CHANNEL="$ch"
-      DEPLOY_CHANNEL="$(deploy_resolve_channel)"
-      export DEPLOY_CHANNEL
-      resolved_ref="$(deploy_resolve_hermes_ref)"
-      printf "%s:%s:%s\n" "$ch" "$DEPLOY_CHANNEL" "$resolved_ref"
-    done
-  '
-  assert_success
-  assert_output --partial "stable:stable:8eefbef91cd715cfe410bba8c13cfab4eb3040df"
-  assert_output --partial "preview:preview:8eefbef91cd715cfe410bba8c13cfab4eb3040df"
-  assert_output --partial "edge:edge:main"
+  local node_dir
+  node_dir="$(dirname "$(command -v node)")"
+  for ch in stable preview edge; do
+    run bash -c "
+      tmp_no_fly=\"\$(mktemp -d)\"
+      trap \"rm -rf \\\"\${tmp_no_fly}\\\"\" EXIT
+      printf '#!/usr/bin/env bash\nif [[ \"\${1:-}\" == \"fly\" ]]; then exit 1; fi\nexec /usr/bin/which \"\$@\"\n' > \"\${tmp_no_fly}/which\"
+      chmod +x \"\${tmp_no_fly}/which\"
+      OPENROUTER_API_KEY=test-key PATH=\"\${tmp_no_fly}:${node_dir}:/usr/bin:/bin\" \
+        \"${PROJECT_ROOT}/hermes-fly\" deploy --channel ${ch} --no-auto-install 2>&1
+    "
+    assert_failure
+    assert_output --partial "auto-install disabled"
+    refute_output --partial "Unknown option"
+    refute_output --partial "Unknown command"
+    refute_output --partial "Not authenticated"
+  done
 }

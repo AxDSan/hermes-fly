@@ -209,17 +209,21 @@ teardown() {
   assert_success
 }
 
-@test "verify-pr-d2-status-logs.sh includes dist-missing fallback checks for status and logs" {
+@test "verify-pr-d2-status-logs.sh does not include dist-missing legacy fallback checks" {
   run bash -c '
     set -euo pipefail
     script="${PROJECT_ROOT}/scripts/verify-pr-d2-status-logs.sh"
-    if ! grep -q "TS implementation unavailable for command.*status" "${script}"; then
-      echo "MISSING: dist-missing fallback check for status"
-      exit 1
+    _warn_a="TS implementation"; _warn_b=" unavailable"
+    _fall_a="falling back"; _fall_b=" to legacy"
+    _mv="mv dist/cli"; _rm="rm -f dist/cli"
+    if grep -qF "${_warn_a}${_warn_b}" "${script}"; then
+      echo "FAIL: legacy warning text found in script"; exit 1
     fi
-    if ! grep -q "TS implementation unavailable for command.*logs" "${script}"; then
-      echo "MISSING: dist-missing fallback check for logs"
-      exit 1
+    if grep -qF "${_fall_a}${_fall_b}" "${script}"; then
+      echo "FAIL: fallback-to-legacy text found in script"; exit 1
+    fi
+    if grep -qE "${_mv}|${_rm}" "${script}"; then
+      echo "FAIL: dist/cli.js mutation found in script"; exit 1
     fi
   '
   assert_success

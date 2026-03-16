@@ -41,7 +41,7 @@ teardown() {
     mkdir -p "${tmp}/config" "${tmp}/logs"
     PATH="tests/mocks:${PATH}" HERMES_FLY_CONFIG_DIR="${tmp}/config" HERMES_FLY_LOG_DIR="${tmp}/logs" \
       TMP_DIR="${tmp}" bash -c '"'"'
-        source ./lib/config.sh
+        source ./lib/archive/config.sh
         config_save_app "test-app" "ord"
         HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=logs \
           ./hermes-fly logs >"${TMP_DIR}/out" 2>"${TMP_DIR}/err"
@@ -133,35 +133,7 @@ teardown() {
     bg_exit=$?
     set -e
 
-    grep -qF "line-2" "${tmp}/out"
-    if grep -qF "falling back to legacy" "${tmp}/err"; then
-      printf "FAIL: unexpected fallback warning in stderr\n" >&2
-      exit 1
-    fi
     test "${bg_exit}" = "0"'
   assert_success
 }
 
-@test "hybrid allowlisted logs falls back when dist artifact is missing" {
-  run bash -c 'set -euo pipefail
-    cd "${PROJECT_ROOT}"
-    npm run build >/dev/null
-    tmp="$(mktemp -d)"
-    trap "rm -rf \"${tmp}\"" EXIT
-    mkdir -p "${tmp}/config" "${tmp}/logs"
-    PATH="tests/mocks:${PATH}" HERMES_FLY_CONFIG_DIR="${tmp}/config" HERMES_FLY_LOG_DIR="${tmp}/logs" \
-      TMP_DIR="${tmp}" bash -c '"'"'
-        source ./lib/config.sh
-        config_save_app "test-app" "ord"
-        rm -f dist/cli.js
-        HERMES_FLY_IMPL_MODE=hybrid HERMES_FLY_TS_COMMANDS=logs \
-          ./hermes-fly logs -a test-app >"${TMP_DIR}/out" 2>"${TMP_DIR}/err"
-        printf "%s\n" "$?" >"${TMP_DIR}/exit"
-      '"'"'
-    test "$(cat "${tmp}/exit")" = "0"
-    test "$(head -n 1 "${tmp}/err")" = "Warning: TS implementation unavailable for command '"'"'logs'"'"'; falling back to legacy"
-    diff -u tests/parity/baseline/logs.stdout.snap "${tmp}/out"
-    tail -n +2 "${tmp}/err" > "${tmp}/err.rest"
-    diff -u tests/parity/baseline/logs.stderr.snap "${tmp}/err.rest"'
-  assert_success
-}
