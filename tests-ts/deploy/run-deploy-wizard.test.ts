@@ -536,6 +536,10 @@ describe("FlyDeployWizard.collectConfig", () => {
       "1",
       "1",
       "123:abc",
+      "y",
+      "1",
+      "12345",
+      "y",
       "y"
     ], { interactive: true });
     const runner = makeProcessRunner(async (command, args) => {
@@ -559,6 +563,20 @@ describe("FlyDeployWizard.collectConfig", () => {
           ])
         };
       }
+      if (command === "curl" && args.some((value) => value.includes("api.telegram.org/bot123:abc/getMe"))) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            ok: true,
+            result: {
+              id: 12345,
+              is_bot: true,
+              first_name: "Hermes Test Bot",
+              username: "test_hermes_bot"
+            }
+          })
+        };
+      }
       return { exitCode: 1 };
     });
     const wizard = new FlyDeployWizard({}, { prompts, process: runner, qrRenderer: makeQrRenderer() });
@@ -572,6 +590,8 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.equal(config.apiKey, "sk-live");
     assert.equal(config.model, "openai/gpt-4.1-mini");
     assert.equal(config.botToken, "123:abc");
+    assert.equal(config.telegramAllowedUsers, "12345");
+    assert.equal(config.telegramHomeChannel, "12345");
     assert.equal(config.channel, "preview");
     assert.deepEqual(prompts.secretAsked, [
       "OpenRouter API key (required): ",
@@ -665,6 +685,10 @@ describe("FlyDeployWizard.collectConfig", () => {
       "5",
       "1",
       "123:abc",
+      "y",
+      "1",
+      "12345",
+      "y",
       "y"
     ], { interactive: true });
     const runner = makeProcessRunner(async (command, args) => {
@@ -692,6 +716,20 @@ describe("FlyDeployWizard.collectConfig", () => {
           stdout: JSON.stringify({ data: liveOpenRouterModelsFixture() })
         };
       }
+      if (command === "curl" && args.some((value) => value.includes("api.telegram.org/bot123:abc/getMe"))) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            ok: true,
+            result: {
+              id: 12345,
+              is_bot: true,
+              first_name: "Hermes Test Bot",
+              username: "test_hermes_bot"
+            }
+          })
+        };
+      }
       return { exitCode: 1 };
     });
     const wizard = new FlyDeployWizard({}, {
@@ -703,11 +741,93 @@ describe("FlyDeployWizard.collectConfig", () => {
     const config = await wizard.collectConfig({ channel: "stable" });
 
     assert.equal(config.botToken, "123:abc");
+    assert.equal(config.telegramAllowedUsers, "12345");
+    assert.equal(config.telegramHomeChannel, "12345");
     const guidedCopy = prompts.writes.join("");
     assert.match(guidedCopy, /Open BotFather directly: https:\/\/t\.me\/BotFather/);
     assert.match(guidedCopy, /Scan this QR code with your phone to open the BotFather chat/);
     assert.match(guidedCopy, /\[\[BOTFATHER-QR\]\]/);
     assert.match(guidedCopy, /Guide: https:\/\/core\.telegram\.org\/bots#6-botfather/);
+    assert.match(guidedCopy, /Found bot: @test_hermes_bot \(Hermes Test Bot\)/);
+    assert.match(guidedCopy, /t\.me\/userinfobot/);
+    assert.ok(prompts.asked.some((message) => message.includes("Use 12345 as the home channel")));
+  });
+
+  it("live-validates the Telegram token, re-prompts on invalid user ids, and stores specific-user access", async () => {
+    const prompts = makePromptPort([
+      "",
+      "",
+      "",
+      "",
+      "",
+      "sk-live",
+      "1",
+      "1",
+      "1",
+      "not-a-token",
+      "123:abc",
+      "y",
+      "2",
+      "alexfazio",
+      "12345,67890",
+      "n",
+      "y"
+    ], { interactive: true });
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command === "fly" && args[0] === "platform" && args[1] === "regions") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([{ code: "iad", name: "Ashburn, Virginia (US)" }])
+        };
+      }
+      if (command === "fly" && args[0] === "platform" && args[1] === "vm-sizes") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([{ name: "shared-cpu-1x", memory_mb: 256 }])
+        };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } })
+        };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/models")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ data: liveOpenRouterModelsFixture() })
+        };
+      }
+      if (command === "curl" && args.some((value) => value.includes("api.telegram.org/bot123:abc/getMe"))) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            ok: true,
+            result: {
+              id: 12345,
+              is_bot: true,
+              first_name: "Hermes Test Bot",
+              username: "test_hermes_bot"
+            }
+          })
+        };
+      }
+      return { exitCode: 1 };
+    });
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner });
+
+    const config = await wizard.collectConfig({ channel: "stable" });
+
+    assert.equal(config.botToken, "123:abc");
+    assert.equal(config.telegramAllowedUsers, "12345,67890");
+    assert.equal(config.gatewayAllowAllUsers, undefined);
+    assert.equal(config.telegramHomeChannel, undefined);
+    const guidedCopy = prompts.writes.join("");
+    assert.match(guidedCopy, /Telegram bot token format looks invalid/);
+    assert.match(guidedCopy, /Verifying your bot token with Telegram/);
+    assert.match(guidedCopy, /Who should be able to talk to this bot/);
+    assert.match(guidedCopy, /user IDs must be numeric/i);
+    assert.ok(prompts.asked.some((message) => message.includes("Continue with this bot?")));
   });
 
   it("prompts for Hermes-compatible reasoning effort when the selected model supports it", async () => {

@@ -9,6 +9,9 @@ export interface DeployConfig {
   channel: "stable" | "preview" | "edge";
   hermesRef: string;
   botToken: string;
+  telegramAllowedUsers?: string;
+  gatewayAllowAllUsers?: boolean;
+  telegramHomeChannel?: string;
 }
 
 export interface DeployWizardPort {

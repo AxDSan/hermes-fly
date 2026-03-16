@@ -84,6 +84,30 @@ describe("ProvisionDeploymentUseCase - happy path", () => {
     assert.equal(result.ok, true);
     assert.equal(capturedSecrets?.HERMES_REASONING_EFFORT, "high");
   });
+
+  it("includes Telegram access-policy secrets when Telegram is configured in the wizard", async () => {
+    let capturedSecrets: Record<string, string> | null = null;
+    const io = makeIO();
+    const uc = new ProvisionDeploymentUseCase(makeRunner({
+      setSecrets: async (_appName, secrets) => {
+        capturedSecrets = secrets;
+        return { ok: true };
+      }
+    }));
+
+    const result = await uc.execute({
+      ...DEFAULT_CONFIG,
+      botToken: "123:abc",
+      telegramAllowedUsers: "12345,67890",
+      telegramHomeChannel: "12345"
+    }, io.stderr);
+
+    assert.equal(result.ok, true);
+    assert.equal(capturedSecrets?.TELEGRAM_BOT_TOKEN, "123:abc");
+    assert.equal(capturedSecrets?.TELEGRAM_ALLOWED_USERS, "12345,67890");
+    assert.equal(capturedSecrets?.TELEGRAM_HOME_CHANNEL, "12345");
+    assert.equal(capturedSecrets?.GATEWAY_ALLOW_ALL_USERS, undefined);
+  });
 });
 
 describe("ProvisionDeploymentUseCase - create app failure", () => {

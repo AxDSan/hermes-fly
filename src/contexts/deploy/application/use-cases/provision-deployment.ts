@@ -43,6 +43,15 @@ export class ProvisionDeploymentUseCase {
     if (config.botToken) {
       secrets.TELEGRAM_BOT_TOKEN = config.botToken;
     }
+    if (config.telegramAllowedUsers) {
+      secrets.TELEGRAM_ALLOWED_USERS = config.telegramAllowedUsers;
+    }
+    if (config.gatewayAllowAllUsers) {
+      secrets.GATEWAY_ALLOW_ALL_USERS = "true";
+    }
+    if (config.telegramHomeChannel) {
+      secrets.TELEGRAM_HOME_CHANNEL = config.telegramHomeChannel;
+    }
 
     const secretsResult = await this.runner.setSecrets(config.appName, secrets);
     if (!secretsResult.ok) {

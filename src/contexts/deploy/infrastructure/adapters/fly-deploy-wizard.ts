@@ -5,6 +5,7 @@ import { NodeProcessRunner, type ForegroundProcessRunner } from "../../../../ada
 import { DeploymentIntent } from "../../domain/deployment-intent.js";
 import { ReadlineDeployPrompts, type DeployPromptPort } from "./deploy-prompts.js";
 import { TerminalQrCodeRenderer, type QrCodeRendererPort } from "./qr-code.js";
+import { MessagingPolicy, type MessagingPolicyMode } from "../../../messaging/domain/messaging-policy.js";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +23,7 @@ const OPENROUTER_MODELS_URL = "https://openrouter.ai/models";
 const OPENROUTER_KEY_API_URL = "https://openrouter.ai/api/v1/key";
 const OPENROUTER_MODELS_API_URL = "https://openrouter.ai/api/v1/models";
 const TELEGRAM_BOTFATHER_URL = "https://t.me/BotFather";
+const TELEGRAM_USERINFOBOT_URL = "https://t.me/userinfobot";
 
 type RegionOption = {
   code: string;
@@ -74,6 +76,20 @@ type ReasoningSupport = {
   allowedEfforts: string[];
   defaultEffort?: string;
   unsupportedMessage?: string;
+};
+
+type TelegramSetup = {
+  botToken: string;
+  botUsername?: string;
+  botName?: string;
+  allowedUsers?: string;
+  allowAllUsers?: boolean;
+  homeChannel?: string;
+};
+
+type TelegramBotIdentity = {
+  username: string;
+  firstName: string;
 };
 
 const STATIC_REGIONS: RegionOption[] = [
@@ -309,7 +325,12 @@ export class FlyDeployWizard implements DeployWizardPort {
     const apiKey = await this.collectOpenRouterApiKey();
     const model = await this.collectModel(env.HERMES_FLY_MODEL, apiKey);
     const reasoningEffort = await this.collectReasoningEffort(env.HERMES_REASONING_EFFORT, model);
-    const botToken = await this.collectTelegramToken(env.TELEGRAM_BOT_TOKEN);
+    const telegramSetup = await this.collectTelegramSetup({
+      botToken: env.TELEGRAM_BOT_TOKEN,
+      allowedUsers: env.TELEGRAM_ALLOWED_USERS,
+      allowAllUsers: env.GATEWAY_ALLOW_ALL_USERS,
+      homeChannel: env.TELEGRAM_HOME_CHANNEL,
+    });
     const hermesRef = (env.HERMES_FLY_VERSION ?? "latest").trim() || "latest";
 
     const intent = DeploymentIntent.create({
@@ -332,11 +353,14 @@ export class FlyDeployWizard implements DeployWizardPort {
       reasoningEffort: intent.reasoningEffort.length > 0 ? intent.reasoningEffort : undefined,
       channel: intent.channel,
       hermesRef,
-      botToken,
+      botToken: telegramSetup.botToken,
+      telegramAllowedUsers: telegramSetup.allowedUsers,
+      gatewayAllowAllUsers: telegramSetup.allowAllUsers ? true : undefined,
+      telegramHomeChannel: telegramSetup.homeChannel,
     };
 
     if (this.prompts.isInteractive()) {
-      await this.confirmConfig(config);
+      await this.confirmConfig(config, telegramSetup);
     }
 
     return config;
@@ -368,6 +392,15 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
     if (config.botToken) {
       secrets.TELEGRAM_BOT_TOKEN = config.botToken;
+    }
+    if (config.telegramAllowedUsers) {
+      secrets.TELEGRAM_ALLOWED_USERS = config.telegramAllowedUsers;
+    }
+    if (config.gatewayAllowAllUsers) {
+      secrets.GATEWAY_ALLOW_ALL_USERS = "true";
+    }
+    if (config.telegramHomeChannel) {
+      secrets.TELEGRAM_HOME_CHANNEL = config.telegramHomeChannel;
     }
     return this.runner.setSecrets(config.appName, secrets);
   }
@@ -687,13 +720,30 @@ export class FlyDeployWizard implements DeployWizardPort {
     return models[selectedIndex - 1].value;
   }
 
-  private async collectTelegramToken(envValue: string | undefined): Promise<string> {
-    const preset = (envValue ?? "").trim();
-    if (preset.length > 0) {
-      return preset;
+  private async collectTelegramSetup(input: {
+    botToken?: string;
+    allowedUsers?: string;
+    allowAllUsers?: string;
+    homeChannel?: string;
+  }): Promise<TelegramSetup> {
+    const presetToken = (input.botToken ?? "").trim();
+    if (presetToken.length > 0) {
+      await this.assertTelegramTokenFormat(presetToken);
+      const identity = await this.validateTelegramBotToken(presetToken);
+      if (!identity) {
+        throw new Error("Telegram rejected TELEGRAM_BOT_TOKEN. Check it and try again.");
+      }
+      return this.buildTelegramSetupFromInputs(
+        presetToken,
+        identity,
+        input.allowedUsers,
+        input.allowAllUsers,
+        input.homeChannel
+      );
     }
+
     if (!this.prompts.isInteractive()) {
-      return "";
+      return { botToken: "" };
     }
 
     this.prompts.write("Do you want to connect Telegram now?\n");
@@ -703,7 +753,7 @@ export class FlyDeployWizard implements DeployWizardPort {
 
     const choice = await this.chooseNumber("Choose an option [2]: ", 2, 2);
     if (choice === 2) {
-      return "";
+      return { botToken: "" };
     }
 
     this.prompts.write("Create your Telegram bot with BotFather, then paste the bot token here.\n");
@@ -716,16 +766,48 @@ export class FlyDeployWizard implements DeployWizardPort {
       this.prompts.write("(QR code unavailable in this terminal. Use the direct link above.)\n\n");
     }
     this.prompts.write("Guide: https://core.telegram.org/bots#6-botfather\n\n");
+
     while (true) {
-      const answer = await this.prompts.askSecret("Telegram bot token (required): ");
-      if (answer.trim().length > 0) {
-        return answer.trim();
+      const token = (await this.prompts.askSecret("Telegram bot token (required): ")).trim();
+      if (token.length === 0) {
+        this.prompts.write("TELEGRAM_BOT_TOKEN cannot be empty.\n");
+        continue;
       }
-      this.prompts.write("TELEGRAM_BOT_TOKEN cannot be empty.\n");
+
+      if (!this.isTelegramTokenFormatValid(token)) {
+        this.prompts.write("Telegram bot token format looks invalid. Expected format: 123456789:ABCdef...\n");
+        continue;
+      }
+
+      this.prompts.write("Verifying your bot token with Telegram...\n");
+      const identity = await this.validateTelegramBotToken(token);
+      if (!identity) {
+        this.prompts.write("Telegram rejected this bot token. Check it and try again.\n");
+        continue;
+      }
+
+      this.prompts.write(`Found bot: @${identity.username} (${identity.firstName})\n`);
+      if (!(await this.confirmYesNo("Continue with this bot? [y/N]: ", false))) {
+        continue;
+      }
+
+      const accessPolicy = await this.collectTelegramAccessPolicy();
+      const homeChannel = accessPolicy.allowedUsers.length > 0
+        ? await this.collectTelegramHomeChannel(accessPolicy.allowedUsers[0])
+        : undefined;
+
+      return {
+        botToken: token,
+        botUsername: identity.username,
+        botName: identity.firstName,
+        allowedUsers: accessPolicy.allowedUsers.join(","),
+        allowAllUsers: accessPolicy.mode === "anyone",
+        homeChannel,
+      };
     }
   }
 
-  private async confirmConfig(config: DeployConfig): Promise<void> {
+  private async confirmConfig(config: DeployConfig, telegramSetup: TelegramSetup): Promise<void> {
     this.prompts.write("\nReview your setup\n");
     this.prompts.write(`  Deployment name: ${config.appName}\n`);
     this.prompts.write(`  Location:        ${config.region}\n`);
@@ -735,7 +817,15 @@ export class FlyDeployWizard implements DeployWizardPort {
     if (config.reasoningEffort) {
       this.prompts.write(`  Reasoning:       ${config.reasoningEffort}\n`);
     }
-    this.prompts.write(`  Telegram:        ${config.botToken ? "set up now" : "skip for now"}\n`);
+    if (config.botToken) {
+      this.prompts.write(`  Telegram:        ${this.describeTelegramBot(telegramSetup)}\n`);
+      this.prompts.write(`  Telegram access: ${this.describeTelegramAccess(config)}\n`);
+      if (config.telegramHomeChannel) {
+        this.prompts.write(`  Home channel:    ${config.telegramHomeChannel}\n`);
+      }
+    } else {
+      this.prompts.write("  Telegram:        skip for now\n");
+    }
     this.prompts.write(`  Release channel: ${config.channel || DEFAULT_CHANNEL}\n\n`);
 
     while (true) {
@@ -761,6 +851,155 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   }
 
+  private async confirmYesNo(prompt: string, defaultYes: boolean): Promise<boolean> {
+    while (true) {
+      const answer = (await this.prompts.ask(prompt)).trim().toLowerCase();
+      if (answer.length === 0) {
+        return defaultYes;
+      }
+      if (answer === "y" || answer === "yes") {
+        return true;
+      }
+      if (answer === "n" || answer === "no") {
+        return false;
+      }
+      this.prompts.write("Please answer y or n.\n");
+    }
+  }
+
+  private isTelegramTokenFormatValid(token: string): boolean {
+    return /^[0-9]+:[A-Za-z0-9_-]+$/.test(token);
+  }
+
+  private async assertTelegramTokenFormat(token: string): Promise<void> {
+    if (!this.isTelegramTokenFormatValid(token)) {
+      throw new Error("TELEGRAM_BOT_TOKEN must match the format 123456789:ABCdef...");
+    }
+  }
+
+  private async validateTelegramBotToken(token: string): Promise<TelegramBotIdentity | null> {
+    try {
+      const result = await this.process.run(
+        "curl",
+        ["-fsSL", "--max-time", "10", `https://api.telegram.org/bot${token}/getMe`],
+        { env: this.env }
+      );
+      if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
+        return null;
+      }
+
+      const payload = JSON.parse(result.stdout) as {
+        ok?: boolean;
+        result?: { username?: unknown; first_name?: unknown; firstName?: unknown };
+      };
+      if (payload.ok !== true) {
+        return null;
+      }
+
+      const username = String(payload.result?.username ?? "").trim();
+      if (username.length === 0) {
+        return null;
+      }
+
+      const firstName = String(payload.result?.first_name ?? payload.result?.firstName ?? username).trim() || username;
+      return { username, firstName };
+    } catch {
+      return null;
+    }
+  }
+
+  private async collectTelegramAccessPolicy(): Promise<MessagingPolicy> {
+    while (true) {
+      this.prompts.write("\nWho should be able to talk to this bot?\n\n");
+      this.prompts.write("   1  Only me          Just you. You'll enter your Telegram user ID.\n");
+      this.prompts.write("   2  Specific people  You and other approved users.\n");
+      this.prompts.write("   3  Anyone           No restrictions. Not recommended for most setups.\n\n");
+
+      const choice = await this.chooseNumber("Choose an option [1]: ", 3, 1);
+      if (choice === 1) {
+        this.prompts.write(`Find your Telegram user ID here: ${TELEGRAM_USERINFOBOT_URL}\n\n`);
+        return await this.collectTelegramUserIds("only_me", "Your Telegram user ID: ");
+      }
+      if (choice === 2) {
+        this.prompts.write(`Find Telegram user IDs here: ${TELEGRAM_USERINFOBOT_URL}\n\n`);
+        return await this.collectTelegramUserIds("specific_users", "Telegram user IDs (comma-separated): ");
+      }
+      if (await this.confirmYesNo("Allow anyone to use this bot? This is not recommended for most setups. [y/N]: ", false)) {
+        return MessagingPolicy.create("anyone", []);
+      }
+    }
+  }
+
+  private async collectTelegramUserIds(mode: MessagingPolicyMode, prompt: string): Promise<MessagingPolicy> {
+    while (true) {
+      const answer = (await this.prompts.ask(prompt)).trim();
+      try {
+        return this.buildMessagingPolicy(mode, answer);
+      } catch {
+        this.prompts.write("Telegram user IDs must be numeric. Use commas to separate multiple IDs.\n");
+      }
+    }
+  }
+
+  private buildMessagingPolicy(mode: MessagingPolicyMode, raw: string): MessagingPolicy {
+    const pieces = raw
+      .split(",")
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+
+    if (pieces.some((part) => !/^[0-9]+$/.test(part))) {
+      throw new Error("Telegram user IDs must be numeric.");
+    }
+
+    const userIds = pieces.map((part) => Number(part));
+    return MessagingPolicy.create(mode, userIds);
+  }
+
+  private async collectTelegramHomeChannel(defaultUserId: number): Promise<string | undefined> {
+    this.prompts.write("\nHermes can also use Telegram for its own status updates.\n");
+    const useDefault = await this.confirmYesNo(
+      `Use ${defaultUserId} as the home channel for bot status messages? [y/N]: `,
+      false
+    );
+    return useDefault ? String(defaultUserId) : undefined;
+  }
+
+  private buildTelegramSetupFromInputs(
+    botToken: string,
+    identity: TelegramBotIdentity | null,
+    allowedUsersInput: string | undefined,
+    allowAllUsersInput: string | undefined,
+    homeChannelInput: string | undefined
+  ): TelegramSetup {
+    const allowAllUsers = /^(1|true|yes)$/i.test((allowAllUsersInput ?? "").trim());
+    const allowedUsersRaw = (allowedUsersInput ?? "").trim();
+    const homeChannelRaw = (homeChannelInput ?? "").trim();
+
+    if (allowAllUsers && allowedUsersRaw.length > 0) {
+      throw new Error("TELEGRAM_ALLOWED_USERS cannot be set when GATEWAY_ALLOW_ALL_USERS is true.");
+    }
+
+    let allowedUsers: string | undefined;
+    if (allowedUsersRaw.length > 0) {
+      const mode: MessagingPolicyMode = allowedUsersRaw.includes(",") ? "specific_users" : "only_me";
+      const policy = this.buildMessagingPolicy(mode, allowedUsersRaw);
+      allowedUsers = policy.allowedUsers.join(",");
+    }
+
+    if (homeChannelRaw.length > 0 && !/^[0-9]+$/.test(homeChannelRaw)) {
+      throw new Error("TELEGRAM_HOME_CHANNEL must be a numeric Telegram user ID.");
+    }
+
+    return {
+      botToken,
+      botUsername: identity?.username,
+      botName: identity?.firstName,
+      allowedUsers,
+      allowAllUsers,
+      homeChannel: homeChannelRaw.length > 0 ? homeChannelRaw : undefined,
+    };
+  }
+
   private validateAppName(value: string): string {
     const normalized = value.trim().toLowerCase();
     if (normalized.length < 2 || normalized.length > 63) {
@@ -780,6 +1019,28 @@ export class FlyDeployWizard implements DeployWizardPort {
   private describeModel(model: string): string {
     const label = this.modelLabels.get(model);
     return label ? `${label} (${model})` : model;
+  }
+
+  private describeTelegramBot(setup: TelegramSetup): string {
+    if (setup.botUsername) {
+      return `@${setup.botUsername}`;
+    }
+    return "set up now";
+  }
+
+  private describeTelegramAccess(config: DeployConfig): string {
+    if (config.gatewayAllowAllUsers) {
+      return "Anyone";
+    }
+    if (!config.telegramAllowedUsers) {
+      return "Set up now";
+    }
+
+    const users = config.telegramAllowedUsers.split(",").map((value) => value.trim()).filter(Boolean);
+    if (users.length === 1) {
+      return `Only me (${users[0]})`;
+    }
+    return `Specific people (${users.join(", ")})`;
   }
 
   private parseVolumeSize(value: string, label: string): number {
