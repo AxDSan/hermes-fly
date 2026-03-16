@@ -25,7 +25,9 @@ and manages a Hermes instance on Fly.io.
 curl -fsSL "https://raw.githubusercontent.com/alexfazio/hermes-fly/main/scripts/install.sh" | bash
 ```
 
-This installs the latest published `hermes-fly` release by default. To pin a
+This installs the latest published `hermes-fly` release by default. The
+installer prefers packaged release assets and falls back to a source build only
+when an older tag does not provide one. To pin a
 specific release:
 
 ```bash

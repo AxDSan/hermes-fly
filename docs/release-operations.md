@@ -90,12 +90,25 @@ Dependencies that may drift and how hermes-fly handles them:
 Run before release promotion:
 
 ```bash
+npm run build
 tests/bats/bin/bats \
-  tests/deploy.bats \
-  tests/doctor.bats \
-  tests/docker-helpers.bats \
   tests/install.bats \
+  tests/release-guard.bats \
   tests/integration.bats \
-  tests/openrouter.bats \
-  tests/messaging.bats
+  tests/deploy-ts.bats \
+  tests/destroy-ts.bats \
+  tests/doctor-ts.bats \
+  tests/resume-ts.bats \
+  tests/hybrid-dispatch.bats \
+  tests/scaffold.bats
+npm run test:runtime-cli-contracts
+npm run test:deploy-run-wizard
+npm run test:runtime-deploy
+npm run test:release-destroy-deployment
 ```
+
+Release packaging contract:
+
+1. Publish a packaged asset named `hermes-fly-vX.Y.Z.tar.gz` with each release.
+2. Asset must contain: `hermes-fly`, `dist/`, `node_modules/`, `package.json`, `package-lock.json`, `templates/`, and `data/`.
+3. Installer contract: `scripts/install.sh` prefers the packaged asset and falls back to clone+build only when a legacy tag does not provide one.

@@ -11,6 +11,69 @@ teardown() {
   _common_teardown
 }
 
+write_source_checkout() {
+  local dest="$1"
+
+  mkdir -p "$dest/templates" "$dest/data"
+  cat > "$dest/hermes-fly" <<'MOCK'
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
+MOCK
+  chmod +x "$dest/hermes-fly"
+
+  cat > "$dest/package.json" <<'JSON'
+{"name":"hermes-fly","type":"module","dependencies":{"commander":"^12.1.0"},"scripts":{"build":"tsc -p tsconfig.json"}}
+JSON
+  cat > "$dest/package-lock.json" <<'JSON'
+{"name":"hermes-fly","lockfileVersion":3}
+JSON
+  echo 'tpl' > "$dest/templates/Dockerfile.template"
+  echo '{}' > "$dest/data/reasoning-snapshot.json"
+}
+
+write_mock_npm() {
+  local mock_dir="$1"
+
+  cat > "$mock_dir/npm" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${MOCK_NPM_ARGS_FILE}"
+if [[ "${1:-}" == "ci" ]]; then
+  mkdir -p "$PWD/node_modules/commander"
+  echo '{"name":"commander"}' > "$PWD/node_modules/commander/package.json"
+  exit 0
+fi
+if [[ "${1:-}" == "run" && "${2:-}" == "build" ]]; then
+  mkdir -p "$PWD/dist"
+  echo 'console.log("hermes-fly test build")' > "$PWD/dist/cli.js"
+  exit 0
+fi
+if [[ "${1:-}" == "prune" && "${2:-}" == "--omit=dev" ]]; then
+  exit 0
+fi
+echo "unexpected npm invocation: $*" >&2
+exit 1
+MOCK
+  chmod +x "$mock_dir/npm"
+}
+
+write_mock_node() {
+  local mock_dir="$1"
+  local version="$2"
+
+  cat > "$mock_dir/node" <<MOCK
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\${MOCK_NODE_ARGS_FILE}"
+if [[ "\$*" == *"--version"* ]]; then
+  echo "hermes-fly ${version}"
+  exit 0
+fi
+echo "unexpected node invocation: \$*" >&2
+exit 1
+MOCK
+  chmod +x "$mock_dir/node"
+}
+
 # --- detect_platform ---
 
 @test "detect_platform returns darwin or linux" {
@@ -73,18 +136,64 @@ teardown() {
 @test "install_files copies dist/ for TS runtime" {
   # Create a fake project layout with dist/
   local src="${TEST_TEMP_DIR}/src"
-  mkdir -p "$src/dist" "$src/templates"
+  mkdir -p "$src/dist" "$src/templates" "$src/node_modules/commander"
   echo '#!/usr/bin/env bash' > "$src/hermes-fly"
   chmod +x "$src/hermes-fly"
   echo '// compiled cli' > "$src/dist/cli.js"
+  echo '{"name":"commander"}' > "$src/node_modules/commander/package.json"
   echo '{"type":"module"}' > "$src/package.json"
+  echo '{"lockfileVersion":3}' > "$src/package-lock.json"
 
   local dest="${TEST_TEMP_DIR}/hermes-home"
   local bin="${TEST_TEMP_DIR}/bin"
   run install_files "$src" "$dest" "$bin"
   assert_success
   assert [ -f "${dest}/dist/cli.js" ]
+  assert [ -f "${dest}/node_modules/commander/package.json" ]
   assert [ -f "${dest}/package.json" ]
+  assert [ -f "${dest}/package-lock.json" ]
+}
+
+@test "prepare_runtime_artifacts builds dist and runtime dependencies when missing" {
+  local src="${TEST_TEMP_DIR}/src"
+  local mock_dir="${TEST_TEMP_DIR}/mock_bin"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args"
+
+  mkdir -p "$mock_dir"
+  write_source_checkout "$src"
+  write_mock_npm "$mock_dir"
+
+  run bash -c '
+    export PATH="'"$mock_dir"':${PATH}"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
+    prepare_runtime_artifacts "'"$src"'"
+  '
+  assert_success
+  assert_output --partial "Preparing hermes-fly runtime dependencies"
+  assert [ -f "${src}/dist/cli.js" ]
+  assert [ -f "${src}/node_modules/commander/package.json" ]
+
+  run cat "$npm_args_file"
+  assert_success
+  assert_output --partial "ci"
+  assert_output --partial "run build"
+  assert_output --partial "prune --omit=dev"
+}
+
+@test "verify_installed_version surfaces launcher failure output" {
+  local broken="${TEST_TEMP_DIR}/broken-hermes-fly"
+  cat > "$broken" <<'MOCK'
+#!/usr/bin/env bash
+echo "Error: Cannot find module '/usr/local/lib/hermes-fly/dist/cli.js'" >&2
+exit 1
+MOCK
+  chmod +x "$broken"
+
+  run verify_installed_version "$broken" "v0.1.12"
+  assert_failure
+  assert_output --partial "Could not determine installed hermes-fly version"
+  assert_output --partial "Cannot find module '/usr/local/lib/hermes-fly/dist/cli.js'"
 }
 
 # --- release resolution ---
@@ -176,16 +285,114 @@ MOCK
   assert_output "v0.9.1"
 }
 
-# --- main() with git clone ---
+# --- main() install flow ---
 
-@test "install main clones latest release tag and installs matching version" {
+@test "install main prefers packaged release asset when available" {
   local mock_dir="${TEST_TEMP_DIR}/mock_bin"
   mkdir -p "$mock_dir"
-  local git_args_file="${TEST_TEMP_DIR}/git_args"
+  local node_args_file="${TEST_TEMP_DIR}/node_args"
+  local git_marker="${TEST_TEMP_DIR}/git_called"
+  local asset_root="${TEST_TEMP_DIR}/asset_root"
+  local asset_file="${TEST_TEMP_DIR}/hermes-fly-v0.1.12.tar.gz"
+
+  mkdir -p "$asset_root/dist" "$asset_root/node_modules/commander" "$asset_root/templates" "$asset_root/data"
+  cat > "$asset_root/hermes-fly" <<'MOCK'
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
+MOCK
+  chmod +x "$asset_root/hermes-fly"
+  echo '// packaged cli' > "$asset_root/dist/cli.js"
+  echo '{"name":"commander"}' > "$asset_root/node_modules/commander/package.json"
+  echo '{"type":"module"}' > "$asset_root/package.json"
+  echo '{"lockfileVersion":3}' > "$asset_root/package-lock.json"
+  echo 'tpl' > "$asset_root/templates/Dockerfile.template"
+  echo '{}' > "$asset_root/data/reasoning-snapshot.json"
+  tar -czf "$asset_file" -C "$asset_root" .
 
   cat > "$mock_dir/curl" <<'MOCK'
 #!/usr/bin/env bash
-printf '{"tag_name":"v0.1.12"}\n'
+out=""
+url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+if [[ "$url" == *"/releases/latest" ]]; then
+  printf '{"tag_name":"v0.1.12"}\n'
+  exit 0
+fi
+if [[ "$url" == *"/releases/tags/v0.1.12" ]]; then
+  printf '{"browser_download_url":"https://example.invalid/hermes-fly-v0.1.12.tar.gz"}\n'
+  exit 0
+fi
+if [[ "$url" == "https://example.invalid/hermes-fly-v0.1.12.tar.gz" ]]; then
+  cat "${MOCK_RELEASE_ASSET_FILE}" > "$out"
+  exit 0
+fi
+exit 1
+MOCK
+  chmod +x "$mock_dir/curl"
+
+  cat > "$mock_dir/git" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "${MOCK_GIT_MARKER_FILE}"
+exit 99
+MOCK
+  chmod +x "$mock_dir/git"
+  write_mock_node "$mock_dir" "0.1.12"
+
+  local install_home="${TEST_TEMP_DIR}/hermes_home"
+  local install_bin="${TEST_TEMP_DIR}/install_bin"
+  run bash -c '
+    export HERMES_FLY_HOME="'"$install_home"'"
+    export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
+    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
+    export MOCK_GIT_MARKER_FILE="'"$git_marker"'"
+    export MOCK_RELEASE_ASSET_FILE="'"$asset_file"'"
+    export PATH="'"$mock_dir"':${PATH}"
+    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
+    main
+  '
+  assert_success
+  assert_output --partial "hermes-fly installed successfully"
+  assert_output --partial "Downloading hermes-fly release asset"
+  assert_output --partial "hermes-fly 0.1.12"
+  assert [ -f "${install_home}/hermes-fly" ]
+  assert [ -f "${install_home}/dist/cli.js" ]
+  assert [ -f "${install_home}/node_modules/commander/package.json" ]
+  assert [ -L "${install_bin}/hermes-fly" ]
+  run test ! -f "$git_marker"
+  assert_success
+}
+
+@test "install main falls back to source clone and build when packaged asset is unavailable" {
+  local mock_dir="${TEST_TEMP_DIR}/mock_bin"
+  mkdir -p "$mock_dir"
+  local git_args_file="${TEST_TEMP_DIR}/git_args"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args"
+  local node_args_file="${TEST_TEMP_DIR}/node_args"
+
+  cat > "$mock_dir/curl" <<'MOCK'
+#!/usr/bin/env bash
+url="${@: -1}"
+if [[ "$url" == *"/releases/latest" ]]; then
+  printf '{"tag_name":"v0.1.12"}\n'
+  exit 0
+fi
+if [[ "$url" == *"/releases/tags/v0.1.12" ]]; then
+  printf '{"assets":[]}\n'
+  exit 0
+fi
+exit 1
 MOCK
   chmod +x "$mock_dir/curl"
 
@@ -194,8 +401,20 @@ MOCK
 if [[ "$1" == "clone" ]]; then
   printf '%s\n' "$*" > "${MOCK_GIT_ARGS_FILE}"
   dest="${@: -1}"
+  mkdir -p "$dest"
+  cat > "$dest/hermes-fly" <<'INNER'
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
+INNER
+  chmod +x "$dest/hermes-fly"
   mkdir -p "$dest/templates" "$dest/data"
-  printf '#!/bin/sh\necho "hermes-fly 0.1.12"\n' > "$dest/hermes-fly"
+  cat > "$dest/package.json" <<'INNER'
+{"name":"hermes-fly","type":"module","dependencies":{"commander":"^12.1.0"},"scripts":{"build":"tsc -p tsconfig.json"}}
+INNER
+  cat > "$dest/package-lock.json" <<'INNER'
+{"name":"hermes-fly","lockfileVersion":3}
+INNER
   echo 'tpl' > "$dest/templates/Dockerfile.template"
   echo '{}' > "$dest/data/reasoning-snapshot.json"
   exit 0
@@ -203,6 +422,8 @@ fi
 exit 1
 MOCK
   chmod +x "$mock_dir/git"
+  write_mock_npm "$mock_dir"
+  write_mock_node "$mock_dir" "0.1.12"
 
   local install_home="${TEST_TEMP_DIR}/hermes_home"
   local install_bin="${TEST_TEMP_DIR}/install_bin"
@@ -210,32 +431,52 @@ MOCK
     export HERMES_FLY_HOME="'"$install_home"'"
     export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
     export MOCK_GIT_ARGS_FILE="'"$git_args_file"'"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
     export PATH="'"$mock_dir"':${PATH}"
     source "'"${PROJECT_ROOT}"'/scripts/install.sh"
     main
   '
   assert_success
-  assert_output --partial "hermes-fly installed successfully"
-  assert_output --partial "hermes-fly 0.1.12"
-  assert [ -f "${install_home}/hermes-fly" ]
-  assert [ -L "${install_bin}/hermes-fly" ]
+  assert_output --partial "Preparing hermes-fly runtime dependencies"
+  assert [ -f "${install_home}/dist/cli.js" ]
+  assert [ -f "${install_home}/node_modules/commander/package.json" ]
   run cat "$git_args_file"
   assert_success
   assert_output --partial "--branch v0.1.12"
+  run cat "$npm_args_file"
+  assert_success
+  assert_output --partial "ci"
+  assert_output --partial "run build"
+  assert_output --partial "prune --omit=dev"
 }
 
-@test "install main uses main branch when HERMES_FLY_CHANNEL=edge" {
+@test "install main uses main branch and builds runtime when HERMES_FLY_CHANNEL=edge" {
   local mock_dir="${TEST_TEMP_DIR}/mock_bin"
   mkdir -p "$mock_dir"
   local git_args_file="${TEST_TEMP_DIR}/git_args_edge"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args_edge"
+  local node_args_file="${TEST_TEMP_DIR}/node_args_edge"
 
   cat > "$mock_dir/git" <<'MOCK'
 #!/usr/bin/env bash
 if [[ "$1" == "clone" ]]; then
   printf '%s\n' "$*" > "${MOCK_GIT_ARGS_FILE}"
   dest="${@: -1}"
+  mkdir -p "$dest"
+  cat > "$dest/hermes-fly" <<'INNER'
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
+INNER
+  chmod +x "$dest/hermes-fly"
   mkdir -p "$dest/templates" "$dest/data"
-  printf '#!/bin/sh\necho "hermes-fly 0.0.0-dev"\n' > "$dest/hermes-fly"
+  cat > "$dest/package.json" <<'INNER'
+{"name":"hermes-fly","type":"module","dependencies":{"commander":"^12.1.0"},"scripts":{"build":"tsc -p tsconfig.json"}}
+INNER
+  cat > "$dest/package-lock.json" <<'INNER'
+{"name":"hermes-fly","lockfileVersion":3}
+INNER
   echo 'tpl' > "$dest/templates/Dockerfile.template"
   echo '{}' > "$dest/data/reasoning-snapshot.json"
   exit 0
@@ -243,6 +484,8 @@ fi
 exit 1
 MOCK
   chmod +x "$mock_dir/git"
+  write_mock_npm "$mock_dir"
+  write_mock_node "$mock_dir" "0.0.0-dev"
 
   local install_home="${TEST_TEMP_DIR}/hermes_home_edge"
   local install_bin="${TEST_TEMP_DIR}/install_bin_edge"
@@ -251,6 +494,8 @@ MOCK
     export HERMES_FLY_HOME="'"$install_home"'"
     export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
     export MOCK_GIT_ARGS_FILE="'"$git_args_file"'"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
     export PATH="'"$mock_dir"':${PATH}"
     source "'"${PROJECT_ROOT}"'/scripts/install.sh"
     main
@@ -265,19 +510,44 @@ MOCK
 @test "install main fails when installed version does not match requested release" {
   local mock_dir="${TEST_TEMP_DIR}/mock_bin"
   mkdir -p "$mock_dir"
+  local git_args_file="${TEST_TEMP_DIR}/git_args_mismatch"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args_mismatch"
+  local node_args_file="${TEST_TEMP_DIR}/node_args_mismatch"
 
   cat > "$mock_dir/curl" <<'MOCK'
 #!/usr/bin/env bash
-printf '{"tag_name":"v0.1.12"}\n'
+url="${@: -1}"
+if [[ "$url" == *"/releases/latest" ]]; then
+  printf '{"tag_name":"v0.1.12"}\n'
+  exit 0
+fi
+if [[ "$url" == *"/releases/tags/v0.1.12" ]]; then
+  printf '{"assets":[]}\n'
+  exit 0
+fi
+exit 1
 MOCK
   chmod +x "$mock_dir/curl"
 
   cat > "$mock_dir/git" <<'MOCK'
 #!/usr/bin/env bash
 if [[ "$1" == "clone" ]]; then
+  printf '%s\n' "$*" > "${MOCK_GIT_ARGS_FILE}"
   dest="${@: -1}"
+  mkdir -p "$dest"
+  cat > "$dest/hermes-fly" <<'INNER'
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
+INNER
+  chmod +x "$dest/hermes-fly"
   mkdir -p "$dest/templates" "$dest/data"
-  printf '#!/bin/sh\necho "hermes-fly 0.1.11"\n' > "$dest/hermes-fly"
+  cat > "$dest/package.json" <<'INNER'
+{"name":"hermes-fly","type":"module","dependencies":{"commander":"^12.1.0"},"scripts":{"build":"tsc -p tsconfig.json"}}
+INNER
+  cat > "$dest/package-lock.json" <<'INNER'
+{"name":"hermes-fly","lockfileVersion":3}
+INNER
   echo 'tpl' > "$dest/templates/Dockerfile.template"
   echo '{}' > "$dest/data/reasoning-snapshot.json"
   exit 0
@@ -285,12 +555,17 @@ fi
 exit 1
 MOCK
   chmod +x "$mock_dir/git"
+  write_mock_npm "$mock_dir"
+  write_mock_node "$mock_dir" "0.1.11"
 
-  local install_home="${TEST_TEMP_DIR}/hermes_home"
-  local install_bin="${TEST_TEMP_DIR}/install_bin"
+  local install_home="${TEST_TEMP_DIR}/hermes_home_mismatch"
+  local install_bin="${TEST_TEMP_DIR}/install_bin_mismatch"
   run bash -c '
     export HERMES_FLY_HOME="'"$install_home"'"
     export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
+    export MOCK_GIT_ARGS_FILE="'"$git_args_file"'"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
     export PATH="'"$mock_dir"':${PATH}"
     source "'"${PROJECT_ROOT}"'/scripts/install.sh"
     main

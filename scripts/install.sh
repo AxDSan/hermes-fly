@@ -120,6 +120,129 @@ resolve_install_ref() {
   esac
 }
 
+require_command() {
+  local cmd="$1" purpose="${2:-}"
+  if command -v "$cmd" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ -n "$purpose" ]]; then
+    echo "Error: ${cmd} is required ${purpose}" >&2
+  else
+    echo "Error: ${cmd} is required" >&2
+  fi
+  return 1
+}
+
+release_asset_name() {
+  local install_ref="$1"
+  printf 'hermes-fly-%s.tar.gz\n' "$install_ref"
+}
+
+release_metadata_url() {
+  local install_ref="$1"
+  printf 'https://api.github.com/repos/%s/releases/tags/%s\n' "$REPO" "$install_ref"
+}
+
+resolve_release_asset_url() {
+  local install_ref="${1:-}" response asset_name
+
+  if ! is_release_ref "$install_ref"; then
+    return 1
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    return 1
+  fi
+
+  asset_name="$(release_asset_name "$install_ref")"
+  response="$(curl -fsSL "$(release_metadata_url "$install_ref")" 2>/dev/null || true)"
+  if [[ -z "$response" ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "$response" \
+    | sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | grep -F "/${asset_name}" \
+    | head -1
+}
+
+download_release_asset() {
+  local asset_url="$1" extract_dir="$2" archive_path
+
+  require_command tar "to extract hermes-fly release assets" || return 1
+  mkdir -p "$extract_dir"
+  archive_path="${extract_dir}/$(basename "$asset_url")"
+
+  if ! curl -fsSL "$asset_url" -o "$archive_path"; then
+    echo "Error: Failed to download release asset: ${asset_url}" >&2
+    return 1
+  fi
+
+  if ! tar -xzf "$archive_path" -C "$extract_dir"; then
+    echo "Error: Failed to extract release asset: ${archive_path}" >&2
+    return 1
+  fi
+
+  if [[ -f "$extract_dir/hermes-fly" ]]; then
+    return 0
+  fi
+
+  echo "Error: Release asset did not contain hermes-fly launcher" >&2
+  return 1
+}
+
+prepare_runtime_artifacts() {
+  local src_dir="$1"
+
+  if [[ -f "$src_dir/dist/cli.js" && -f "$src_dir/node_modules/commander/package.json" ]]; then
+    return 0
+  fi
+
+  require_command node "to build hermes-fly from source" || return 1
+  require_command npm "to build hermes-fly from source" || return 1
+
+  if [[ ! -f "$src_dir/package.json" || ! -f "$src_dir/package-lock.json" ]]; then
+    echo "Error: package.json and package-lock.json are required to build hermes-fly from source" >&2
+    return 1
+  fi
+
+  echo "Preparing hermes-fly runtime dependencies..."
+  if ! (
+    cd "$src_dir"
+    npm ci
+    npm run build
+    npm prune --omit=dev
+  ); then
+    echo "Error: Failed to prepare hermes-fly runtime artifacts" >&2
+    return 1
+  fi
+
+  if [[ ! -f "$src_dir/dist/cli.js" ]]; then
+    echo "Error: Build completed without dist/cli.js" >&2
+    return 1
+  fi
+  if [[ ! -f "$src_dir/node_modules/commander/package.json" ]]; then
+    echo "Error: Runtime dependency commander was not installed" >&2
+    return 1
+  fi
+
+  return 0
+}
+
+download_source_tree() {
+  local install_ref="$1" dest_dir="$2"
+
+  require_command git "to download hermes-fly source" || return 1
+  echo "Downloading hermes-fly source..."
+  if ! git clone --depth 1 --branch "$install_ref" --single-branch \
+    "https://github.com/${REPO}.git" "$dest_dir" 2>/dev/null; then
+    echo "Error: Download failed" >&2
+    return 1
+  fi
+
+  return 0
+}
+
 verify_checksum() {
   local file="$1" expected="$2"
   local actual
@@ -149,12 +272,15 @@ verify_installed_version() {
     return 0
   fi
 
-  version_output="$("$binary_path" --version 2>/dev/null || true)"
+  version_output="$("$binary_path" --version 2>&1 || true)"
   actual="$(printf '%s' "$version_output" | sed -n 's/.*hermes-fly[[:space:]]\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)"
   expected="${install_ref#v}"
 
   if [[ -z "$actual" ]]; then
     echo "Error: Could not determine installed hermes-fly version" >&2
+    if [[ -n "$version_output" ]]; then
+      printf '%s\n' "$version_output" >&2
+    fi
     return 1
   fi
   if [[ "$actual" != "$expected" ]]; then
@@ -203,6 +329,8 @@ install_files() {
 
   # Install project files to HERMES_HOME
   _run mkdir -p "$dest_dir"
+  _run rm -rf "$dest_dir/dist" "$dest_dir/node_modules" "$dest_dir/templates" "$dest_dir/data"
+  _run rm -f "$dest_dir/hermes-fly" "$dest_dir/package.json" "$dest_dir/package-lock.json"
   _run cp "$src_dir/hermes-fly" "$dest_dir/"
   _run chmod +x "$dest_dir/hermes-fly"
   if [[ -d "$src_dir/templates" ]]; then
@@ -218,6 +346,12 @@ install_files() {
   if [[ -f "$src_dir/package.json" ]]; then
     _run cp "$src_dir/package.json" "$dest_dir/"
   fi
+  if [[ -f "$src_dir/package-lock.json" ]]; then
+    _run cp "$src_dir/package-lock.json" "$dest_dir/"
+  fi
+  if [[ -d "$src_dir/node_modules" ]]; then
+    _run cp -r "$src_dir/node_modules" "$dest_dir/"
+  fi
 
   # Symlink into PATH
   _run mkdir -p "$bin_dir"
@@ -230,11 +364,13 @@ install_files() {
 main() {
   echo "Installing hermes-fly..."
 
-  local platform arch install_ref install_channel
+  local platform arch install_ref install_channel source_dir asset_url
   platform="$(detect_platform)" || exit 1
   arch="$(detect_arch)" || exit 1
   install_channel="$(resolve_install_channel)" || exit 1
   install_ref="$(resolve_install_ref "$install_channel")" || exit 1
+
+  require_command node "to run hermes-fly" || exit 1
 
   echo "Platform: $platform/$arch"
   echo "Channel: $install_channel"
@@ -242,23 +378,24 @@ main() {
   echo "Symlink in: $INSTALL_DIR"
   echo "Release: $install_ref"
 
-  if ! command -v git >/dev/null 2>&1; then
-    echo "Error: git is required for installation" >&2
-    exit 1
-  fi
-
   local tmp_dir
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "${tmp_dir:-}"' EXIT
 
-  echo "Downloading hermes-fly..."
-  if ! git clone --depth 1 --branch "$install_ref" --single-branch \
-    "https://github.com/${REPO}.git" "$tmp_dir/hermes-fly" 2>/dev/null; then
-    echo "Error: Download failed" >&2
-    exit 1
+  source_dir="$tmp_dir/hermes-fly"
+  asset_url=""
+  if asset_url="$(resolve_release_asset_url "$install_ref")"; then
+    echo "Downloading hermes-fly release asset..."
+    download_release_asset "$asset_url" "$source_dir" || exit 1
+  else
+    download_source_tree "$install_ref" "$source_dir" || exit 1
   fi
 
-  install_files "$tmp_dir/hermes-fly" "$HERMES_HOME" "$INSTALL_DIR"
+  if [[ ! -f "$source_dir/dist/cli.js" || ! -f "$source_dir/node_modules/commander/package.json" ]]; then
+    prepare_runtime_artifacts "$source_dir" || exit 1
+  fi
+
+  install_files "$source_dir" "$HERMES_HOME" "$INSTALL_DIR"
 
   # Show installed version
   local version
