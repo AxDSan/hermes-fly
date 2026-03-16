@@ -43,9 +43,15 @@ create_portable_tarball() {
     extra_flags+=(--no-acls)
   fi
 
-  COPYFILE_DISABLE=1 \
-  COPY_EXTENDED_ATTRIBUTES_DISABLE=1 \
-    tar "${extra_flags[@]}" -czf "$archive_path" -C "$source_dir" .
+  if [[ ${#extra_flags[@]} -gt 0 ]]; then
+    COPYFILE_DISABLE=1 \
+    COPY_EXTENDED_ATTRIBUTES_DISABLE=1 \
+      tar "${extra_flags[@]}" -czf "$archive_path" -C "$source_dir" .
+  else
+    COPYFILE_DISABLE=1 \
+    COPY_EXTENDED_ATTRIBUTES_DISABLE=1 \
+      tar -czf "$archive_path" -C "$source_dir" .
+  fi
 }
 
 package_release_asset() {
