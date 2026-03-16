@@ -1,122 +1,124 @@
 # CLI Entry Point and Command Dispatch
 
-PSF for the `hermes-fly` entry point script and its command routing logic.
+PSF for the shell shim, Commander.js program setup, and command routing layer.
 
-**Related PSFs**: [00-architecture](00-hermes-fly-architecture-overview.md) | [07-deployment](07-deployment.md) | [03-operations](03-infrastructure-and-operations.md)
+**Related PSFs**: [00-architecture](00-hermes-fly-architecture-overview.md) | [02-deploy](02-deploy-bounded-context.md) | [06-infrastructure](06-cross-cutting-infrastructure.md)
 
-## 1. Scope
+## 1. TL;DR
 
-This document covers the main `hermes-fly` executable — the single entry point for the entire CLI. It handles:
+- **Shell shim** (`hermes-fly`, 14 lines): resolves symlinks, `exec node dist/cli.js`
+- **Commander.js program** (`src/cli.ts`, 141 lines): registers 9 commands, handles errors
+- **Command modules** (`src/commands/*.ts`): parse args, build dependency graph, call use-cases
+- **App resolution** (`src/commands/resolve-app.ts`): `-a` flag > `config.yaml:current_app` > null
 
-- Shell configuration (`set -euo pipefail`)
-- Symlink resolution to find `lib/` relative to the real script location
-- Sourcing all 13 library modules
-- Help text rendering
-- Command dispatch via `case` statement
-- App name resolution (`-a APP` flag or `current_app` from config)
+## 2. Shell Shim
 
-## 2. File
-
-| Path | Lines | Role |
-|------|-------|------|
-| `hermes-fly` | ~152 | Entry point, dispatcher |
-
-## 3. Initialization Sequence
-
-```text
-1. set -euo pipefail
-2. HERMES_FLY_VERSION="0.1.16"
-3. Resolve symlinks to find real script location → SCRIPT_DIR
-4. Source lib/ui.sh
-5. Source lib/prereqs.sh
-6. Source lib/fly-helpers.sh
-7. Source lib/docker-helpers.sh
-8. Source lib/messaging.sh
-9. Source lib/config.sh
-10. Source lib/status.sh
-11. Source lib/logs.sh
-12. Source lib/doctor.sh
-13. Source lib/destroy.sh
-14. Source lib/list.sh
-15. Source lib/openrouter.sh
-16. Source lib/deploy.sh
-17. Call main() with all arguments
-```
-
-Symlink resolution loop (lines 6-12) ensures `hermes-fly` works when invoked via a symlink (e.g., after `ln -s` installation):
-
+`hermes-fly` (project root, 14 lines):
 ```bash
-_self="${BASH_SOURCE[0]}"
-while [[ -L "$_self" ]]; do
-  _dir="$(cd "$(dirname "$_self")" && pwd)"
-  _self="$(readlink "$_self")"
-  [[ "$_self" != /* ]] && _self="$_dir/$_self"
-done
-SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
+#!/usr/bin/env bash
+set -euo pipefail
+# Resolve symlinks so dist/ is found relative to the real file location
+# ... symlink resolution loop ...
+exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
 ```
 
-## 4. Command Dispatch
+The shim exists solely to provide a shell-executable entry point. All logic lives in TypeScript.
 
-The `main()` function (line 84) uses a `case` statement:
+## 3. Commander.js Program
 
-| Argument | Handler | App resolution |
-|----------|---------|----------------|
-| `deploy` | `cmd_deploy "$@"` | Not needed (wizard collects config) |
-| `status` | `cmd_status "$app"` | `config_resolve_app "$@"` |
-| `logs` | `cmd_logs "$app"` | `config_resolve_app "$@"` |
-| `doctor` | `cmd_doctor "$app"` | `config_resolve_app "$@"` |
-| `list` | `cmd_list` | Not needed (lists all tracked apps) |
-| `destroy` | `cmd_destroy "$app" "$@"` | `config_resolve_app "$@"` |
-| `help`/`--help`/`-h` | `show_help` | N/A |
-| `version`/`--version`/`-v` | Prints version | N/A |
-| *(default)* | `show_help`, exits 1 | N/A |
-| *(no args)* | `show_help` | N/A |
+`src/cli.ts` exports `buildProgram()` and `run(argv)`:
 
-### App Name Resolution
+```mermaid
+graph LR
+    SHIM["hermes-fly"] --> NODE["node dist/cli.js"]
+    NODE --> RUN["run(process.argv)"]
+    RUN --> BP["buildProgram()"]
+    BP --> PA["program.parseAsync(argv)"]
+    PA --> CMD["Command handler"]
+    CMD --> UC["Use-case"]
+    UC --> EXIT["process.exitCode"]
+```
 
-For all management commands (`status`, `logs`, `doctor`, `destroy`), the app name is resolved via `config_resolve_app`:
+**Key behaviors:**
+- No args (argv.length <= 2) → shows help, exits 0
+- Unknown command → `[error] Unknown command: X`, exits 1
+- Unhandled exception → `TS CLI error: message`, exits 1
+- Version: `hermes-fly 0.1.20` from `src/version.ts`
 
-1. Parse args for `-a APP` flag — use that if found
-2. Otherwise, read `current_app` from `~/.hermes-fly/config.yaml`
-3. If neither exists, print error and return 1
+## 4. Command Registry
 
-The `deploy` command does not resolve app name — it collects it interactively during the wizard.
+Nine commands registered via `program.command()`:
 
-## 5. Help System
+| Command | Handler | Options | Exit Codes |
+|---------|---------|---------|-----------|
+| `deploy` | `runDeployCommand` | `--channel <ch>`, `--no-auto-install` | 0, 1 |
+| `resume` | `runResumeCommand` | passthrough args | 0, 1 |
+| `list` | `runListCommand` | none | 0 |
+| `status` | `runStatusCommand` | passthrough args | 0, 1 |
+| `logs` | `runLogsCommand` | passthrough args | 0, 1 |
+| `doctor` | `runDoctorCommand` | passthrough args | 0, 1 |
+| `destroy` | `runDestroyCommand` | passthrough args | 0, 1, 4 |
+| `help` | `runHelpCommand` | none | 0 |
+| `version` | `runVersionCommand` | none | 0 |
 
-Two help functions:
+Most commands use `allowUnknownOption(true)` and `allowExcessArguments(true)` to handle their own arg parsing internally (e.g., `-a APP` flag).
 
-- `show_help()` — General CLI usage (commands, options, examples)
-- `show_deploy_help()` — Deploy-specific help (triggered by `hermes-fly deploy --help`)
+## 5. Command Module Pattern
 
-Help output is plain text via heredoc (`cat <<'EOF'`). No external man page or help generator.
+Each `src/commands/*.ts` follows a consistent structure:
 
-## 6. Global State
+1. **Options interface**: declares injectable dependencies (use-case, stderr, configDir)
+2. **Arg parser**: extracts `-a APP`, `--force`, etc. from raw string array
+3. **Dependency assembly**: instantiates adapters → use-cases (inline, no DI container)
+4. **Execution**: calls use-case, writes output to stderr, returns exit code
 
-| Variable | Set by | Purpose |
-|----------|--------|---------|
-| `HERMES_FLY_VERSION` | Entry point (line 4) | Version string, displayed by `version` command |
-| `SCRIPT_DIR` | Entry point (line 12) | Root directory of the project, used for sourcing `lib/` |
+Example (`src/commands/status.ts`, 51 lines):
+```typescript
+export async function runStatusCommand(
+  argv: string[] = [],
+  opts?: Partial<StatusCommandOptions>,
+): Promise<number> {
+  const appName = resolveApp(argv, opts?.configDir);
+  const useCase = opts?.useCase ?? new ShowStatusUseCase(/* adapter */);
+  const result = await useCase.execute(appName);
+  // write result to stderr, return exit code
+}
+```
 
-## 7. Error Handling
+## 6. App Resolution
 
-- Default command (no args) shows help text (exit 0)
-- Unknown commands show error message + help text (exit 1)
-- Failed app resolution shows actionable error: `"No app specified. Use -a APP or run 'hermes-fly deploy' first."`
-- All errors from subcommands propagate naturally via `set -e`
+`src/commands/resolve-app.ts` (39 lines) — shared by status, logs, doctor, destroy, resume:
 
-## 8. Extension Points
+**Resolution order:**
+1. `-a <appName>` explicit flag → returns appName
+2. `-a` with no value → returns `null` (signals "no app specified")
+3. No `-a` flag → reads `current_app` from `~/.hermes-fly/config.yaml`
+4. No config → returns `null`
 
-To add a new command:
+Commands that receive `null` either error with guidance or handle gracefully (e.g., list ignores it).
 
-1. Create `lib/newcommand.sh` with a `cmd_newcommand()` function
-2. Add `source "${SCRIPT_DIR}/lib/newcommand.sh"` to the entry point
-3. Add a `case` branch in `main()` dispatching to `cmd_newcommand`
-4. Add the command to `show_help()` text
+## 7. Help System
 
-## 9. Testing
+`src/commands/help.ts` (37 lines):
+- Commander's built-in help command is disabled (`program.helpCommand(false)`)
+- Custom `runHelpCommand()` outputs formatted help to stderr
+- Lists all commands with descriptions
+- Includes usage examples and `-a APP` documentation
 
-The entry point itself is tested via `tests/scaffold.bats` and `tests/integration.bats`:
+## 8. File Inventory
 
-- `scaffold.bats` — Verifies all modules load without error, all commands exist
-- `integration.bats` — End-to-end smoke tests for help, version, and error cases
+| File | Lines | Responsibility |
+|------|-------|---------------|
+| `hermes-fly` | 14 | Shell shim (symlink-aware, exec node) |
+| `src/cli.ts` | 141 | Commander.js program, command registration |
+| `src/version.ts` | 1 | Version constant (0.1.20) |
+| `src/commands/deploy.ts` | 39 | Deploy command handler |
+| `src/commands/resume.ts` | 41 | Resume command handler |
+| `src/commands/list.ts` | 47 | List command handler |
+| `src/commands/status.ts` | 51 | Status command handler |
+| `src/commands/logs.ts` | 62 | Logs command handler |
+| `src/commands/doctor.ts` | 51 | Doctor command handler |
+| `src/commands/destroy.ts` | 84 | Destroy command handler (with --force) |
+| `src/commands/help.ts` | 37 | Custom help output |
+| `src/commands/version.ts` | 5 | Version output |
+| `src/commands/resolve-app.ts` | 39 | Shared -a flag + config resolution |

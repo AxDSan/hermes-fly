@@ -1,304 +1,143 @@
 # Security
 
-PSF for secret management, input validation, container isolation, and security boundaries.
+PSF for secret management, container isolation, input validation, and security boundaries.
 
 **Related PSFs**: [00-architecture](00-hermes-fly-architecture-overview.md) | [07-deployment](07-deployment.md) | [08-maintainability](08-maintainability.md)
 
-## 1. Scope
+## 1. TL;DR
 
-This document covers the security model of hermes-fly across three domains:
+- **Core principle**: secrets never touch local disk — user input → `fly secrets set` directly
+- **Config file** (`~/.hermes-fly/config.yaml`): only app names, regions, timestamps
+- **Container isolation**: Fly.io Firecracker microVMs, one machine per app
+- **Secret bridging**: `entrypoint.sh` bridges Fly secrets to container env on every boot
+- **Type safety**: TypeScript strict mode + immutable domain entities prevent state corruption
 
-1. **CLI security** — how hermes-fly handles sensitive data locally
-2. **Deployment security** — how secrets reach the running container
-3. **Container security** — runtime isolation and access control
+## 2. Secret Management
 
-## 2. Security Architecture
+### Secret Flow
 
 ```mermaid
-graph TD
-    subgraph "User's Machine (CLI)"
-        INPUT["User input<br/>(API keys, tokens)"] --> CLI["hermes-fly"]
-        CLI --> CONFIG["~/.hermes-fly/config.yaml<br/>(app names, regions only)"]
-        CLI -->|"fly secrets set"| FLYAPI["Fly.io API"]
-    end
-
-    subgraph "Fly.io Platform"
-        FLYAPI --> SECRETS["Encrypted Secret Store"]
-        SECRETS -->|"injected as env vars"| CONTAINER["Container Runtime"]
-    end
-
-    subgraph "Container"
-        CONTAINER --> ENTRYPOINT["entrypoint.sh"]
-        ENTRYPOINT -->|"bridges to .env"| DOTENV["/root/.hermes/.env"]
-        DOTENV --> HERMES["Hermes Agent"]
-    end
-
-    style INPUT fill:#dc2626,color:#fff
-    style SECRETS fill:#059669,color:#fff
-    style CONFIG fill:#d97706,color:#fff
+graph LR
+    UI["User Input<br/>(terminal prompt)"] --> FS["fly secrets set<br/>(API call)"]
+    FS --> FLY["Fly.io Vault<br/>(encrypted at rest)"]
+    FLY --> ENV["Container ENV<br/>(injected at boot)"]
+    ENV --> EP["entrypoint.sh<br/>(bridges to .env)"]
+    EP --> HA["Hermes Agent<br/>(reads .env)"]
 ```
 
-## 3. Secret Management
+### What's a Secret
+| Secret | Source | Storage |
+|--------|--------|---------|
+| LLM API key (OpenRouter/OpenAI/etc.) | User prompt during deploy | Fly.io vault only |
+| Telegram bot token | User prompt during deploy | Fly.io vault only |
+| Telegram chat ID | User prompt during deploy | Fly.io vault only |
+| Discord webhook URL | Legacy (no longer collected) | Fly.io vault (if previously set) |
 
-### 3.1 Principle: Secrets Never Touch Disk Locally
+### What's NOT a Secret
+Stored in `~/.hermes-fly/config.yaml`:
+- App names, regions, timestamps, platform info
+- `current_app` pointer
+- No API keys, tokens, or credentials ever written to config
 
-hermes-fly follows a strict rule: **sensitive values are never written to local disk**. They go directly from user input to Fly.io's encrypted secret store via `fly secrets set`.
+### Entrypoint Secret Bridging
 
-| Data | Storage location | On local disk? |
-|------|-----------------|----------------|
-| API keys (OpenRouter, Nous, custom) | Fly.io secrets | Never |
-| Bot tokens (Telegram, Discord) | Fly.io secrets | Never |
-| LLM model ID | Fly.io secrets | Never |
-| App names, regions | `~/.hermes-fly/config.yaml` | Yes (non-sensitive) |
-| Deploy timestamps | `~/.hermes-fly/config.yaml` | Yes (non-sensitive) |
+`templates/entrypoint.sh` (105 lines) on every container boot:
+1. Reads Fly-injected environment variables
+2. Writes them to `/root/.hermes/.env` inside the container
+3. Configures Telegram bot settings
+4. Seeds skills directory
+5. Starts Hermes Agent
 
-### 3.2 Secret Input
+This bridging happens on every boot to ensure secrets are never stale and the `.env` file is ephemeral to the container lifecycle.
 
-API keys and tokens are read via `ui_ask_secret`, which uses `read -rs` (silent mode — no echo to terminal). The value exists only in a Bash variable for the duration of the deploy session, then is passed to `fly secrets set`.
+## 3. Container Isolation
 
-### 3.3 Secret Lifecycle in Container
+### Fly.io Security Model
+| Layer | Protection |
+|-------|-----------|
+| **Firecracker microVM** | Hardware-level isolation per app |
+| **Single machine** | One machine per app (`min_machines_running = 1`) |
+| **Base image** | `python:3.11-slim` with minimal packages (git, curl, xz-utils) |
+| **No SSH by default** | SSH access only via `fly ssh console` (authenticated) |
+| **Volume isolation** | Persistent volume mounted only to its app's machine |
 
-```text
-1. fly secrets set KEY=VAL → stored encrypted by Fly.io
-2. Container boots → Fly injects KEY=VAL as environment variable
-3. entrypoint.sh bridges env vars → /root/.hermes/.env
-4. Hermes Agent reads .env at startup
-```
-
-The entrypoint bridges these Fly secrets on every boot:
-
-```text
-OPENROUTER_API_KEY, LLM_MODEL, LLM_BASE_URL, LLM_API_KEY, NOUS_API_KEY,
-HERMES_APP_NAME, GATEWAY_ALLOW_ALL_USERS,
-TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS, TELEGRAM_HOME_CHANNEL,
-DISCORD_BOT_TOKEN, DISCORD_ALLOWED_USERS
-```
-
-> **Note**: The Discord setup wizard was removed from `messaging.sh`, but Discord secrets (`DISCORD_BOT_TOKEN`, `DISCORD_ALLOWED_USERS`) are still bridged in `entrypoint.sh` for backward compatibility with existing deployments.
-
-The bridging uses `sed -i` to remove any existing line for the key, then appends the new value. This ensures fresh secrets override stale values.
-
-### 3.4 What Is NOT in the Config File
-
-The local config file (`~/.hermes-fly/config.yaml`) stores only:
-
-```yaml
-current_app: hermes-alex-042
-apps:
-  - name: hermes-alex-042
-    region: iad
-    deployed_at: 2025-01-15T10:30:00Z
-```
-
-No API keys, tokens, passwords, or any sensitive material.
-
-### 3.5 What Is NOT in Generated Artifacts
-
-The Dockerfile and fly.toml are generated from templates. Neither contains secrets:
-
-- **Dockerfile**: Uses `{{HERMES_VERSION}}` (a git ref like "main") — not sensitive
-- **fly.toml**: Uses `{{APP_NAME}}`, `{{REGION}}`, etc. — not sensitive
-- **entrypoint.sh**: Static script, no secrets embedded
-
-Secrets are injected at runtime by Fly.io, not baked into the Docker image.
+### Network Boundaries
+- Outbound: HTTPS to LLM API endpoints, Telegram API
+- Inbound: Fly.io gateway proxy (HTTPS termination)
+- No inter-app communication
 
 ## 4. Input Validation
 
-### 4.1 App Name Validation
+### TypeScript Layer
+- **Domain entities**: `DeploymentIntent.create()` validates all fields (non-empty, correct format)
+- **App name validation**: enforced at the Fly.io API level (alphanumeric + hyphens)
+- **Channel validation**: must be `stable`, `preview`, or `edge`
+- **Strict typing**: TypeScript `strict: true` prevents null/undefined misuse
 
-`deploy_validate_app_name()` enforces:
+### CLI Layer
+- **Commander.js**: validates known options, rejects unknown commands
+- **Arg parsing**: manual parsing in command modules with explicit null handling
+- **Exit codes**: typed returns (0, 1, 4) — no uncaught exceptions in normal flow
 
-- Length: 2-63 characters
-- Pattern: `^[a-z][a-z0-9-]*[a-z0-9]$`
-- Starts with lowercase letter
-- Only lowercase letters, digits, hyphens
-- Ends with letter or digit
+### Template Layer
+- **sed substitution**: values inserted into templates are from validated domain entities
+- **No shell injection**: template values are app names and config strings (validated upstream)
 
-This prevents injection via app names (no special chars, no path separators).
+## 5. Security Boundaries Diagram
 
-### 4.2 Config File Validation
-
-`config_get_current_app()` validates stored values:
-
-```bash
-if [[ "$value" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-  echo "$value"
-else
-  echo ""  # Return empty for invalid values
-fi
+```mermaid
+graph TB
+    subgraph "Developer Machine"
+        CLI["hermes-fly CLI"]
+        CF["config.yaml<br/>(no secrets)"]
+    end
+    subgraph "Fly.io Platform"
+        API["Fly.io API<br/>(authenticated)"]
+        VAULT["Secret Vault<br/>(encrypted)"]
+        subgraph "Firecracker microVM"
+            EP["entrypoint.sh"]
+            HA["Hermes Agent"]
+            ENV[".env file<br/>(ephemeral)"]
+        end
+    end
+    subgraph "External APIs"
+        LLM["LLM Provider"]
+        TG["Telegram API"]
+    end
+    CLI -->|"fly secrets set"| API
+    API --> VAULT
+    VAULT -->|"env injection"| EP
+    EP --> ENV --> HA
+    HA -->|"HTTPS"| LLM
+    HA -->|"HTTPS"| TG
 ```
 
-This prevents a corrupted or tampered config file from injecting malicious values into commands. The same validation applies in `config_list_apps()`.
+## 6. TypeScript Security Improvements
 
-### 4.3 Token Validation
+The TypeScript transition brought several security improvements over the bash implementation:
 
-| Token type | Validation | Policy |
-|------------|------------|--------|
-| Telegram bot token | `^[0-9]+:[A-Za-z0-9_-]+$` | Warn on invalid, proceed anyway |
-| Discord bot token | Non-empty, >= 20 chars | Warn on invalid, proceed anyway |
-| User IDs | Comma-separated numeric | Warn on invalid, proceed anyway |
+| Improvement | Mechanism |
+|-------------|-----------|
+| **Immutable domain entities** | Factory methods with validation; no mutation after creation |
+| **Type-safe exit codes** | Typed return values prevent accidental code misuse |
+| **Port isolation** | Infrastructure details hidden behind interfaces |
+| **No eval/exec** | No dynamic code execution (unlike bash's `eval`) |
+| **ProcessRunner containment** | `node:child_process` imports restricted to 2 files |
+| **Strict null checks** | TypeScript strict mode catches null/undefined errors at compile time |
 
-Token validation is advisory (warnings, not blocking) to avoid false negatives when token formats evolve.
+## 7. Threat Considerations
 
-### 4.4 API Key Handling
+| Threat | Mitigation | Residual Risk |
+|--------|-----------|---------------|
+| Secret leakage to disk | Secrets flow directly to Fly.io vault | Container .env is ephemeral but exists at runtime |
+| Config file exposure | No secrets in config.yaml | App names visible (low sensitivity) |
+| Template injection | Validated domain entities as input | sed substitution could be fragile with special chars |
+| Fly CLI token theft | Token managed by flyctl, not hermes-fly | User's flyctl auth is a trust boundary |
+| Dependency supply chain | Only 1 runtime dep (commander) | Dev deps (typescript, tsx, dep-cruiser) are build-time only |
 
-API keys have no format validation — they are treated as opaque strings. The only check is non-empty:
+## 8. Discord Legacy
 
-```bash
-while [[ -z "$api_key" ]]; do
-  ui_ask_secret 'OpenRouter API key (required):' api_key
-  if [[ -z "$api_key" ]]; then
-    printf 'API key cannot be empty.\n' >&2
-  fi
-done
-```
-
-## 5. Container Security
-
-### 5.1 Image Base
-
-The Dockerfile uses `python:3.11-slim` — a minimal Debian-based image. Only three packages are installed: `git`, `curl`, `xz-utils`.
-
-### 5.2 Fly.io Machine Isolation
-
-Each Hermes deployment runs as a Fly.io Machine with:
-
-- **Hardware isolation**: Fly Machines use Firecracker microVMs
-- **Network isolation**: Each app gets its own IPv6 address
-- **Single machine**: `min_machines_running = 1`, auto_stop disabled
-- **HTTP service**: Port 8080 is the only exposed port (via Fly's proxy)
-
-### 5.3 Volume Mount
-
-The persistent volume mounts at `/root/.hermes`:
-
-```toml
-[[mounts]]
-  source = "hermes_data"
-  destination = "/root/.hermes"
-```
-
-This contains Hermes runtime data: sessions, logs, pairing info, cached data. The volume persists across container restarts and redeploys.
-
-### 5.4 Access Control
-
-Access control for the Hermes Agent is enforced by Hermes itself (not by hermes-fly):
-
-- `TELEGRAM_ALLOWED_USERS` — comma-separated Telegram user IDs
-- `DISCORD_ALLOWED_USERS` — comma-separated Discord user IDs
-- Empty = allow all users (no restriction)
-
-These are set as Fly.io secrets and bridged to `.env` by the entrypoint.
-
-### 5.5 Rate Limiting
-
-The entrypoint clears rate limit entries for already-approved users on every boot. This uses an inline Python script that:
-
-1. Reads `/root/.hermes/pairing/*-approved.json` files
-2. Builds set of `platform:userId` pairs
-3. Removes matching entries from `_rate_limits.json`
-
-This prevents approved users from being rate-limited after container restarts.
-
-## 6. Fly.io Authentication
-
-### 6.1 Auth Flow
-
-hermes-fly verifies authentication via `fly auth whoami`. If not authenticated:
-
-1. Prints message to run `fly auth login` in another terminal
-2. Waits up to 60 seconds for user to press Enter
-3. Retries `fly auth whoami`
-4. Fails with `EXIT_AUTH` (2) if still not authenticated
-
-hermes-fly never handles Fly.io credentials directly — authentication is managed entirely by flyctl.
-
-### 6.2 Organization Access
-
-`deploy_collect_org()` fetches orgs the user has access to via `fly orgs list --json`. The user can only deploy to organizations they belong to.
-
-## 7. Template Substitution Security
-
-Template substitution uses `sed`:
-
-```bash
-sed -e "s|{{PLACEHOLDER}}|${value}|g" "$template" > "$output"
-```
-
-The pipe `|` delimiter (instead of `/`) avoids issues with values containing `/`. However, values containing `|` or sed metacharacters could potentially break substitution. In practice:
-
-- App names are validated to contain only `[a-z0-9-]`
-- Region codes are selected from a known list
-- VM sizes are selected from a known list
-- Volume sizes are numeric
-- The only user-freetext value (`HERMES_VERSION`) defaults to `"main"`
-
-## 8. Security Boundaries
-
-### 8.1 Trust Boundaries
-
-```text
-┌────────────────────────────────────────────┐
-│ Trusted: hermes-fly CLI                    │
-│ - Source code auditable (pure Bash)        │
-│ - No network calls except through flyctl   │
-│ - No package dependencies to supply-chain  │
-└────────────────────────────────────────────┘
-         │
-         ▼ (fly secrets set)
-┌────────────────────────────────────────────┐
-│ Trusted: Fly.io Platform                   │
-│ - Encrypted secret storage                 │
-│ - Firecracker VM isolation                 │
-│ - TLS for all network traffic              │
-└────────────────────────────────────────────┘
-         │
-         ▼ (env var injection)
-┌────────────────────────────────────────────┐
-│ Semi-trusted: Hermes Agent Container       │
-│ - Upstream code (NousResearch)             │
-│ - Has access to API keys at runtime        │
-│ - Network access to LLM providers          │
-└────────────────────────────────────────────┘
-         │
-         ▼ (messaging APIs)
-┌────────────────────────────────────────────┐
-│ Untrusted: External Users                  │
-│ - Interact via Telegram/Discord            │
-│ - Filtered by ALLOWED_USERS lists          │
-│ - Rate-limited by Hermes Agent             │
-└────────────────────────────────────────────┘
-```
-
-### 8.2 What hermes-fly Does NOT Protect Against
-
-- **Compromised Hermes Agent**: hermes-fly installs upstream Hermes code. If the upstream is compromised, the deployed container is compromised.
-- **Fly.io platform vulnerabilities**: hermes-fly trusts Fly.io for isolation and secret storage.
-- **API key leakage via Hermes**: Once API keys are in the container, Hermes Agent has full access. If Hermes has a vulnerability, keys could be exposed.
-- **Empty ALLOWED_USERS**: If no user IDs are configured, anyone can interact with the bot.
-
-## 9. Installer Security
-
-The `scripts/install.sh` is designed for `curl | bash` installation:
-
-```bash
-curl -fsSL https://get.hermes-fly.dev/install.sh | bash
-```
-
-This follows common CLI distribution patterns but carries the standard `curl | bash` risks. The alternative is cloning the repository directly:
-
-```bash
-git clone https://github.com/alexfazio/hermes-fly.git
-```
-
-## 10. Security Checklist for Contributors
-
-When adding new features:
-
-- [ ] Never write secrets to disk (local files, logs, temp files)
-- [ ] Never echo secrets to stdout/stderr (use `ui_ask_secret` for input)
-- [ ] Validate all user input before using in commands
-- [ ] Use Fly.io secrets for all sensitive values
-- [ ] Don't embed secrets in Docker images or config files
-- [ ] Add input validation for any new user-facing parameters
-- [ ] Test with `HERMES_FLY_CONFIG_DIR` isolation to avoid touching real config
+Discord setup wizard was removed in v0.1.14 (Telegram-only). However:
+- Discord webhook secret is still **bridged** in `entrypoint.sh` for backward compatibility
+- Existing deployments with Discord configured continue to work
+- No new Discord configurations can be created through the CLI

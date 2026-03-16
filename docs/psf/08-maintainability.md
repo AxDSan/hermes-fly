@@ -1,298 +1,168 @@
 # Maintainability
 
-PSF for code conventions, extension patterns, dependency management, and long-term maintenance concerns.
+PSF for DDD conventions, architecture enforcement, naming patterns, and extension guides.
 
 **Related PSFs**: [00-architecture](00-hermes-fly-architecture-overview.md) | [05-testing](05-testing-and-qa.md) | [09-security](09-security.md)
 
-## 1. Scope
+## 1. TL;DR
 
-This document covers the patterns and conventions that keep hermes-fly maintainable as it evolves. It addresses code organization, naming, error handling, testing expectations, and how to extend the system with new features.
+- **DDD layering**: domain → application → infrastructure, enforced by dependency-cruiser
+- **Port/adapter pattern**: 14 port interfaces, all infrastructure behind abstractions
+- **TypeScript strict mode**: `tsconfig.json` with `strict: true`, `noEmitOnError: true`
+- **ESM-only**: `"type": "module"` with NodeNext resolution, `.js` extension imports
+- **Extension patterns**: well-defined paths for new commands, contexts, and checks
 
-## 2. Code Conventions
+## 2. Architecture Conventions
 
-### 2.1 Shell Settings
+### Layer Rules
 
-Every executable file starts with:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
+```
+┌─────────────────────────────────────┐
+│  Presentation (src/commands/)       │  Depends on: Application
+│  - CLI arg parsing                  │  Must not: import infrastructure directly
+│  - Dependency assembly              │
+│  - Output formatting                │
+├─────────────────────────────────────┤
+│  Application (src/contexts/*/app/)  │  Depends on: Domain, Ports
+│  - Use-cases (orchestration)        │  Must not: import adapters directly
+│  - Port interfaces (contracts)      │
+├─────────────────────────────────────┤
+│  Domain (src/contexts/*/domain/)    │  Depends on: nothing
+│  - Entities, value objects          │  Must not: import infrastructure,
+│  - Validation logic                 │    presentation, or legacy
+├─────────────────────────────────────┤
+│  Infrastructure (src/contexts/*/    │  Implements: Ports
+│    infrastructure/)                 │  Depends on: cross-cutting adapters
+│  - Fly CLI adapters                 │
+│  - File I/O, config parsing         │
+└─────────────────────────────────────┘
 ```
 
-| Flag | Effect |
-|------|--------|
-| `-e` | Exit on any unhandled error |
-| `-u` | Treat unset variables as errors |
-| `-o pipefail` | Propagate pipe failures |
+### Dependency-Cruiser Rules
 
-This ensures fail-fast behavior. Any unhandled error terminates the script rather than silently continuing with corrupt state.
+`dependency-cruiser.cjs` enforces three forbidden patterns:
 
-### 2.2 Naming Conventions
+| Rule | What's Forbidden | Why |
+|------|-----------------|-----|
+| Domain purity | `domain/` → `infrastructure/` or `presentation/` | Domain must be framework-agnostic |
+| Legacy isolation | `domain/` → `legacy/` | Domain must not depend on bash bridge |
+| Process containment | `node:child_process` imports except in `process.ts` and `bash-bridge.ts` | All external process calls go through ProcessRunner |
 
-| Element | Convention | Example |
-|---------|-----------|---------|
-| Module files | `lib/{name}.sh` | `lib/deploy.sh` |
-| Public functions | `module_action` or `cmd_name` | `deploy_preflight`, `cmd_status` |
-| Internal functions | `_module_action` or `_action` | `_remove_app_entry`, `_deploy_fallback_mem` |
-| Constants | `UPPER_SNAKE_CASE`, `readonly` | `EXIT_SUCCESS`, `EXIT_AUTH` |
-| Global state variables | `DEPLOY_*` (exported) | `DEPLOY_APP_NAME`, `DEPLOY_REGION` |
-| Module-local globals | `_MODULE_*` | `_UI_SPINNER_PID`, `_ORG_SLUGS` |
-| Environment overrides | `HERMES_FLY_*` | `HERMES_FLY_VERBOSE`, `HERMES_FLY_CONFIG_DIR` |
+Run: `npm run arch:ddd-boundaries`
 
-### 2.3 Function Documentation
+## 3. Naming Conventions
 
-Each public function has a block comment:
+### Files
+| Pattern | Example | Location |
+|---------|---------|----------|
+| `kebab-case.ts` | `deployment-intent.ts` | All TypeScript files |
+| `*.port.ts` | `deploy-wizard.port.ts` | Port interfaces |
+| `*.test.ts` | `show-status.test.ts` | Test files |
+| `fly-*.ts` | `fly-deploy-runner.ts` | Fly.io adapter implementations |
 
-```bash
-# --------------------------------------------------------------------------
-# function_name "arg1" "arg2" — short description
-# Longer explanation if needed.
-# Returns: 0 on success, 1 on failure
-# --------------------------------------------------------------------------
+### Code
+| Pattern | Example | Usage |
+|---------|---------|-------|
+| `PascalCase` | `DeploymentIntent`, `RunDoctorUseCase` | Classes, interfaces, types |
+| `camelCase` | `runDeployCommand`, `readCurrentApp` | Functions, methods, variables |
+| `SCREAMING_SNAKE` | `HERMES_FLY_TS_VERSION` | Constants |
+| `*UseCase` suffix | `RunDeployWizardUseCase` | Use-case classes |
+| `*Port` suffix | `DeployWizardPort` | Port interfaces |
+| `Fly*` prefix | `FlyDeployRunner` | Fly.io adapter implementations |
+
+### Directory Structure per Context
+```
+src/contexts/<name>/
+├── domain/           # Entities, value objects (no dependencies)
+├── application/
+│   ├── ports/        # Interface contracts (*.port.ts)
+│   └── use-cases/    # Orchestration logic
+├── infrastructure/
+│   └── adapters/     # Concrete implementations (fly-*.ts)
+└── presentation/     # (reserved, currently unused — commands are in src/commands/)
 ```
 
-Internal functions use shorter comments:
+## 4. TypeScript Configuration
 
-```bash
-# _helper — short description
-```
-
-### 2.4 Error Messages
-
-Follow the pattern: **what went wrong** + **how to fix it**:
-
-```bash
-ui_error "Required tool not found: ${tool}"
-# vs. just: "Error: missing tool"
-
-doctor_report "machine" "fail" "Machine not running. Start with: fly machine start -a ${app_name}"
-# vs. just: "Machine not running"
-```
-
-### 2.5 Module Guard Pattern
-
-Every `lib/*.sh` file starts with:
-
-```bash
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  echo "Error: source this file, do not execute directly." >&2
-  exit 1
-fi
-```
-
-And guards against re-sourcing dependencies:
-
-```bash
-if [[ -z "${EXIT_SUCCESS+x}" ]]; then
-  source "${_SCRIPT_DIR}/ui.sh" 2>/dev/null || true
-fi
-```
-
-The `2>/dev/null || true` ensures sourcing failures don't crash during testing when modules are sourced individually.
-
-## 3. Module Architecture
-
-### 3.1 Separation of Concerns
-
-Each module has a single responsibility:
-
-| Module | Responsibility boundary |
-|--------|------------------------|
-| `ui.sh` | Terminal output, user input, spinners — never calls Fly.io |
-| `config.sh` | Local file I/O — no network, no UI beyond file reads/writes |
-| `fly-helpers.sh` | Fly.io CLI wrapper — no business logic, no UI |
-| `docker-helpers.sh` | Template I/O — no network, no UI |
-| `messaging.sh` | Messaging platform configuration — UI prompts + validation |
-| `prereqs.sh` | Platform detection, tool auto-install — no network except install commands |
-| `openrouter.sh` | OpenRouter model discovery — provider-first UI, model fetching, caching; depends on ui.sh |
-| `deploy.sh` | Orchestration — combines all other modules |
-| `status.sh`, `logs.sh`, `doctor.sh`, `destroy.sh` | Single-command modules |
-
-### 3.2 Dependency Direction
-
-Dependencies flow one way: higher-level modules depend on lower-level ones. No circular dependencies.
-
-```text
-Level 0 (standalone):  config.sh, docker-helpers.sh
-Level 1 (UI only):     ui.sh (defines constants used by all)
-Level 2 (UI only):     fly-helpers.sh → ui.sh, openrouter.sh → ui.sh
-Level 3 (commands):    status.sh, logs.sh, doctor.sh, destroy.sh → fly-helpers.sh + ui.sh
-Level 4 (messaging):   messaging.sh → ui.sh
-Level 5 (orchestrator): deploy.sh → everything (including openrouter.sh)
-```
-
-### 3.3 State Management
-
-hermes-fly uses two state mechanisms:
-
-1. **Global variables** (`DEPLOY_*`): ephemeral, exist only during a single deploy run
-2. **Config file** (`~/.hermes-fly/config.yaml`): persistent across invocations
-
-No global mutable state is shared between commands. Each command starts with a clean resolution of the app name and fetches all state from Fly.io APIs.
-
-## 4. Extension Patterns
-
-### 4.1 Adding a New Command
-
-1. Create `lib/newcommand.sh`:
-
-```bash
-#!/usr/bin/env bash
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  echo "Error: source this file, do not execute directly." >&2
-  exit 1
-fi
-
-cmd_newcommand() {
-  local app_name="$1"
-  # implementation
+`tsconfig.json`:
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": "src",
+    "outDir": "dist",
+    "strict": true,
+    "noEmitOnError": true,
+    "skipLibCheck": true
+  }
 }
 ```
 
-2. Add to entry point `hermes-fly`:
+Key choices:
+- **ES2022**: native async/await, class fields, top-level await
+- **NodeNext**: ESM with `.js` extensions in import paths (TypeScript convention)
+- **strict**: enables all strict type-checking options
+- **noEmitOnError**: prevents generating broken JS if types fail
+
+## 5. Extension Patterns
+
+### Adding a New Command
+
+1. Create `src/commands/newcmd.ts` with `runNewCmdCommand()` function
+2. Register in `src/cli.ts`: `program.command("newcmd").action(...)`
+3. Create use-case in appropriate bounded context
+4. Add tests in `tests-ts/runtime/newcmd-command.test.ts`
+
+### Adding a New Bounded Context
+
+1. Create directory: `src/contexts/newcontext/{domain,application/{ports,use-cases},infrastructure/adapters}`
+2. Define domain entities in `domain/`
+3. Define port interfaces in `application/ports/`
+4. Implement use-cases in `application/use-cases/`
+5. Implement adapters in `infrastructure/adapters/`
+6. dependency-cruiser rules apply automatically to the new context
+
+### Adding a Doctor Check
+
+1. Add method to `DoctorChecksPort` interface (`src/contexts/diagnostics/application/ports/doctor-checks.port.ts`)
+2. Implement in `FlyDoctorChecks` adapter (`src/contexts/diagnostics/infrastructure/adapters/fly-doctor-checks.ts`)
+3. Call from `RunDoctorUseCase` (`src/contexts/diagnostics/application/use-cases/run-doctor.ts`)
+4. Add test in `tests-ts/diagnostics/run-doctor.test.ts`
+
+### Adding a New LLM Provider
+
+1. Extend config collection in `FlyDeployWizard` adapter
+2. Add secret mapping in `FlyDeployRunner`
+3. Update `DeploymentIntent` validation if new fields needed
+4. Add doctor check for provider-specific connectivity
+
+## 6. Build Pipeline
 
 ```bash
-source "${SCRIPT_DIR}/lib/newcommand.sh"
-# In main():
-newcommand)
-    local app
-    app="$(config_resolve_app "$@" 2>/dev/null)" || { ... }
-    cmd_newcommand "$app"
-    ;;
+npm run build          # tsc → dist/
+npm run typecheck      # tsc --noEmit (type check only)
+npm run arch:ddd-boundaries  # dependency-cruiser validation
 ```
 
-3. Update `show_help()` text
-4. Create `tests/newcommand.bats`
+Output: `dist/` directory mirrors `src/` structure with compiled `.js` files. The shell shim `hermes-fly` points to `dist/cli.js`.
 
-### 4.2 Adding a New Doctor Check
+## 7. Technical Debt
 
-In `lib/doctor.sh`, add:
+| Issue | Impact | Location |
+|-------|--------|----------|
+| Legacy bridge not integrated | Fallback to bash not available | `src/legacy/` |
+| Archived bash modules | 14 files maintained for reference only | `lib/archive/` |
+| Template sed substitution | Fragile string replacement | `TemplateWriter` adapter |
+| No DI container | Dependency graphs assembled manually in commands | `src/commands/*.ts` |
+| Config YAML parsing | Manual string parsing, not a YAML library | Config adapters |
 
-1. A check function: `doctor_check_new_thing()`
-2. A call in `cmd_doctor()` with `doctor_report`
-3. A test in `tests/doctor.bats`
+## 8. Dependencies
 
-### 4.3 Adding a New LLM Provider
-
-In `lib/deploy.sh`:
-
-1. Add a case in `deploy_collect_llm_config()` for the new provider
-2. Add secret mapping in `deploy_provision_resources()`
-3. Add API connectivity check in `doctor_check_api_connectivity()`
-4. Update entrypoint.sh to bridge the new secret to `.env`
-
-### 4.4 Adding a New Messaging Platform
-
-1. Add validation function in `lib/messaging.sh`
-2. Add setup wizard function
-3. Add option to `messaging_setup_menu()`
-4. Add secret handling in `deploy_provision_resources()`
-5. Update entrypoint.sh secret bridging
-
-## 5. Dependency Management
-
-### 5.1 External Dependencies
-
-hermes-fly has deliberately minimal external dependencies:
-
-| Dependency | Version requirement | Status |
-|------------|-------------------|--------|
-| `bash` | 3.2+ | Ships with macOS |
-| `flyctl` | >= 0.2.0 | Checked at runtime |
-| `git` | Any | Checked at runtime |
-| `curl` | Any | Checked at runtime |
-| `sed`, `grep` | POSIX | System utilities |
-| `jq` | Any | Optional (doctor.sh only) |
-
-No package manager (npm, pip, brew) is needed. No build step.
-
-### 5.2 Vendored Dependencies
-
-BATS is vendored in `tests/bats/` — no test dependency installation needed.
-
-### 5.3 Upstream Dependencies
-
-The Dockerfile installs Hermes Agent from the upstream repository at deploy time:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_VERSION}/scripts/install.sh | bash
-```
-
-This means Hermes Agent updates happen automatically on redeploy. The `HERMES_VERSION` defaults to `"main"` (latest).
-
-## 6. Testing Expectations
-
-### 6.1 New Code Should Have Tests
-
-Every new module or function should have a corresponding `.bats` file. Test the public API of each module, not internals.
-
-### 6.2 Test Isolation
-
-Tests must not:
-- Call real Fly.io APIs (use mocks)
-- Modify the user's `~/.hermes-fly/` directory (use `HERMES_FLY_CONFIG_DIR`)
-- Leave temp files behind (clean up in `teardown`)
-- Depend on network connectivity
-
-### 6.3 Test Naming
-
-```bash
-@test "function_name: what it does when given specific input" {
-```
-
-Prefix with function name for scannability.
-
-## 7. Technical Debt and Known Issues
-
-### 7.1 JSON Parsing
-
-grep/sed-based JSON parsing is fragile. Works for Fly.io's current output format but could break on:
-- Multi-line JSON formatting changes
-- Deeply nested structures
-- Special characters in values
-
-Mitigation: `doctor.sh` already uses jq when available. Other modules could follow suit.
-
-### 7.2 Global Variable State
-
-The deploy wizard passes state via exported global variables (`DEPLOY_*`). This works but makes the data flow implicit. An alternative would be a single associative array or writing to a temp file.
-
-### 7.3 Template Version Pinning
-
-`HERMES_VERSION` defaults to `"main"`, meaning deploys always get the latest Hermes Agent. This could cause unexpected behavior if upstream introduces breaking changes. Consider pinning to a specific tag.
-
-### 7.4 sed Portability
-
-Some `sed` usage relies on GNU sed features (e.g., `sed -i.bak`). The `.bak` extension makes it work on both macOS (BSD sed) and Linux (GNU sed), but edge cases may exist.
-
-## 8. Documentation
-
-### 8.1 Edge Case Handling
-
-The prerequisite auto-install module (`lib/prereqs.sh`) handles complex edge cases such as platform detection fallbacks, installation failures, and permission scenarios. Detailed documentation of how each edge case is handled is available in [docs/EDGE_CASE_HANDLING.md](../EDGE_CASE_HANDLING.md).
-
-This includes:
-- Platform detection edge cases (unsupported OS, unset/empty environment variables)
-- Installation fallback chains for missing package managers
-- Permission handling and sudo scenarios
-- System state edge cases and their mitigations
-
-## 9. Versioning
-
-`HERMES_FLY_VERSION` is set in line 4 of `hermes-fly`:
-
-```bash
-HERMES_FLY_VERSION="0.1.16"
-```
-
-No automatic version bumping. Update manually when releasing.
-
-## 10. Release Checklist
-
-1. Update `HERMES_FLY_VERSION` in `hermes-fly`
-2. Run release guard: `./scripts/release-guard.sh v0.1.X`
-3. Run full test suite: `./tests/bats/bin/bats tests/`
-4. Test a real deploy on Fly.io (manual)
-5. Update README/docs if commands/options changed
-6. Tag and push: `git tag v0.1.X && git push origin v0.1.X`
-7. Publish GitHub release for the same tag.
+| Package | Version | Purpose | Dev? |
+|---------|---------|---------|------|
+| commander | ^12.1.0 | CLI argument parsing | No |
+| typescript | ^5.8.2 | TypeScript compiler | Yes |
+| tsx | ^4.20.5 | Test runner (node --test with TS) | Yes |
+| dependency-cruiser | ^16.8.0 | Architecture boundary enforcement | Yes |
