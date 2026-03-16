@@ -12,6 +12,8 @@ Master navigation document for the hermes-fly Project Structure Files (PSF).
 | **Purpose** | CLI wizard to deploy [Hermes Agent](https://github.com/NousResearch/hermes-agent) to [Fly.io](https://fly.io) |
 | **License** | MIT |
 | **Repository** | `github.com/alexfazio/hermes-fly` |
+| **TypeScript source files** | 54 |
+| **BATS test files** | 9 |
 
 ## 2. System Architecture
 
