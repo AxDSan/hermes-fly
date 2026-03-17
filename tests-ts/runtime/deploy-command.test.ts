@@ -49,9 +49,25 @@ describe("runDeployCommand - successful deploy", () => {
     const io = makeIO();
     const code = await runDeployCommand([], {
       wizard: makeWizardPort(),
+      stdout: io.stdout,
       stderr: io.stderr
     });
     assert.equal(code, 0);
+  });
+
+  it("prints a deploy completion summary on success", async () => {
+    const io = makeIO();
+
+    const code = await runDeployCommand([], {
+      wizard: makeWizardPort(),
+      stdout: io.stdout,
+      stderr: io.stderr
+    });
+
+    assert.equal(code, 0);
+    assert.match(io.outText, /Deployment complete/);
+    assert.match(io.outText, /App: test-app/);
+    assert.match(io.outText, /hermes-fly status -a test-app/);
   });
 });
 
@@ -60,6 +76,7 @@ describe("runDeployCommand - channel flag", () => {
     const io = makeIO();
     const code = await runDeployCommand(["--channel", "preview"], {
       wizard: makeWizardPort(),
+      stdout: io.stdout,
       stderr: io.stderr
     });
     assert.equal(code, 0);
@@ -75,6 +92,7 @@ describe("runDeployCommand - channel flag", () => {
           return { ...DEFAULT_CONFIG, channel: opts.channel };
         }
       }),
+      stdout: io.stdout,
       stderr: io.stderr
     });
     assert.equal(captured[0], "stable");
@@ -86,6 +104,7 @@ describe("runDeployCommand - no-auto-install flag", () => {
     const io = makeIO();
     const code = await runDeployCommand(["--no-auto-install"], {
       wizard: makeWizardPort(),
+      stdout: io.stdout,
       stderr: io.stderr
     });
     assert.equal(code, 0);
@@ -101,6 +120,7 @@ describe("runDeployCommand - no-auto-install flag", () => {
           return { ok: true };
         }
       }),
+      stdout: io.stdout,
       stderr: io.stderr
     });
     assert.equal(captured[0]?.autoInstall, false);
@@ -116,6 +136,7 @@ describe("runDeployCommand - config collection failure", () => {
           throw new Error("OPENROUTER_API_KEY is required in non-interactive mode");
         }
       }),
+      stdout: io.stdout,
       stderr: io.stderr
     });
     assert.equal(code, 1);
@@ -129,6 +150,7 @@ describe("runDeployCommand - wizard failure", () => {
       wizard: makeWizardPort({
         checkPlatform: async () => ({ ok: false, error: "unsupported platform" })
       }),
+      stdout: io.stdout,
       stderr: io.stderr
     });
     assert.equal(code, 1);

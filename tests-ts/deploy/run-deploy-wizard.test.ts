@@ -14,10 +14,14 @@ import type { DeployPromptPort } from "../../src/contexts/deploy/infrastructure/
 import type { QrCodeRendererPort } from "../../src/contexts/deploy/infrastructure/adapters/qr-code.ts";
 
 function makeIO() {
-  const lines: string[] = [];
+  const outLines: string[] = [];
+  const errLines: string[] = [];
   return {
-    stderr: { write: (s: string) => { lines.push(s); } },
-    get text() { return lines.join(""); }
+    stdout: { write: (s: string) => { outLines.push(s); } },
+    stderr: { write: (s: string) => { errLines.push(s); } },
+    get outText() { return outLines.join(""); },
+    get errText() { return errLines.join(""); },
+    get text() { return errLines.join(""); }
   };
 }
 
@@ -56,7 +60,11 @@ function makeProcessRunner(
     args: string[],
     options?: { cwd?: string; env?: NodeJS.ProcessEnv }
   ) => Promise<{ stdout?: string; stderr?: string; exitCode: number }>,
-  foregroundImpl: (command: string, args: string[]) => Promise<{ exitCode: number }> = async () => ({ exitCode: 0 })
+  foregroundImpl: (
+    command: string,
+    args: string[],
+    options?: { cwd?: string; env?: NodeJS.ProcessEnv }
+  ) => Promise<{ exitCode: number }> = async () => ({ exitCode: 0 })
 ): ForegroundProcessRunner {
   return {
     run: async (command, args, options) => {
@@ -82,7 +90,7 @@ function makeProcessRunner(
       };
     },
     runStreaming: async () => ({ exitCode: 0 }),
-    runForeground: async (command, args) => foregroundImpl(command, args)
+    runForeground: async (command, args, options) => foregroundImpl(command, args, options)
   };
 }
 
@@ -180,7 +188,7 @@ describe("RunDeployWizardUseCase - happy path", () => {
   it("returns ok when all phases pass", async () => {
     const io = makeIO();
     const uc = new RunDeployWizardUseCase(makePort());
-    const result = await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr);
+    const result = await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
     assert.equal(result.kind, "ok");
   });
 
@@ -190,9 +198,20 @@ describe("RunDeployWizardUseCase - happy path", () => {
     const uc = new RunDeployWizardUseCase(makePort({
       saveApp: async (appName, region) => { saved.push({ appName, region }); }
     }));
-    await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr);
+    await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
     assert.equal(saved.length, 1);
     assert.equal(saved[0].appName, "test-app");
+  });
+
+  it("prints a completion summary after a successful deploy", async () => {
+    const io = makeIO();
+    const uc = new RunDeployWizardUseCase(makePort());
+
+    await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
+
+    assert.match(io.outText, /Deployment complete/);
+    assert.match(io.outText, /App: test-app/);
+    assert.match(io.outText, /hermes-fly status -a test-app/);
   });
 });
 
@@ -515,12 +534,15 @@ describe("FlyDeployWizard.checkAuth", () => {
 });
 
 describe("FlyDeployWizard.runDeploy", () => {
-  it("runs fly deploy from the build directory so entrypoint.sh is inside the Docker build context", async () => {
+  it("runs fly deploy in the foreground from the build directory so users see live output and entrypoint.sh is inside the Docker build context", async () => {
     const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
-    const runner = makeProcessRunner(async (command, args, options) => {
-      calls.push({ command, args, cwd: options?.cwd });
-      return { exitCode: 0 };
-    });
+    const runner = makeProcessRunner(
+      async () => ({ exitCode: 0 }),
+      async (command, args, options) => {
+        calls.push({ command, args, cwd: options?.cwd });
+        return { exitCode: 0 };
+      }
+    );
     const wizard = new FlyDeployWizard({}, { process: runner });
 
     const result = await wizard.runDeploy("/tmp/hermes-build", DEFAULT_CONFIG);

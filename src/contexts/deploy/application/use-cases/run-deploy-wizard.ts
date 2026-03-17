@@ -17,7 +17,8 @@ export class RunDeployWizardUseCase {
 
   async execute(
     opts: { autoInstall: boolean; channel: string },
-    stderr: { write: (s: string) => void }
+    stderr: { write: (s: string) => void },
+    stdout: { write: (s: string) => void } = { write: () => {} }
   ): Promise<DeployWizardResult> {
     const channel = resolveChannel(opts.channel);
 
@@ -99,6 +100,10 @@ export class RunDeployWizardUseCase {
 
     // Save app configuration
     await this.port.saveApp(config.appName, config.region);
+
+    stdout.write("Deployment complete\n");
+    stdout.write(`App: ${config.appName}\n`);
+    stdout.write(`Check status: hermes-fly status -a ${config.appName}\n`);
 
     return { kind: "ok" };
   }

@@ -4,6 +4,7 @@ import { FlyDeployWizard } from "../contexts/deploy/infrastructure/adapters/fly-
 
 export interface DeployCommandOptions {
   wizard?: DeployWizardPort;
+  stdout?: { write: (s: string) => void };
   stderr?: { write: (s: string) => void };
   env?: NodeJS.ProcessEnv;
 }
@@ -27,13 +28,14 @@ export async function runDeployCommand(
   args: string[],
   options: DeployCommandOptions = {}
 ): Promise<number> {
+  const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const { channel, autoInstall } = parseDeployArgs(args);
 
   const wizard = options.wizard ?? new FlyDeployWizard(options.env);
 
   const useCase = new RunDeployWizardUseCase(wizard);
-  const result = await useCase.execute({ autoInstall, channel }, stderr);
+  const result = await useCase.execute({ autoInstall, channel }, stderr, stdout);
 
   return result.kind === "ok" ? 0 : 1;
 }
