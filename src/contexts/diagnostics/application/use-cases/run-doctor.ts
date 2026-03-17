@@ -76,10 +76,10 @@ export class RunDoctorUseCase {
     // Check 6: Gateway health
     const gatewayHealth = await this.checks.checkGatewayHealth(appName);
     if (gatewayHealth) {
-      results.push({ key: "gateway", pass: true, message: "Gateway is responding" });
+      results.push({ key: "gateway", pass: true, message: "Gateway health check passed" });
       passCount++;
     } else {
-      results.push({ key: "gateway", pass: false, message: `Gateway not responding at https://${appName}.fly.dev` });
+      results.push({ key: "gateway", pass: false, message: "Gateway health check failed" });
       failCount++;
     }
 

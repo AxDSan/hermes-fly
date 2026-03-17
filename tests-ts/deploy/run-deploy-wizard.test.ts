@@ -557,6 +557,44 @@ describe("FlyDeployWizard.runDeploy", () => {
   });
 });
 
+describe("FlyDeployWizard.postDeployCheck", () => {
+  it("passes when fly machine list reports a started machine", async () => {
+    const runner = makeProcessRunner(async (command, args) => {
+      assert.equal(command, "fly");
+      assert.deepEqual(args, ["machine", "list", "-a", "test-app", "--json"]);
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify([{ id: "machine123", state: "started" }]),
+        stderr: ""
+      };
+    });
+    const wizard = new FlyDeployWizard({}, { process: runner });
+
+    const result = await wizard.postDeployCheck("test-app");
+
+    assert.deepEqual(result, { ok: true });
+  });
+
+  it("fails when no machine remains started after deploy", async () => {
+    let calls = 0;
+    const runner = makeProcessRunner(async () => {
+      calls += 1;
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify([{ id: "machine123", state: "stopped" }]),
+        stderr: ""
+      };
+    });
+    const wizard = new FlyDeployWizard({}, { process: runner });
+
+    const result = await wizard.postDeployCheck("test-app");
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /machine not running after deploy/);
+    assert.equal(calls, 3);
+  });
+});
+
 describe("FlyDeployWizard.collectConfig", () => {
   it("suggests a unique editable deployment name using username and uid", async () => {
     const prompts = makePromptPort([

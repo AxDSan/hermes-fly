@@ -429,11 +429,24 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   async postDeployCheck(appName: string): Promise<{ ok: boolean; error?: string }> {
-    const result = await this.process.run("fly", ["status", "--app", appName, "--json"], { env: this.env });
-    if (result.exitCode !== 0) {
-      return { ok: false, error: "status check failed" };
+    let lastState = "unknown";
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await this.process.run("fly", ["machine", "list", "-a", appName, "--json"], { env: this.env });
+      if (result.exitCode !== 0) {
+        return { ok: false, error: "machine status check failed" };
+      }
+
+      const state = this.readPrimaryMachineState(result.stdout);
+      if (state === "started") {
+        return { ok: true };
+      }
+      if (state) {
+        lastState = state;
+      }
     }
-    return { ok: true };
+
+    return { ok: false, error: `machine not running after deploy (${lastState})` };
   }
 
   async saveApp(appName: string, region: string): Promise<void> {
@@ -506,6 +519,24 @@ export class FlyDeployWizard implements DeployWizardPort {
       } catch (error) {
         this.prompts.write(`${error instanceof Error ? error.message : "Deployment name is invalid."}\n`);
       }
+    }
+  }
+
+  private readPrimaryMachineState(stdout: string): string | undefined {
+    try {
+      const parsed = JSON.parse(stdout) as Array<{ state?: unknown; State?: unknown }>;
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        return undefined;
+      }
+      const states = parsed
+        .map((machine) => machine.state ?? machine.State)
+        .filter((state): state is string => typeof state === "string");
+      if (states.includes("started")) {
+        return "started";
+      }
+      return states[0];
+    } catch {
+      return undefined;
     }
   }
 

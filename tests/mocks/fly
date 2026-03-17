@@ -141,6 +141,24 @@ case "${1:-}" in
         echo "==> Creating release"
         echo "Release v1 created"
         ;;
+    machine)
+        case "${2:-}" in
+            list)
+                _machine_state="${MOCK_FLY_MACHINE_STATE:-started}"
+                if [[ -n "${MOCK_FLY_STATUS_SEQUENCE:-}" ]]; then
+                    _counter_file="${MOCK_FLY_STATUS_COUNTER_FILE:-${TMPDIR:-/tmp}/mock_fly_status_counter}"
+                    _count=0
+                    if [[ -f "$_counter_file" ]]; then
+                        _count=$(cat "$_counter_file")
+                    fi
+                    _count=$((_count + 1))
+                    echo "$_count" > "$_counter_file"
+                    _machine_state=$(echo "$MOCK_FLY_STATUS_SEQUENCE" | cut -d',' -f"$_count")
+                fi
+                echo "[{\"id\":\"machine123\",\"state\":\"${_machine_state}\",\"region\":\"ord\",\"process_group\":\"app\"}]"
+                ;;
+        esac
+        ;;
     status)
         if [[ "${MOCK_FLY_STATUS:-success}" == "fail" ]]; then
             echo "Error: app not found" >&2

@@ -20,17 +20,11 @@ export class FlyDoctorChecks implements DoctorChecksPort {
   async checkMachineRunning(appName: string): Promise<boolean> {
     const result = await this.runner.run(
       "fly",
-      ["status", "--app", appName, "--json"],
+      ["machine", "list", "-a", appName, "--json"],
       { env: this.env }
     );
     if (result.exitCode !== 0) return false;
-    try {
-      const data = JSON.parse(result.stdout);
-      const machines = data.Machines ?? data.machines ?? [];
-      return machines.some((m: { state?: string }) => m.state === "started");
-    } catch {
-      return false;
-    }
+    return this.machineStates(result.stdout).includes("started");
   }
 
   async checkVolumesMounted(appName: string): Promise<boolean> {
@@ -69,12 +63,24 @@ export class FlyDoctorChecks implements DoctorChecksPort {
   }
 
   async checkGatewayHealth(appName: string): Promise<boolean> {
-    const result = await this.runner.run(
-      "curl",
-      ["-sf", "--max-time", "5", `https://${appName}.fly.dev/health`],
+    const secretsResult = await this.runner.run(
+      "fly",
+      ["secrets", "list", "--app", appName, "--json"],
       { env: this.env }
     );
-    return result.exitCode === 0;
+    if (secretsResult.exitCode === 0 && this.hasSecret(secretsResult.stdout, "TELEGRAM_BOT_TOKEN")) {
+      const sshResult = await this.runner.run(
+        "fly",
+        [
+          "ssh", "console", "--app", appName, "-C",
+          "curl -sf --max-time 10 \"https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe\" >/dev/null 2>&1"
+        ],
+        { env: this.env }
+      );
+      return sshResult.exitCode === 0;
+    }
+
+    return this.checkMachineRunning(appName);
   }
 
   async checkApiConnectivity(_appName: string): Promise<boolean> {
@@ -123,5 +129,29 @@ export class FlyDoctorChecks implements DoctorChecksPort {
     } catch {
       return "unverified";
     }
+  }
+
+  private machineStates(stdout: string): string[] {
+    try {
+      const parsed = JSON.parse(stdout) as Array<{ state?: unknown; State?: unknown }>;
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((machine) => machine.state ?? machine.State)
+        .filter((state): state is string => typeof state === "string");
+    } catch {
+      return [];
+    }
+  }
+
+  private hasSecret(stdout: string, name: string): boolean {
+    try {
+      const parsed = JSON.parse(stdout) as Array<{ Name?: unknown; name?: unknown }>;
+      if (Array.isArray(parsed)) {
+        return parsed.some((secret) => secret.Name === name || secret.name === name);
+      }
+    } catch {
+      // Fall back to substring check for older flyctl/plain-text output.
+    }
+    return stdout.includes(name);
   }
 }

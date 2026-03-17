@@ -46,6 +46,8 @@ describe("TemplateWriter", () => {
       assert.match(flyToml, /^\s*source = "hermes_data"$/m);
       assert.match(flyToml, /^\s*destination = "\/root\/\.hermes"$/m);
       assert.match(flyToml, /^\s*initial_size = "5"$/m);
+      assert.doesNotMatch(flyToml, /^\[http_service\]$/m);
+      assert.doesNotMatch(flyToml, /internal_port = 8080/);
 
       assert.match(entrypoint, /exec \/opt\/hermes\/hermes-agent\/venv\/bin\/hermes gateway run/);
     } finally {

@@ -45,11 +45,10 @@ teardown() {
   assert_output --partial "{{VOLUME_NAME}}"
 }
 
-@test "templates/fly.toml.template has http_service with auto_stop off" {
+@test "templates/fly.toml.template does not declare an HTTP service for worker deployments" {
   run cat "${PROJECT_ROOT}/templates/fly.toml.template"
-  assert_output --partial "[http_service]"
-  assert_output --partial 'auto_stop_machines = "off"'
-  assert_output --partial "min_machines_running = 1"
+  refute_output --partial "[http_service]"
+  refute_output --partial "internal_port = 8080"
 }
 
 # --- entrypoint.sh template ---
