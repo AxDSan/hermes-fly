@@ -65,7 +65,7 @@ teardown() {
 
 @test "templates/entrypoint.sh execs hermes from /opt/hermes venv" {
   run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
-  assert_output --partial "exec /opt/hermes/hermes-agent/venv/bin/hermes gateway"
+  assert_output --partial "exec /opt/hermes/hermes-agent/venv/bin/hermes gateway run"
 }
 
 @test "templates/entrypoint.sh symlinks node from /opt/hermes" {

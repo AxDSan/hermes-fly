@@ -47,7 +47,7 @@ describe("TemplateWriter", () => {
       assert.match(flyToml, /^\s*destination = "\/root\/\.hermes"$/m);
       assert.match(flyToml, /^\s*initial_size = "5"$/m);
 
-      assert.match(entrypoint, /exec \/opt\/hermes\/hermes-agent\/venv\/bin\/hermes gateway/);
+      assert.match(entrypoint, /exec \/opt\/hermes\/hermes-agent\/venv\/bin\/hermes gateway run/);
     } finally {
       await rm(buildDir, { recursive: true, force: true });
     }
