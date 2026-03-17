@@ -44,6 +44,7 @@ export class ProvisionDeploymentUseCase {
       if (config.apiBaseUrl) {
         secrets.GLM_BASE_URL = config.apiBaseUrl;
       }
+      secrets.HERMES_ZAI_THINKING = "disabled";
     }
     if (config.authJsonB64) {
       secrets.HERMES_AUTH_JSON_B64 = config.authJsonB64;

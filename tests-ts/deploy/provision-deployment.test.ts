@@ -234,6 +234,7 @@ describe("ProvisionDeploymentUseCase - happy path", () => {
     assert.deepEqual(capturedSecrets, {
       GLM_API_KEY: "glm-live-key",
       GLM_BASE_URL: "https://api.z.ai/api/coding/paas/v4",
+      HERMES_ZAI_THINKING: "disabled",
       LLM_MODEL: "glm-4.7",
       HERMES_LLM_PROVIDER: "zai",
       HERMES_APP_NAME: DEFAULT_CONFIG.appName,

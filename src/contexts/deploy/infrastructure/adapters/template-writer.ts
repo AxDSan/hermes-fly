@@ -19,6 +19,7 @@ export class TemplateWriter {
     const dockerfileTemplate = await readFile(join(templateDir, "Dockerfile.template"), "utf8");
     const flyTomlTemplate = await readFile(join(templateDir, "fly.toml.template"), "utf8");
     const entrypointTemplate = join(templateDir, "entrypoint.sh");
+    const sitecustomizeTemplate = join(templateDir, "sitecustomize.py");
     const compatPolicy = await this.readCompatibilityPolicyVersion();
     const vmMemory = this.resolveVmMemory(config.vmSize);
 
@@ -39,6 +40,7 @@ export class TemplateWriter {
     });
     await writeFile(join(buildDir, "fly.toml"), flyToml, "utf8");
     await copyFile(entrypointTemplate, join(buildDir, "entrypoint.sh"));
+    await copyFile(sitecustomizeTemplate, join(buildDir, "sitecustomize.py"));
   }
 
   private replaceAll(template: string, replacements: Record<string, string>): string {

@@ -241,6 +241,21 @@ teardown() {
   assert_output --partial "HERMES_STT_MODEL"
 }
 
+@test "entrypoint.sh bridges HERMES_ZAI_THINKING into .env for runtime bootstrap" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "HERMES_ZAI_THINKING"
+}
+
+@test "sitecustomize.py disables Z.AI thinking when configured" {
+  run cat "${PROJECT_ROOT}/templates/sitecustomize.py"
+  assert_success
+  assert_output --partial "HERMES_ZAI_THINKING"
+  assert_output --partial "thinking"
+  assert_output --partial "disabled"
+  assert_output --partial "run_agent"
+}
+
 @test "entrypoint.sh patches config.yaml stt settings from deploy secrets" {
   run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
   assert_success
