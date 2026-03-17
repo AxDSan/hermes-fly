@@ -211,6 +211,36 @@ describe("ProvisionDeploymentUseCase - happy path", () => {
       HERMES_DEPLOY_CHANNEL: DEFAULT_CONFIG.channel
     });
   });
+
+  it("sets GLM API-key secrets when deploying with Z.AI access", async () => {
+    let capturedSecrets: Record<string, string> | null = null;
+    const io = makeIO();
+    const uc = new ProvisionDeploymentUseCase(makeRunner({
+      setSecrets: async (_appName, secrets) => {
+        capturedSecrets = secrets;
+        return { ok: true };
+      }
+    }));
+
+    const result = await uc.execute({
+      ...DEFAULT_CONFIG,
+      provider: "zai",
+      apiKey: "glm-live-key",
+      apiBaseUrl: "https://api.z.ai/api/coding/paas/v4",
+      model: "glm-4.7"
+    }, io.stderr);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(capturedSecrets, {
+      GLM_API_KEY: "glm-live-key",
+      GLM_BASE_URL: "https://api.z.ai/api/coding/paas/v4",
+      LLM_MODEL: "glm-4.7",
+      HERMES_LLM_PROVIDER: "zai",
+      HERMES_APP_NAME: DEFAULT_CONFIG.appName,
+      HERMES_AGENT_REF: DEFAULT_CONFIG.hermesRef,
+      HERMES_DEPLOY_CHANNEL: DEFAULT_CONFIG.channel
+    });
+  });
 });
 
 describe("ProvisionDeploymentUseCase - create app failure", () => {

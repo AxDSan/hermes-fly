@@ -39,6 +39,12 @@ export class ProvisionDeploymentUseCase {
     if (config.provider === "openrouter") {
       secrets.OPENROUTER_API_KEY = config.apiKey;
     }
+    if (config.provider === "zai") {
+      secrets.GLM_API_KEY = config.apiKey;
+      if (config.apiBaseUrl) {
+        secrets.GLM_BASE_URL = config.apiBaseUrl;
+      }
+    }
     if (config.authJsonB64) {
       secrets.HERMES_AUTH_JSON_B64 = config.authJsonB64;
     }

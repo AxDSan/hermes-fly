@@ -53,6 +53,8 @@ describe("TemplateWriter", () => {
       assert.match(entrypoint, /exec \/opt\/hermes\/hermes-agent\/venv\/bin\/hermes gateway run/);
       assert.match(entrypoint, /\/root\/\.claude\/\.credentials\.json/);
       assert.match(entrypoint, /claudeAiOauth/);
+      assert.match(entrypoint, /GLM_API_KEY/);
+      assert.match(entrypoint, /GLM_BASE_URL/);
     } finally {
       await rm(buildDir, { recursive: true, force: true });
     }

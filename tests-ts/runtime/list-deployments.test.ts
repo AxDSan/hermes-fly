@@ -228,6 +228,32 @@ describe("flyctl adapter", () => {
 
     assert.equal(mode, "openai-codex");
   });
+
+  it("infers Z.AI access mode from GLM secrets", async () => {
+    const runner: ProcessRunner = {
+      run: async (_command, args) => {
+        if (args[0] === "auth" && args[1] === "whoami") {
+          return { stdout: "{\"name\":\"alex\"}", stderr: "", exitCode: 0 };
+        }
+        if (args[0] === "secrets" && args[1] === "list") {
+          return {
+            stdout: JSON.stringify([
+              { Name: "GLM_API_KEY" },
+              { Name: "GLM_BASE_URL" },
+            ]),
+            stderr: "",
+            exitCode: 0
+          };
+        }
+        return { stdout: "", stderr: "", exitCode: 1 };
+      }
+    };
+
+    const adapter = new FlyctlAdapter(runner, { HOME: "" });
+    const mode = await adapter.getAiAccessMode("test-app");
+
+    assert.equal(mode, "zai");
+  });
 });
 
 describe("list deployments use-case", () => {
@@ -601,6 +627,50 @@ describe("fly deployment registry", () => {
       const rows = await registry.listDeployments();
 
       assert.equal(rows[0]?.aiAccess, "Anthropic OAuth");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("labels saved Z.AI deployments as Z.AI GLM API key", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hermes-fly-runtime-list-zai-"));
+    const configDir = join(root, "config");
+
+    try {
+      await mkdir(configDir, { recursive: true });
+      await writeFile(
+        join(configDir, "config.yaml"),
+        [
+          "apps:",
+          "  - name: zai-app",
+          "    region: ams",
+          "    provider: zai",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+
+      const flyctl: FlyctlPort = {
+        listLiveAppNames: async () => new Set(["zai-app"]),
+        getMachineSummary: async () => ({ id: "machine123", state: "started", region: "ams" }),
+        getMachineState: async () => "started",
+        getAiAccessMode: async () => null,
+        getTelegramBotIdentity: async () => ({ configured: false, username: null, link: null }),
+        getAppStatus: async () => ({ ok: false, error: "unused" }),
+        getAppLogs: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+        streamAppLogs: async () => ({ exitCode: 0 })
+      };
+
+      const registry = new FlyDeploymentRegistry({
+        flyctl,
+        env: {
+          ...process.env,
+          HERMES_FLY_CONFIG_DIR: configDir
+        }
+      });
+
+      const rows = await registry.listDeployments();
+      assert.equal(rows[0]?.aiAccess, "Z.AI GLM API key");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

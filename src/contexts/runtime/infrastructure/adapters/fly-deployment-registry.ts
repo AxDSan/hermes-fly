@@ -194,6 +194,8 @@ function describeAiAccess(provider: string | null): string {
       return "OpenAI OAuth";
     case "nous":
       return "Nous Portal OAuth";
+    case "zai":
+      return "Z.AI GLM API key";
     case "openrouter":
       return "OpenRouter API key";
     case null:

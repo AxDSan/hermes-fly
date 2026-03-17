@@ -309,6 +309,13 @@ function inferAiAccessMode(secretNames: string[]): string | null {
   if (secretNames.includes("HERMES_AUTH_JSON_B64")) {
     return "openai-codex";
   }
+  if (
+    secretNames.includes("GLM_API_KEY")
+    || secretNames.includes("ZAI_API_KEY")
+    || secretNames.includes("Z_AI_API_KEY")
+  ) {
+    return "zai";
+  }
   if (secretNames.includes("OPENROUTER_API_KEY")) {
     return "openrouter";
   }

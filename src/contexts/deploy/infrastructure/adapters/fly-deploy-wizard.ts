@@ -20,6 +20,11 @@ import {
   type NousModelOption,
   type ResolvedNousPortalAuth,
 } from "./nous-portal-auth.js";
+import {
+  ZaiApiKeyAdapter,
+  type ZaiEndpointResolution,
+  type ZaiModelOption,
+} from "./zai-api-key.js";
 import { MessagingPolicy, type MessagingPolicyMode } from "../../../messaging/domain/messaging-policy.js";
 import {
   TELEGRAM_BOTFATHER_DELETEBOT_URL,
@@ -118,8 +123,9 @@ type TelegramBotIdentity = {
 };
 
 type AiAccessSelection = {
-  provider: "openrouter" | "openai-codex" | "nous" | "anthropic";
+  provider: "openrouter" | "openai-codex" | "nous" | "anthropic" | "zai";
   apiKey: string;
+  apiBaseUrl?: string;
   authJsonB64?: string;
   anthropicOauthJsonB64?: string;
   model: string;
@@ -257,6 +263,7 @@ export interface FlyDeployWizardDeps {
   codexAuth?: OpenAICodexAuthAdapter;
   anthropicAuth?: AnthropicAuthAdapter;
   nousAuth?: NousPortalAuthAdapter;
+  zaiAuth?: ZaiApiKeyAdapter;
 }
 
 export class FlyDeployWizard implements DeployWizardPort {
@@ -268,6 +275,7 @@ export class FlyDeployWizard implements DeployWizardPort {
   private readonly codexAuth: OpenAICodexAuthAdapter;
   private readonly anthropicAuth: AnthropicAuthAdapter;
   private readonly nousAuth: NousPortalAuthAdapter;
+  private readonly zaiAuth: ZaiApiKeyAdapter;
   private readonly env: NodeJS.ProcessEnv;
   private readonly defaultAppName: string;
   private readonly modelLabels = new Map<string, string>();
@@ -284,6 +292,7 @@ export class FlyDeployWizard implements DeployWizardPort {
     this.codexAuth = deps.codexAuth ?? new OpenAICodexAuthAdapter(this.process, this.env);
     this.anthropicAuth = deps.anthropicAuth ?? new AnthropicAuthAdapter(this.process, this.env);
     this.nousAuth = deps.nousAuth ?? new NousPortalAuthAdapter(this.process, this.env);
+    this.zaiAuth = deps.zaiAuth ?? new ZaiApiKeyAdapter(this.process, this.env);
     this.defaultAppName = this.buildDefaultAppName();
     this.rememberModelOptions(STATIC_MODEL_OPTIONS);
   }
@@ -375,6 +384,7 @@ export class FlyDeployWizard implements DeployWizardPort {
     const aiAccess = await this.collectAiAccess({
       provider: env.HERMES_LLM_PROVIDER ?? env.HERMES_FLY_PROVIDER,
       model: env.HERMES_FLY_MODEL,
+      apiBaseUrl: env.GLM_BASE_URL,
       reasoningEffort: env.HERMES_REASONING_EFFORT,
       authJsonB64: env.HERMES_AUTH_JSON_B64,
       anthropicOauthJsonB64: env.HERMES_ANTHROPIC_OAUTH_JSON_B64,
@@ -407,6 +417,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       volumeSize,
       provider: intent.provider,
       apiKey: aiAccess.apiKey,
+      apiBaseUrl: aiAccess.apiBaseUrl,
       authJsonB64: aiAccess.authJsonB64,
       anthropicOauthJsonB64: aiAccess.anthropicOauthJsonB64,
       model: intent.model,
@@ -452,6 +463,12 @@ export class FlyDeployWizard implements DeployWizardPort {
     };
     if (config.provider === "openrouter") {
       secrets.OPENROUTER_API_KEY = config.apiKey;
+    }
+    if (config.provider === "zai") {
+      secrets.GLM_API_KEY = config.apiKey;
+      if (config.apiBaseUrl) {
+        secrets.GLM_BASE_URL = config.apiBaseUrl;
+      }
     }
     if (config.authJsonB64) {
       secrets.HERMES_AUTH_JSON_B64 = config.authJsonB64;
@@ -853,6 +870,7 @@ export class FlyDeployWizard implements DeployWizardPort {
   private async collectAiAccess(input: {
     provider?: string;
     model?: string;
+    apiBaseUrl?: string;
     reasoningEffort?: string;
     authJsonB64?: string;
     anthropicOauthJsonB64?: string;
@@ -864,6 +882,14 @@ export class FlyDeployWizard implements DeployWizardPort {
       ?? ((input.anthropicOauthJsonB64 ?? "").trim().length > 0 ? "anthropic" : undefined);
     if (normalizedProvider === "openrouter") {
       return this.collectOpenRouterAccess(input.model, input.reasoningEffort, input.sttProvider, input.sttModel);
+    }
+    if (normalizedProvider === "zai") {
+      return this.collectZaiAccess(
+        input.model,
+        input.apiBaseUrl,
+        input.sttProvider,
+        input.sttModel
+      );
     }
     if (normalizedProvider === "anthropic") {
       return this.collectAnthropicAccess(
@@ -922,13 +948,14 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     this.prompts.write("How should Hermes access AI models?\n");
-    this.prompts.write("You can use your own OpenRouter API key, sign in with your ChatGPT subscription through OpenAI Codex, use your Nous Portal subscription, or sign in with Anthropic OAuth.\n\n");
+    this.prompts.write("You can use your own OpenRouter API key, sign in with your ChatGPT subscription through OpenAI Codex, use your Nous Portal subscription, sign in with Anthropic OAuth, or use your Z.AI GLM API key.\n\n");
     this.prompts.write("   1  OpenRouter API key         Bring your own API key and choose from OpenRouter's model catalog\n");
     this.prompts.write("   2  ChatGPT subscription       Sign in with ChatGPT / OpenAI through OpenAI Codex\n\n");
     this.prompts.write("   3  Nous Portal subscription   Sign in with your Nous Portal account and use Portal models\n\n");
     this.prompts.write("   4  Anthropic subscription    Sign in with Claude / Anthropic through OAuth\n\n");
+    this.prompts.write("   5  Z.AI GLM API key          Use your Z.AI key and detect the matching GLM endpoint, including Coding Plan\n\n");
 
-    const selection = await this.chooseNumber("Choose an option [1]: ", 4, 1);
+    const selection = await this.chooseNumber("Choose an option [1]: ", 5, 1);
     if (selection === 2) {
       return this.collectOpenAICodexAccess(
         input.model,
@@ -952,6 +979,14 @@ export class FlyDeployWizard implements DeployWizardPort {
         input.model,
         input.reasoningEffort,
         input.anthropicOauthJsonB64,
+        input.sttProvider,
+        input.sttModel
+      );
+    }
+    if (selection === 5) {
+      return this.collectZaiAccess(
+        input.model,
+        input.apiBaseUrl,
         input.sttProvider,
         input.sttModel
       );
@@ -996,6 +1031,26 @@ export class FlyDeployWizard implements DeployWizardPort {
       authJsonB64: auth.authJsonB64,
       model,
       reasoningEffort,
+      sttProvider: stt.provider,
+      sttModel: stt.model,
+    };
+  }
+
+  private async collectZaiAccess(
+    envModel: string | undefined,
+    envBaseUrl: string | undefined,
+    envSttProvider?: string,
+    envSttModel?: string
+  ): Promise<AiAccessSelection> {
+    const apiKey = await this.collectZaiApiKey();
+    const endpoint = await this.collectZaiEndpoint(apiKey, envBaseUrl);
+    const model = await this.collectZaiModel(envModel, endpoint);
+    const stt = this.resolveSttDefaults("zai", envSttProvider, envSttModel);
+    return {
+      provider: "zai",
+      apiKey,
+      apiBaseUrl: endpoint.baseUrl,
+      model,
       sttProvider: stt.provider,
       sttModel: stt.model,
     };
@@ -1350,8 +1405,54 @@ export class FlyDeployWizard implements DeployWizardPort {
     return models[selectedIndex - 1].value;
   }
 
+  private async collectZaiModel(envValue: string | undefined, endpoint: ZaiEndpointResolution): Promise<string> {
+    const preset = envValue?.trim();
+    const models = this.fetchZaiModels(endpoint.defaultModel);
+    if (preset && preset.length > 0) {
+      return preset;
+    }
+    if (!this.prompts.isInteractive()) {
+      return endpoint.defaultModel || models[0]?.value || "glm-4.7";
+    }
+
+    this.prompts.write("Which Z.AI GLM model should your agent use?\n\n");
+    models.forEach((option, index) => {
+      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}\n`);
+    });
+    const manualIndex = models.length + 1;
+    this.prompts.write(`  ${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually\n\n`);
+
+    const defaultIndex = Math.max(0, models.findIndex((option) => option.value === endpoint.defaultModel)) + 1;
+    const selectedIndex = await this.chooseNumber(`Choose a model [${defaultIndex}]: `, manualIndex, defaultIndex);
+    if (selectedIndex === manualIndex) {
+      this.prompts.write("GLM model IDs look like glm-4.7 or glm-5.\n\n");
+      while (true) {
+        const answer = (await this.prompts.ask("Model ID: ")).trim();
+        if (answer.length > 0) {
+          return answer;
+        }
+        this.prompts.write("Model ID cannot be empty.\n");
+      }
+    }
+
+    return models[selectedIndex - 1].value;
+  }
+
   private fetchAnthropicModels(): AnthropicModelOption[] {
     const models = this.anthropicAuth.staticModelOptions();
+    this.rememberModelOptions(models.map((option) => ({
+      value: option.value,
+      label: option.label,
+      bestFor: option.bestFor,
+      providerKey: option.providerKey,
+      providerLabel: option.providerLabel,
+      supportsReasoning: option.supportsReasoning,
+    })));
+    return models;
+  }
+
+  private fetchZaiModels(preferredModel: string): ZaiModelOption[] {
+    const models = this.zaiAuth.staticModelOptions(preferredModel);
     this.rememberModelOptions(models.map((option) => ({
       value: option.value,
       label: option.label,
@@ -1480,10 +1581,13 @@ export class FlyDeployWizard implements DeployWizardPort {
     return undefined;
   }
 
-  private normalizeAiProvider(value: string | undefined): "openrouter" | "openai-codex" | "nous" | "anthropic" | undefined {
+  private normalizeAiProvider(value: string | undefined): "openrouter" | "openai-codex" | "nous" | "anthropic" | "zai" | undefined {
     const normalized = (value ?? "").trim().toLowerCase();
     if (normalized === "openrouter") {
       return "openrouter";
+    }
+    if (normalized === "zai" || normalized === "z.ai" || normalized === "glm" || normalized === "bigmodel") {
+      return "zai";
     }
     if (normalized === "anthropic" || normalized === "claude" || normalized === "claude-code") {
       return "anthropic";
@@ -1527,6 +1631,65 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
       return apiKey;
     }
+  }
+
+  private async collectZaiApiKey(): Promise<string> {
+    const preset = this.zaiAuth.resolvePresetApiKey();
+    if (preset) {
+      return preset;
+    }
+    if (!this.prompts.isInteractive()) {
+      throw new Error("GLM_API_KEY is required in non-interactive mode. Run from a terminal to use the guided wizard or export GLM_API_KEY first.");
+    }
+
+    this.prompts.write("Get your Z.AI API key through your GLM plan.\n");
+    this.prompts.write("Hermes will detect the matching Z.AI GLM endpoint for this key, including Coding Plan endpoints.\n\n");
+    while (true) {
+      const answer = await this.prompts.askSecret("Z.AI GLM API key (required): ");
+      const apiKey = answer.trim();
+      if (apiKey.length > 0) {
+        return apiKey;
+      }
+      this.prompts.write("GLM_API_KEY cannot be empty.\n");
+    }
+  }
+
+  private async collectZaiEndpoint(apiKey: string, envBaseUrl?: string): Promise<ZaiEndpointResolution> {
+    const configuredBaseUrl = envBaseUrl?.trim() || this.zaiAuth.resolvePresetBaseUrl();
+    if (configuredBaseUrl && configuredBaseUrl.length > 0) {
+      if (this.prompts.isInteractive()) {
+        this.prompts.write(`Using Z.AI base URL from GLM_BASE_URL: ${configuredBaseUrl}\n\n`);
+      }
+      return {
+        id: "configured",
+        baseUrl: configuredBaseUrl,
+        defaultModel: configuredBaseUrl.includes("/coding/") ? "glm-4.7" : "glm-5",
+        label: "Configured via GLM_BASE_URL",
+      };
+    }
+
+    if (this.prompts.isInteractive()) {
+      this.prompts.write("Detecting the matching Z.AI GLM endpoint...\n");
+    }
+    const detected = await this.zaiAuth.detectEndpoint(apiKey);
+    if (detected) {
+      if (this.prompts.isInteractive()) {
+        this.prompts.write(`Detected: ${detected.label} endpoint\n`);
+        this.prompts.write(`  URL: ${detected.baseUrl}\n`);
+        if (detected.id.startsWith("coding")) {
+          this.prompts.write(`  Default model: ${detected.defaultModel}\n`);
+        }
+        this.prompts.write("\n");
+      }
+      return detected;
+    }
+
+    const fallback = this.zaiAuth.codingFallback();
+    if (this.prompts.isInteractive()) {
+      this.prompts.write("I could not verify a working Z.AI endpoint with this key right now.\n");
+      this.prompts.write(`Hermes will use the official Coding Plan endpoint by default: ${fallback.baseUrl}\n\n`);
+    }
+    return fallback;
   }
 
   private async collectModel(envValue: string | undefined, apiKey: string): Promise<string> {
@@ -2026,6 +2189,9 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
     if (provider === "nous") {
       return "Nous Portal OAuth";
+    }
+    if (provider === "zai") {
+      return "Z.AI GLM API key";
     }
     return "OpenRouter API key";
   }

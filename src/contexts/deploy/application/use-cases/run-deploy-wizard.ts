@@ -78,6 +78,9 @@ function describeAiAccess(provider: string): string {
   if (provider === "nous") {
     return "Nous Portal OAuth";
   }
+  if (provider === "zai") {
+    return "Z.AI GLM API key";
+  }
   return "OpenRouter API key";
 }
 

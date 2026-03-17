@@ -252,6 +252,23 @@ describe("RunDeployWizardUseCase - happy path", () => {
     assert.match(io.outText, /hermes-fly doctor -a test-app/);
   });
 
+  it("prints the Z.AI access label in the completion summary when that provider is deployed", async () => {
+    const io = makeIO();
+    const uc = new RunDeployWizardUseCase(makePort({
+      collectConfig: async () => ({
+        ...DEFAULT_CONFIG,
+        provider: "zai",
+        apiKey: "glm-live-key",
+        apiBaseUrl: "https://api.z.ai/api/coding/paas/v4",
+        model: "glm-4.7"
+      })
+    }));
+
+    await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
+
+    assert.match(io.outText, /AI access:\s+Z\.AI GLM API key/);
+  });
+
   it("prints telegram bot coordinates after a successful deploy", async () => {
     const io = makeIO();
     const uc = new RunDeployWizardUseCase(makePort({
@@ -1283,6 +1300,55 @@ describe("FlyDeployWizard.collectConfig", () => {
     } finally {
       await rm(home, { recursive: true, force: true });
     }
+  });
+
+  it("offers Z.AI GLM API-key access and detects the matching coding endpoint", async () => {
+    const prompts = makePromptPort([
+      "",
+      "",
+      "",
+      "",
+      "",
+      "5",
+      "glm-live-key",
+      "",
+      "2",
+      "y"
+    ], { interactive: true });
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command !== "curl") {
+        return { exitCode: 1 };
+      }
+
+      const target = args.find((value) => value.startsWith("https://"));
+      if (target === "https://api.z.ai/api/coding/paas/v4/chat/completions") {
+        return {
+          exitCode: 0,
+          stdout: "{\"id\":\"probe\"}\n200"
+        };
+      }
+
+      return { exitCode: 1, stderr: "unexpected target" };
+    });
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner });
+
+    const config = await wizard.collectConfig({ channel: "stable" });
+
+    assert.equal(config.provider, "zai");
+    assert.equal(config.apiKey, "glm-live-key");
+    assert.equal(config.apiBaseUrl, "https://api.z.ai/api/coding/paas/v4");
+    assert.equal(config.model, "glm-4.7");
+    assert.equal(config.reasoningEffort, undefined);
+    assert.equal(config.sttProvider, undefined);
+    assert.equal(config.sttModel, undefined);
+    const guidedCopy = prompts.writes.join("");
+    assert.match(guidedCopy, /How should Hermes access AI models/);
+    assert.match(guidedCopy, /Z\.AI GLM API key/);
+    assert.match(guidedCopy, /Coding Plan/);
+    assert.match(guidedCopy, /Detecting the matching Z\.AI GLM endpoint/);
+    assert.match(guidedCopy, /Global \(Coding Plan\)/);
+    assert.match(guidedCopy, /Which Z\.AI GLM model should your agent use/);
+    assert.match(guidedCopy, /AI access:\s+Z\.AI GLM API key/);
   });
 
   it("fetches the full OpenRouter provider catalog and lets the user choose a specific model", async () => {

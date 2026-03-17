@@ -6,6 +6,7 @@ export interface DeployConfig {
   volumeSize: number;
   provider: string;
   apiKey: string;
+  apiBaseUrl?: string;
   authJsonB64?: string;
   anthropicOauthJsonB64?: string;
   model: string;

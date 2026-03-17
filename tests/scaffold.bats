@@ -125,6 +125,8 @@ teardown() {
   assert_success
   assert_output --partial "TELEGRAM_BOT_TOKEN"
   assert_output --partial "DISCORD_BOT_TOKEN"
+  assert_output --partial "GLM_API_KEY"
+  assert_output --partial "GLM_BASE_URL"
 }
 
 @test "entrypoint.sh patches config.yaml model from LLM_MODEL" {
