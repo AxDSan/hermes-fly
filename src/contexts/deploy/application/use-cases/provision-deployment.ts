@@ -73,6 +73,30 @@ export class ProvisionDeploymentUseCase {
     if (config.telegramHomeChannel) {
       secrets.TELEGRAM_HOME_CHANNEL = config.telegramHomeChannel;
     }
+    if (config.discordBotToken) {
+      secrets.DISCORD_BOT_TOKEN = config.discordBotToken;
+    }
+    if (config.discordAllowedUsers) {
+      secrets.DISCORD_ALLOWED_USERS = config.discordAllowedUsers;
+    }
+    if (config.slackBotToken) {
+      secrets.SLACK_BOT_TOKEN = config.slackBotToken;
+    }
+    if (config.slackAppToken) {
+      secrets.SLACK_APP_TOKEN = config.slackAppToken;
+    }
+    if (config.slackAllowedUsers) {
+      secrets.SLACK_ALLOWED_USERS = config.slackAllowedUsers;
+    }
+    if (config.whatsappEnabled) {
+      secrets.WHATSAPP_ENABLED = "true";
+    }
+    if (config.whatsappMode) {
+      secrets.WHATSAPP_MODE = config.whatsappMode;
+    }
+    if (config.whatsappAllowedUsers) {
+      secrets.WHATSAPP_ALLOWED_USERS = config.whatsappAllowedUsers;
+    }
 
     const secretsResult = await this.runner.setSecrets(config.appName, secrets);
     if (!secretsResult.ok) {

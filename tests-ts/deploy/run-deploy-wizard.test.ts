@@ -52,6 +52,7 @@ function makePort(overrides: Partial<DeployWizardPort> = {}): DeployWizardPort {
     runDeploy: async () => ({ ok: true }),
     postDeployCheck: async () => ({ ok: true }),
     saveApp: async () => {},
+    finalizeMessagingSetup: async () => {},
     chooseSuccessfulDeploymentAction: async () => "conclude",
     showTelegramBotDeletionGuidance: async () => {},
     ...overrides
@@ -287,6 +288,55 @@ describe("RunDeployWizardUseCase - happy path", () => {
     assert.match(io.outText, /Telegram:\s+@testhermesbot/);
     assert.match(io.outText, /Chat link:\s+https:\/\/t\.me\/testhermesbot\?start=test-app/);
     assert.match(io.outText, /Home channel:\s+1467489858/);
+  });
+
+  it("prints Discord, Slack, and WhatsApp details in the completion summary", async () => {
+    const io = makeIO();
+    const uc = new RunDeployWizardUseCase(makePort({
+      collectConfig: async () => ({
+        ...DEFAULT_CONFIG,
+        messagingPlatforms: ["discord", "slack", "whatsapp"],
+        discordBotToken: "discord-live-token",
+        discordApplicationId: "123456789012345678",
+        discordBotUsername: "hermes-discord-bot",
+        discordUsePairing: true,
+        slackBotToken: "xoxb-live",
+        slackAppToken: "xapp-live",
+        slackTeamName: "Hermes Workspace",
+        slackUsePairing: true,
+        whatsappEnabled: true,
+        whatsappMode: "self-chat",
+        whatsappUsePairing: true,
+      })
+    }));
+
+    await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
+
+    assert.match(io.outText, /Discord:\s+@hermes-discord-bot/);
+    assert.match(io.outText, /Discord access:\s+Only me \(DM pairing\)/);
+    assert.match(io.outText, /Slack:\s+Hermes Workspace/);
+    assert.match(io.outText, /Slack access:\s+Only me \(DM pairing\)/);
+    assert.match(io.outText, /WhatsApp:\s+Self-chat/);
+    assert.match(io.outText, /WhatsApp access:\s+Only me \(DM pairing\)/);
+  });
+
+  it("runs post-deploy messaging finalization after the completion summary", async () => {
+    const io = makeIO();
+    const steps: string[] = [];
+    const uc = new RunDeployWizardUseCase(makePort({
+      finalizeMessagingSetup: async () => {
+        steps.push("finalize");
+      },
+      chooseSuccessfulDeploymentAction: async () => {
+        steps.push("choose");
+        return "conclude";
+      }
+    }));
+
+    const result = await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
+
+    assert.equal(result.kind, "ok");
+    assert.deepEqual(steps, ["finalize", "choose"]);
   });
 
   it("destroys the new deployment when the user chooses the post-deploy destroy action", async () => {
@@ -762,6 +812,72 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.match(guidedCopy, /Scan this QR code with your phone to open BotFather with \/deletebot ready to send/);
     assert.match(guidedCopy, /\[\[DELETEBOT-QR\]\]/);
     assert.match(guidedCopy, /choose @testhermesbot/);
+  });
+
+  it("approves Discord DM pairing after deploy", async () => {
+    const prompts = makePromptPort(["ABCD1234"], { interactive: true });
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const io = makeIO();
+    const runner = makeProcessRunner(async (command, args) => {
+      calls.push({ command, args });
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner });
+
+    await wizard.finalizeMessagingSetup({
+      ...DEFAULT_CONFIG,
+      appName: "test-app",
+      discordBotToken: "discord-live-token",
+      discordApplicationId: "123456789012345678",
+      discordUsePairing: true,
+    }, io.stdout, io.stderr);
+
+    const pairingCall = calls.find((call) => call.args.includes("-C"));
+    assert.ok(pairingCall);
+    const discordRemoteCommand = pairingCall?.args[pairingCall.args.indexOf("-C") + 1] ?? "";
+    assert.match(discordRemoteCommand, /pairing/);
+    assert.match(discordRemoteCommand, /approve/);
+    assert.match(discordRemoteCommand, /discord/);
+    assert.match(discordRemoteCommand, /ABCD1234/);
+    assert.match(io.outText, /Discord pairing/);
+  });
+
+  it("runs remote WhatsApp pairing and then approves the WhatsApp DM pairing code", async () => {
+    const prompts = makePromptPort(["y", "CODE9XYZ"], { interactive: true });
+    const foregroundCalls: Array<{ command: string; args: string[] }> = [];
+    const backgroundCalls: Array<{ command: string; args: string[] }> = [];
+    const runner = makeProcessRunner(
+      async (command, args) => {
+        backgroundCalls.push({ command, args });
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      async (command, args) => {
+        foregroundCalls.push({ command, args });
+        return { exitCode: 0 };
+      }
+    );
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner });
+
+    await wizard.finalizeMessagingSetup({
+      ...DEFAULT_CONFIG,
+      appName: "test-app",
+      whatsappEnabled: true,
+      whatsappMode: "bot",
+      whatsappUsePairing: true,
+    }, makeIO().stdout, makeIO().stderr);
+
+    assert.ok(foregroundCalls.some((call) => call.args.join(" ").includes("hermes-agent/venv/bin/hermes") && call.args.join(" ").includes("whatsapp")));
+    assert.ok(backgroundCalls.some((call) => {
+      const commandIndex = call.args.indexOf("-C");
+      if (commandIndex === -1) {
+        return false;
+      }
+      const remoteCommand = call.args[commandIndex + 1] ?? "";
+      return /pairing/.test(remoteCommand)
+        && /approve/.test(remoteCommand)
+        && /whatsapp/.test(remoteCommand)
+        && /CODE9XYZ/.test(remoteCommand);
+    }));
   });
 });
 
@@ -1699,6 +1815,164 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /Who should be able to talk to this bot/);
     assert.match(guidedCopy, /user IDs must be numeric/i);
     assert.ok(prompts.asked.some((message) => message.includes("Continue with this bot?")));
+  });
+
+  it("configures Discord with DM pairing for only-me access", async () => {
+    const prompts = makePromptPort([
+      "",
+      "",
+      "",
+      "",
+      "",
+      "1",
+      "sk-live",
+      "",
+      "",
+      "2",
+      "discord-live-token",
+      "y",
+      "1",
+      "y"
+    ], { interactive: true });
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command === "fly" && args[0] === "platform" && args[1] === "regions") {
+        return { exitCode: 0, stdout: JSON.stringify([{ code: "iad", name: "Ashburn, Virginia (US)" }]) };
+      }
+      if (command === "fly" && args[0] === "platform" && args[1] === "vm-sizes") {
+        return { exitCode: 0, stdout: JSON.stringify([{ name: "shared-cpu-1x", memory_mb: 256 }]) };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
+        return { exitCode: 0, stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } }) };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/models")) {
+        return { exitCode: 0, stdout: JSON.stringify({ data: liveOpenRouterModelsFixture() }) };
+      }
+      if (command === "curl" && args.includes("https://discord.com/api/v10/users/@me")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ id: "123456789012345678", username: "hermes-discord-bot" })
+        };
+      }
+      return { exitCode: 1 };
+    });
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner });
+
+    const config = await wizard.collectConfig({ channel: "stable" });
+
+    assert.deepEqual(config.messagingPlatforms, ["discord"]);
+    assert.equal(config.discordBotToken, "discord-live-token");
+    assert.equal(config.discordApplicationId, "123456789012345678");
+    assert.equal(config.discordBotUsername, "hermes-discord-bot");
+    assert.equal(config.discordUsePairing, true);
+    assert.equal(config.discordAllowedUsers, undefined);
+    const guidedCopy = prompts.writes.join("");
+    assert.match(guidedCopy, /Discord Developer Portal: https:\/\/discord\.com\/developers\/applications/);
+    assert.match(guidedCopy, /Invite URL: https:\/\/discord\.com\/oauth2\/authorize\?client_id=123456789012345678&scope=bot%20applications\.commands/);
+    assert.match(guidedCopy, /Only me\s+Just you\. Hermes will use DM pairing after deploy/);
+  });
+
+  it("configures Slack with bot and app tokens plus DM pairing for only-me access", async () => {
+    const prompts = makePromptPort([
+      "",
+      "",
+      "",
+      "",
+      "",
+      "1",
+      "sk-live",
+      "",
+      "",
+      "3",
+      "xoxb-live",
+      "xapp-live",
+      "y",
+      "1",
+      "y"
+    ], { interactive: true });
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command === "fly" && args[0] === "platform" && args[1] === "regions") {
+        return { exitCode: 0, stdout: JSON.stringify([{ code: "iad", name: "Ashburn, Virginia (US)" }]) };
+      }
+      if (command === "fly" && args[0] === "platform" && args[1] === "vm-sizes") {
+        return { exitCode: 0, stdout: JSON.stringify([{ name: "shared-cpu-1x", memory_mb: 256 }]) };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
+        return { exitCode: 0, stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } }) };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/models")) {
+        return { exitCode: 0, stdout: JSON.stringify({ data: liveOpenRouterModelsFixture() }) };
+      }
+      if (command === "curl" && args.includes("https://slack.com/api/auth.test")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ ok: true, team: "Hermes Workspace", user_id: "U123ABC456" })
+        };
+      }
+      if (command === "curl" && args.includes("https://slack.com/api/apps.connections.open")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ ok: true, url: "wss://slack.example/socket" })
+        };
+      }
+      return { exitCode: 1 };
+    });
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner });
+
+    const config = await wizard.collectConfig({ channel: "stable" });
+
+    assert.deepEqual(config.messagingPlatforms, ["slack"]);
+    assert.equal(config.slackBotToken, "xoxb-live");
+    assert.equal(config.slackAppToken, "xapp-live");
+    assert.equal(config.slackTeamName, "Hermes Workspace");
+    assert.equal(config.slackBotUserId, "U123ABC456");
+    assert.equal(config.slackUsePairing, true);
+    const guidedCopy = prompts.writes.join("");
+    assert.match(guidedCopy, /Hermes uses Socket Mode for Slack, so the app token is required/);
+    assert.match(guidedCopy, /Connected Slack workspace: Hermes Workspace/);
+  });
+
+  it("configures WhatsApp and marks it for post-deploy pairing", async () => {
+    const prompts = makePromptPort([
+      "",
+      "",
+      "",
+      "",
+      "",
+      "1",
+      "sk-live",
+      "",
+      "",
+      "4",
+      "2",
+      "1",
+      "y"
+    ], { interactive: true });
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command === "fly" && args[0] === "platform" && args[1] === "regions") {
+        return { exitCode: 0, stdout: JSON.stringify([{ code: "iad", name: "Ashburn, Virginia (US)" }]) };
+      }
+      if (command === "fly" && args[0] === "platform" && args[1] === "vm-sizes") {
+        return { exitCode: 0, stdout: JSON.stringify([{ name: "shared-cpu-1x", memory_mb: 256 }]) };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
+        return { exitCode: 0, stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } }) };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/models")) {
+        return { exitCode: 0, stdout: JSON.stringify({ data: liveOpenRouterModelsFixture() }) };
+      }
+      return { exitCode: 1 };
+    });
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner });
+
+    const config = await wizard.collectConfig({ channel: "stable" });
+
+    assert.deepEqual(config.messagingPlatforms, ["whatsapp"]);
+    assert.equal(config.whatsappEnabled, true);
+    assert.equal(config.whatsappMode, "self-chat");
+    assert.equal(config.whatsappUsePairing, true);
+    const guidedCopy = prompts.writes.join("");
+    assert.match(guidedCopy, /Hermes will finish WhatsApp pairing after deploy by opening the remote WhatsApp setup flow in this terminal/);
+    assert.match(guidedCopy, /Self-chat/);
   });
 
   it("prompts for Hermes-compatible reasoning effort when the selected model supports it", async () => {

@@ -68,6 +68,88 @@ function buildTelegramChatLink(config: DeployConfig): string | undefined {
   return `https://t.me/${config.telegramBotUsername}?start=${config.appName}`;
 }
 
+function describeDiscord(config: DeployConfig): string | undefined {
+  if (!config.discordBotToken) {
+    return undefined;
+  }
+  if (config.discordBotUsername && config.discordApplicationId) {
+    return `@${config.discordBotUsername} (${config.discordApplicationId})`;
+  }
+  if (config.discordBotUsername) {
+    return `@${config.discordBotUsername}`;
+  }
+  if (config.discordApplicationId) {
+    return config.discordApplicationId;
+  }
+  return "configured";
+}
+
+function describeDiscordAccess(config: DeployConfig): string | undefined {
+  if (!config.discordBotToken) {
+    return undefined;
+  }
+  if (config.gatewayAllowAllUsers) {
+    return "Anyone";
+  }
+  if (config.discordUsePairing) {
+    return "Only me (DM pairing)";
+  }
+  if (!config.discordAllowedUsers) {
+    return undefined;
+  }
+  return `Specific people (${config.discordAllowedUsers})`;
+}
+
+function describeSlack(config: DeployConfig): string | undefined {
+  if (!config.slackBotToken || !config.slackAppToken) {
+    return undefined;
+  }
+  if (config.slackTeamName) {
+    return config.slackTeamName;
+  }
+  return "configured";
+}
+
+function describeSlackAccess(config: DeployConfig): string | undefined {
+  if (!config.slackBotToken || !config.slackAppToken) {
+    return undefined;
+  }
+  if (config.gatewayAllowAllUsers) {
+    return "Anyone";
+  }
+  if (config.slackUsePairing) {
+    return "Only me (DM pairing)";
+  }
+  if (!config.slackAllowedUsers) {
+    return undefined;
+  }
+  return `Specific people (${config.slackAllowedUsers})`;
+}
+
+function describeWhatsApp(config: DeployConfig): string | undefined {
+  if (!config.whatsappEnabled) {
+    return undefined;
+  }
+  const mode = config.whatsappMode ?? "bot";
+  return mode === "self-chat" ? "Self-chat" : "Bot mode";
+}
+
+function describeWhatsAppAccess(config: DeployConfig): string | undefined {
+  if (!config.whatsappEnabled) {
+    return undefined;
+  }
+  if (config.gatewayAllowAllUsers) {
+    return "Anyone";
+  }
+  if (config.whatsappUsePairing) {
+    return "Only me (DM pairing)";
+  }
+  if (!config.whatsappAllowedUsers) {
+    return undefined;
+  }
+  return `Specific people (${config.whatsappAllowedUsers})`;
+}
+
 function describeAiAccess(provider: string): string {
   if (provider === "anthropic") {
     return "Anthropic OAuth";
@@ -112,6 +194,33 @@ function writeCompletionSummary(stdout: { write: (s: string) => void }, config: 
     const chatLink = buildTelegramChatLink(config);
     if (chatLink) {
       stdout.write(`  Chat link:       ${chatLink}\n`);
+    }
+  }
+
+  const discord = describeDiscord(config);
+  if (discord) {
+    stdout.write(`  Discord:         ${discord}\n`);
+    const access = describeDiscordAccess(config);
+    if (access) {
+      stdout.write(`  Discord access:  ${access}\n`);
+    }
+  }
+
+  const slack = describeSlack(config);
+  if (slack) {
+    stdout.write(`  Slack:           ${slack}\n`);
+    const access = describeSlackAccess(config);
+    if (access) {
+      stdout.write(`  Slack access:    ${access}\n`);
+    }
+  }
+
+  const whatsapp = describeWhatsApp(config);
+  if (whatsapp) {
+    stdout.write(`  WhatsApp:        ${whatsapp}\n`);
+    const access = describeWhatsAppAccess(config);
+    if (access) {
+      stdout.write(`  WhatsApp access: ${access}\n`);
     }
   }
 
@@ -215,6 +324,7 @@ export class RunDeployWizardUseCase {
     await this.port.saveApp(config);
 
     writeCompletionSummary(stdout, config);
+    await this.port.finalizeMessagingSetup(config, stdout, stderr);
 
     const action = await this.port.chooseSuccessfulDeploymentAction(config);
     if (action === "destroy") {

@@ -21,6 +21,22 @@ export interface DeployConfig {
   telegramAllowedUsers?: string;
   gatewayAllowAllUsers?: boolean;
   telegramHomeChannel?: string;
+  messagingPlatforms?: string[];
+  discordBotToken?: string;
+  discordApplicationId?: string;
+  discordBotUsername?: string;
+  discordAllowedUsers?: string;
+  discordUsePairing?: boolean;
+  slackBotToken?: string;
+  slackAppToken?: string;
+  slackTeamName?: string;
+  slackBotUserId?: string;
+  slackAllowedUsers?: string;
+  slackUsePairing?: boolean;
+  whatsappEnabled?: boolean;
+  whatsappMode?: "bot" | "self-chat";
+  whatsappAllowedUsers?: string;
+  whatsappUsePairing?: boolean;
 }
 
 export type SuccessfulDeploymentAction = "conclude" | "destroy";
@@ -36,6 +52,7 @@ export interface DeployWizardPort {
   runDeploy(buildDir: string, config: DeployConfig): Promise<{ ok: boolean; error?: string }>;
   postDeployCheck(appName: string): Promise<{ ok: boolean; error?: string }>;
   saveApp(config: DeployConfig): Promise<void>;
+  finalizeMessagingSetup(config: DeployConfig, stdout: { write: (s: string) => void }, stderr: { write: (s: string) => void }): Promise<void>;
   chooseSuccessfulDeploymentAction(config: DeployConfig): Promise<SuccessfulDeploymentAction>;
   showTelegramBotDeletionGuidance(config: DeployConfig): Promise<void>;
 }

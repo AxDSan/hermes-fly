@@ -57,6 +57,12 @@ describe("TemplateWriter", () => {
       assert.match(entrypoint, /GLM_API_KEY/);
       assert.match(entrypoint, /GLM_BASE_URL/);
       assert.match(entrypoint, /HERMES_ZAI_THINKING/);
+      assert.match(entrypoint, /DISCORD_BOT_TOKEN/);
+      assert.match(entrypoint, /SLACK_BOT_TOKEN/);
+      assert.match(entrypoint, /SLACK_APP_TOKEN/);
+      assert.match(entrypoint, /WHATSAPP_ENABLED/);
+      assert.match(entrypoint, /WHATSAPP_MODE/);
+      assert.match(entrypoint, /WHATSAPP_ALLOWED_USERS/);
 
       assert.match(sitecustomize, /HERMES_ZAI_THINKING/);
       assert.match(sitecustomize, /thinking/);

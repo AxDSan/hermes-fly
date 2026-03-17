@@ -242,6 +242,36 @@ describe("ProvisionDeploymentUseCase - happy path", () => {
       HERMES_DEPLOY_CHANNEL: DEFAULT_CONFIG.channel
     });
   });
+
+  it("includes Discord, Slack, and WhatsApp secrets when those gateways are configured", async () => {
+    let capturedSecrets: Record<string, string> | null = null;
+    const io = makeIO();
+    const uc = new ProvisionDeploymentUseCase(makeRunner({
+      setSecrets: async (_appName, secrets) => {
+        capturedSecrets = secrets;
+        return { ok: true };
+      }
+    }));
+
+    const result = await uc.execute({
+      ...DEFAULT_CONFIG,
+      discordBotToken: "discord-live-token",
+      discordUsePairing: true,
+      slackBotToken: "xoxb-live",
+      slackAppToken: "xapp-live",
+      slackUsePairing: true,
+      whatsappEnabled: true,
+      whatsappMode: "self-chat",
+      whatsappUsePairing: true,
+    }, io.stderr);
+
+    assert.equal(result.ok, true);
+    assert.equal(capturedSecrets?.DISCORD_BOT_TOKEN, "discord-live-token");
+    assert.equal(capturedSecrets?.SLACK_BOT_TOKEN, "xoxb-live");
+    assert.equal(capturedSecrets?.SLACK_APP_TOKEN, "xapp-live");
+    assert.equal(capturedSecrets?.WHATSAPP_ENABLED, "true");
+    assert.equal(capturedSecrets?.WHATSAPP_MODE, "self-chat");
+  });
 });
 
 describe("ProvisionDeploymentUseCase - create app failure", () => {

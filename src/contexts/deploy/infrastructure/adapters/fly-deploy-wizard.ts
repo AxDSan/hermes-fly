@@ -48,6 +48,8 @@ const OPENROUTER_MODELS_URL = "https://openrouter.ai/models";
 const OPENROUTER_KEY_API_URL = "https://openrouter.ai/api/v1/key";
 const OPENROUTER_MODELS_API_URL = "https://openrouter.ai/api/v1/models";
 const CHATGPT_SECURITY_SETTINGS_URL = "https://chatgpt.com/#settings/Security";
+const DISCORD_DEVELOPER_PORTAL_URL = "https://discord.com/developers/applications";
+const SLACK_APPS_URL = "https://api.slack.com/apps";
 
 type RegionOption = {
   code: string;
@@ -120,6 +122,52 @@ type TelegramSetup = {
 type TelegramBotIdentity = {
   username: string;
   firstName: string;
+};
+
+type DiscordSetup = {
+  botToken: string;
+  applicationId?: string;
+  botUsername?: string;
+  allowedUsers?: string;
+  usePairing?: boolean;
+  allowAllUsers?: boolean;
+};
+
+type DiscordBotIdentity = {
+  applicationId: string;
+  username: string;
+};
+
+type SlackSetup = {
+  botToken: string;
+  appToken: string;
+  teamName?: string;
+  botUserId?: string;
+  allowedUsers?: string;
+  usePairing?: boolean;
+  allowAllUsers?: boolean;
+};
+
+type SlackBotIdentity = {
+  teamName: string;
+  botUserId: string;
+};
+
+type WhatsAppSetup = {
+  enabled: boolean;
+  mode: "bot" | "self-chat";
+  allowedUsers?: string;
+  usePairing?: boolean;
+  allowAllUsers?: boolean;
+};
+
+type MessagingSetup = {
+  telegram?: TelegramSetup;
+  discord?: DiscordSetup;
+  slack?: SlackSetup;
+  whatsapp?: WhatsAppSetup;
+  platforms: string[];
+  allowAnyone: boolean;
 };
 
 type AiAccessSelection = {
@@ -391,11 +439,19 @@ export class FlyDeployWizard implements DeployWizardPort {
       sttProvider: env.HERMES_FLY_STT_PROVIDER ?? env.HERMES_STT_PROVIDER,
       sttModel: env.HERMES_FLY_STT_MODEL ?? env.HERMES_STT_MODEL,
     });
-    const telegramSetup = await this.collectTelegramSetup({
+    const messagingSetup = await this.collectMessagingSetup({
       botToken: env.TELEGRAM_BOT_TOKEN,
       allowedUsers: env.TELEGRAM_ALLOWED_USERS,
       allowAllUsers: env.GATEWAY_ALLOW_ALL_USERS,
       homeChannel: env.TELEGRAM_HOME_CHANNEL,
+      discordBotToken: env.DISCORD_BOT_TOKEN,
+      discordAllowedUsers: env.DISCORD_ALLOWED_USERS,
+      slackBotToken: env.SLACK_BOT_TOKEN,
+      slackAppToken: env.SLACK_APP_TOKEN,
+      slackAllowedUsers: env.SLACK_ALLOWED_USERS,
+      whatsappEnabled: env.WHATSAPP_ENABLED,
+      whatsappMode: env.WHATSAPP_MODE,
+      whatsappAllowedUsers: env.WHATSAPP_ALLOWED_USERS,
     });
     const hermesRef = this.resolveHermesAgentRef(opts.channel);
 
@@ -426,16 +482,32 @@ export class FlyDeployWizard implements DeployWizardPort {
       sttModel: aiAccess.sttModel,
       channel: intent.channel,
       hermesRef,
-      botToken: telegramSetup.botToken,
-      telegramBotUsername: telegramSetup.botUsername,
-      telegramBotName: telegramSetup.botName,
-      telegramAllowedUsers: telegramSetup.allowedUsers,
-      gatewayAllowAllUsers: telegramSetup.allowAllUsers ? true : undefined,
-      telegramHomeChannel: telegramSetup.homeChannel,
+      botToken: messagingSetup.telegram?.botToken ?? "",
+      telegramBotUsername: messagingSetup.telegram?.botUsername,
+      telegramBotName: messagingSetup.telegram?.botName,
+      telegramAllowedUsers: messagingSetup.telegram?.allowedUsers,
+      gatewayAllowAllUsers: messagingSetup.allowAnyone ? true : undefined,
+      telegramHomeChannel: messagingSetup.telegram?.homeChannel,
+      messagingPlatforms: messagingSetup.platforms,
+      discordBotToken: messagingSetup.discord?.botToken,
+      discordApplicationId: messagingSetup.discord?.applicationId,
+      discordBotUsername: messagingSetup.discord?.botUsername,
+      discordAllowedUsers: messagingSetup.discord?.allowedUsers,
+      discordUsePairing: messagingSetup.discord?.usePairing,
+      slackBotToken: messagingSetup.slack?.botToken,
+      slackAppToken: messagingSetup.slack?.appToken,
+      slackTeamName: messagingSetup.slack?.teamName,
+      slackBotUserId: messagingSetup.slack?.botUserId,
+      slackAllowedUsers: messagingSetup.slack?.allowedUsers,
+      slackUsePairing: messagingSetup.slack?.usePairing,
+      whatsappEnabled: messagingSetup.whatsapp?.enabled,
+      whatsappMode: messagingSetup.whatsapp?.mode,
+      whatsappAllowedUsers: messagingSetup.whatsapp?.allowedUsers,
+      whatsappUsePairing: messagingSetup.whatsapp?.usePairing,
     };
 
     if (this.prompts.isInteractive()) {
-      await this.confirmConfig(config, telegramSetup);
+      await this.confirmConfig(config, messagingSetup);
     }
 
     return config;
@@ -496,6 +568,30 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
     if (config.telegramHomeChannel) {
       secrets.TELEGRAM_HOME_CHANNEL = config.telegramHomeChannel;
+    }
+    if (config.discordBotToken) {
+      secrets.DISCORD_BOT_TOKEN = config.discordBotToken;
+    }
+    if (config.discordAllowedUsers) {
+      secrets.DISCORD_ALLOWED_USERS = config.discordAllowedUsers;
+    }
+    if (config.slackBotToken) {
+      secrets.SLACK_BOT_TOKEN = config.slackBotToken;
+    }
+    if (config.slackAppToken) {
+      secrets.SLACK_APP_TOKEN = config.slackAppToken;
+    }
+    if (config.slackAllowedUsers) {
+      secrets.SLACK_ALLOWED_USERS = config.slackAllowedUsers;
+    }
+    if (config.whatsappEnabled) {
+      secrets.WHATSAPP_ENABLED = "true";
+    }
+    if (config.whatsappMode) {
+      secrets.WHATSAPP_MODE = config.whatsappMode;
+    }
+    if (config.whatsappAllowedUsers) {
+      secrets.WHATSAPP_ALLOWED_USERS = config.whatsappAllowedUsers;
     }
     return this.runner.setSecrets(config.appName, secrets);
   }
@@ -573,8 +669,9 @@ export class FlyDeployWizard implements DeployWizardPort {
     const filtered = entries.filter(e => e.name !== appName);
     const entryLines = [`  - name: ${appName}`, `    region: ${region}`];
     entryLines.push(`    provider: ${config.provider}`);
-    if (config.botToken) {
-      entryLines.push("    platform: telegram");
+    const platforms = this.resolveConfiguredMessagingPlatforms(config);
+    if (platforms.length > 0) {
+      entryLines.push(`    platform: ${platforms.join(",")}`);
     }
     if ((config.telegramBotUsername ?? "").trim().length > 0) {
       entryLines.push(`    telegram_bot_username: ${config.telegramBotUsername?.trim()}`);
@@ -589,6 +686,67 @@ export class FlyDeployWizard implements DeployWizardPort {
       ...trailingTopLevelLines,
     ];
     await writeFile(configPath, newLines.join("\n") + "\n", "utf8");
+  }
+
+  async finalizeMessagingSetup(
+    config: DeployConfig,
+    stdout: { write: (s: string) => void },
+    stderr: { write: (s: string) => void }
+  ): Promise<void> {
+    if (!this.prompts.isInteractive()) {
+      return;
+    }
+
+    if (config.discordBotToken && config.discordUsePairing && !config.gatewayAllowAllUsers) {
+      await this.completeRemotePairing({
+        appName: config.appName,
+        platform: "discord",
+        promptLabel: "Discord",
+        stdout,
+        stderr,
+        intro: config.discordApplicationId
+          ? `To finish Discord setup, invite the bot if you have not done it yet: ${this.buildDiscordInviteUrl(config.discordApplicationId)}\nThen send the bot a direct message in Discord and copy the pairing code it replies with.\n`
+          : "To finish Discord setup, send the bot a direct message in Discord and copy the pairing code it replies with.\n",
+      });
+    }
+
+    if (config.slackBotToken && config.slackAppToken && config.slackUsePairing && !config.gatewayAllowAllUsers) {
+      await this.completeRemotePairing({
+        appName: config.appName,
+        platform: "slack",
+        promptLabel: "Slack",
+        stdout,
+        stderr,
+        intro: "To finish Slack setup, open the Slack app you configured, message the bot, and copy the pairing code it replies with.\n",
+      });
+    }
+
+    if (config.whatsappEnabled) {
+      const shouldPair = await this.confirmYesNo(
+        "Pair WhatsApp now? Hermes will open the remote WhatsApp setup flow in this terminal. [Y/n]: ",
+        true
+      );
+      if (shouldPair) {
+        stdout.write("\nOpening WhatsApp setup on the deployed agent...\n");
+        const paired = await this.runRemoteHermesForeground(config.appName, ["whatsapp"]);
+        if (!paired.ok) {
+          stderr.write(`[warn] WhatsApp pairing did not complete cleanly: ${paired.error ?? "unknown error"}\n`);
+          stderr.write(`Tip: run 'hermes-fly agent -a ${config.appName} whatsapp' to retry pairing.\n`);
+          return;
+        }
+      }
+
+      if (config.whatsappUsePairing && !config.gatewayAllowAllUsers) {
+        await this.completeRemotePairing({
+          appName: config.appName,
+          platform: "whatsapp",
+          promptLabel: "WhatsApp",
+          stdout,
+          stderr,
+          intro: "Send a WhatsApp message to the paired agent and copy the pairing code it replies with.\n",
+        });
+      }
+    }
   }
 
   async chooseSuccessfulDeploymentAction(config: DeployConfig): Promise<"conclude" | "destroy"> {
@@ -1818,12 +1976,128 @@ export class FlyDeployWizard implements DeployWizardPort {
     return models[selectedIndex - 1].value;
   }
 
+  private async collectMessagingSetup(input: {
+    botToken?: string;
+    allowedUsers?: string;
+    allowAllUsers?: string;
+    homeChannel?: string;
+    discordBotToken?: string;
+    discordAllowedUsers?: string;
+    slackBotToken?: string;
+    slackAppToken?: string;
+    slackAllowedUsers?: string;
+    whatsappEnabled?: string;
+    whatsappMode?: string;
+    whatsappAllowedUsers?: string;
+  }): Promise<MessagingSetup> {
+    const presetAllowAnyone = /^(1|true|yes)$/i.test((input.allowAllUsers ?? "").trim());
+    const presetPlatforms: string[] = [];
+    if ((input.botToken ?? "").trim().length > 0) presetPlatforms.push("telegram");
+    if ((input.discordBotToken ?? "").trim().length > 0) presetPlatforms.push("discord");
+    if ((input.slackBotToken ?? "").trim().length > 0 || (input.slackAppToken ?? "").trim().length > 0) presetPlatforms.push("slack");
+    if (/^(1|true|yes)$/i.test((input.whatsappEnabled ?? "").trim())) presetPlatforms.push("whatsapp");
+
+    let selectedPlatforms = [...presetPlatforms];
+    if (selectedPlatforms.length === 0 && this.prompts.isInteractive()) {
+      selectedPlatforms = await this.collectMessagingPlatformsChoice();
+    }
+
+    if (selectedPlatforms.length === 0) {
+      return { platforms: [], allowAnyone: false };
+    }
+
+    const allowAnyone = selectedPlatforms.length === 1;
+    const setup: MessagingSetup = { platforms: [], allowAnyone: presetAllowAnyone };
+
+    if (selectedPlatforms.includes("telegram")) {
+      setup.telegram = await this.collectTelegramSetup({
+        botToken: input.botToken,
+        allowedUsers: input.allowedUsers,
+        allowAllUsers: input.allowAllUsers,
+        homeChannel: input.homeChannel,
+      }, { allowAnyone });
+      setup.platforms.push("telegram");
+      setup.allowAnyone ||= setup.telegram.allowAllUsers === true;
+    }
+
+    if (selectedPlatforms.includes("discord")) {
+      setup.discord = await this.collectDiscordSetup({
+        botToken: input.discordBotToken,
+        allowedUsers: input.discordAllowedUsers,
+      }, { allowAnyone });
+      setup.platforms.push("discord");
+      setup.allowAnyone ||= setup.discord.allowAllUsers === true;
+    }
+
+    if (selectedPlatforms.includes("slack")) {
+      setup.slack = await this.collectSlackSetup({
+        botToken: input.slackBotToken,
+        appToken: input.slackAppToken,
+        allowedUsers: input.slackAllowedUsers,
+      }, { allowAnyone });
+      setup.platforms.push("slack");
+      setup.allowAnyone ||= setup.slack.allowAllUsers === true;
+    }
+
+    if (selectedPlatforms.includes("whatsapp")) {
+      setup.whatsapp = await this.collectWhatsAppSetup({
+        enabled: input.whatsappEnabled,
+        mode: input.whatsappMode,
+        allowedUsers: input.whatsappAllowedUsers,
+      }, { allowAnyone });
+      setup.platforms.push("whatsapp");
+      setup.allowAnyone ||= setup.whatsapp.allowAllUsers === true;
+    }
+
+    return setup;
+  }
+
+  private async collectMessagingPlatformsChoice(): Promise<string[]> {
+    this.prompts.write("Which messaging platforms do you want to connect now?\n");
+    this.prompts.write("You can connect more than one. Enter numbers separated by commas.\n\n");
+    this.prompts.write("   1  Telegram   Chat with your agent in Telegram\n");
+    this.prompts.write("   2  Discord    Chat with your agent in Discord\n");
+    this.prompts.write("   3  Slack      Chat with your agent in Slack\n");
+    this.prompts.write("   4  WhatsApp   Chat with your agent in WhatsApp\n");
+    this.prompts.write("   5  Skip for now\n\n");
+
+    while (true) {
+      const answer = (await this.prompts.ask("Choose platform numbers [5]: ")).trim();
+      if (answer.length === 0 || answer === "5") {
+        return [];
+      }
+
+      const choices = answer.split(",").map((value) => value.trim()).filter(Boolean);
+      const uniqueChoices = [...new Set(choices)];
+      if (uniqueChoices.some((value) => !/^[1-5]$/.test(value))) {
+        this.prompts.write("Enter one or more numbers from 1 to 5, separated by commas.\n");
+        continue;
+      }
+      if (uniqueChoices.includes("5")) {
+        if (uniqueChoices.length > 1) {
+          this.prompts.write("Choose either specific platforms or 5 to skip.\n");
+          continue;
+        }
+        return [];
+      }
+
+      return uniqueChoices
+        .map((value) => ({
+          "1": "telegram",
+          "2": "discord",
+          "3": "slack",
+          "4": "whatsapp",
+        }[value]))
+        .filter((value): value is string => typeof value === "string");
+    }
+  }
+
   private async collectTelegramSetup(input: {
     botToken?: string;
     allowedUsers?: string;
     allowAllUsers?: string;
     homeChannel?: string;
-  }): Promise<TelegramSetup> {
+  }, options: { allowAnyone: boolean } = { allowAnyone: true }): Promise<TelegramSetup> {
     const presetToken = (input.botToken ?? "").trim();
     if (presetToken.length > 0) {
       await this.assertTelegramTokenFormat(presetToken);
@@ -1890,7 +2164,12 @@ export class FlyDeployWizard implements DeployWizardPort {
         continue;
       }
 
-      const accessPolicy = await this.collectTelegramAccessPolicy(token, identity);
+      const accessPolicy = await this.collectTelegramAccessPolicy(token, identity, options);
+      if (!options.allowAnyone && accessPolicy.mode === "anyone") {
+        this.prompts.write("When you connect more than one platform, Hermes keeps access restricted per platform.\n");
+        this.prompts.write("Choose Only me or Specific people for Telegram in a multi-platform deploy.\n");
+        continue;
+      }
       const homeChannel = accessPolicy.allowedUsers.length > 0
         ? await this.collectTelegramHomeChannel(accessPolicy.allowedUsers[0])
         : undefined;
@@ -1906,7 +2185,398 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   }
 
-  private async confirmConfig(config: DeployConfig, telegramSetup: TelegramSetup): Promise<void> {
+  private async collectDiscordSetup(input: {
+    botToken?: string;
+    allowedUsers?: string;
+  }, options: { allowAnyone: boolean }): Promise<DiscordSetup> {
+    const presetToken = (input.botToken ?? "").trim();
+    if (presetToken.length > 0) {
+      const identity = await this.validateDiscordBotToken(presetToken);
+      if (!identity) {
+        throw new Error("Discord rejected DISCORD_BOT_TOKEN. Check it and try again.");
+      }
+      return this.buildDiscordSetupFromInputs(presetToken, identity, input.allowedUsers);
+    }
+
+    if (!this.prompts.isInteractive()) {
+      return { botToken: "" };
+    }
+
+    this.prompts.write("\nConnect Discord\n");
+    this.prompts.write("Create or open your Discord bot in the Developer Portal, then paste the bot token here.\n");
+    this.prompts.write(`Discord Developer Portal: ${DISCORD_DEVELOPER_PORTAL_URL}\n\n`);
+
+    while (true) {
+      const token = (await this.prompts.askSecret("Discord bot token (required): ")).trim();
+      if (token.length === 0) {
+        this.prompts.write("DISCORD_BOT_TOKEN cannot be empty.\n");
+        continue;
+      }
+
+      this.prompts.write("Verifying your Discord bot token...\n");
+      const identity = await this.validateDiscordBotToken(token);
+      if (!identity) {
+        this.prompts.write("Discord rejected this bot token. Check it and try again.\n");
+        continue;
+      }
+
+      this.prompts.write(`Found bot: @${identity.username} (${identity.applicationId})\n`);
+      this.prompts.write(`Invite URL: ${this.buildDiscordInviteUrl(identity.applicationId)}\n`);
+      if (!(await this.confirmYesNo("Continue with this Discord bot? [y/N]: ", false))) {
+        continue;
+      }
+
+      const access = await this.collectGatewayAccessPolicy("Discord", options, {
+        invalidMessage: "Discord user IDs must be numeric. Use commas to separate multiple IDs.",
+        prompt: "Discord user IDs (comma-separated): ",
+        parse: (raw) => this.parseDiscordUserIds(raw),
+        allowOpen: true,
+      });
+
+      return {
+        botToken: token,
+        applicationId: identity.applicationId,
+        botUsername: identity.username,
+        allowedUsers: access.allowedUsers,
+        usePairing: access.usePairing,
+        allowAllUsers: access.allowAllUsers,
+      };
+    }
+  }
+
+  private async collectSlackSetup(input: {
+    botToken?: string;
+    appToken?: string;
+    allowedUsers?: string;
+  }, options: { allowAnyone: boolean }): Promise<SlackSetup> {
+    const presetBotToken = (input.botToken ?? "").trim();
+    const presetAppToken = (input.appToken ?? "").trim();
+    if (presetBotToken.length > 0 || presetAppToken.length > 0) {
+      if (presetBotToken.length === 0 || presetAppToken.length === 0) {
+        throw new Error("SLACK_BOT_TOKEN and SLACK_APP_TOKEN must both be set.");
+      }
+      const identity = await this.validateSlackBotToken(presetBotToken);
+      if (!identity) {
+        throw new Error("Slack rejected SLACK_BOT_TOKEN. Check it and try again.");
+      }
+      const appTokenOk = await this.validateSlackAppToken(presetAppToken);
+      if (!appTokenOk) {
+        throw new Error("Slack rejected SLACK_APP_TOKEN. Check it and try again.");
+      }
+      return this.buildSlackSetupFromInputs(presetBotToken, presetAppToken, identity, input.allowedUsers);
+    }
+
+    if (!this.prompts.isInteractive()) {
+      return { botToken: "", appToken: "" };
+    }
+
+    this.prompts.write("\nConnect Slack\n");
+    this.prompts.write("Open your Slack app and copy both the bot token and the app token.\n");
+    this.prompts.write("Hermes uses Socket Mode for Slack, so the app token is required.\n");
+    this.prompts.write(`Slack Apps: ${SLACK_APPS_URL}\n\n`);
+
+    while (true) {
+      const botToken = (await this.prompts.askSecret("Slack bot token (required): ")).trim();
+      if (botToken.length === 0) {
+        this.prompts.write("SLACK_BOT_TOKEN cannot be empty.\n");
+        continue;
+      }
+      const appToken = (await this.prompts.askSecret("Slack app token (required): ")).trim();
+      if (appToken.length === 0) {
+        this.prompts.write("SLACK_APP_TOKEN cannot be empty.\n");
+        continue;
+      }
+
+      this.prompts.write("Verifying your Slack bot token...\n");
+      const identity = await this.validateSlackBotToken(botToken);
+      if (!identity) {
+        this.prompts.write("Slack rejected this bot token. Check it and try again.\n");
+        continue;
+      }
+
+      this.prompts.write("Verifying your Slack app token...\n");
+      if (!(await this.validateSlackAppToken(appToken))) {
+        this.prompts.write("Slack rejected this app token. Make sure Socket Mode is enabled and try again.\n");
+        continue;
+      }
+
+      this.prompts.write(`Connected Slack workspace: ${identity.teamName}\n`);
+      if (!(await this.confirmYesNo("Continue with this Slack app? [y/N]: ", false))) {
+        continue;
+      }
+
+      const access = await this.collectGatewayAccessPolicy("Slack", options, {
+        invalidMessage: "Slack member IDs must look like U123ABC456 or W123ABC456.",
+        prompt: "Slack member IDs (comma-separated): ",
+        parse: (raw) => this.parseSlackUserIds(raw),
+        allowOpen: true,
+      });
+
+      return {
+        botToken,
+        appToken,
+        teamName: identity.teamName,
+        botUserId: identity.botUserId,
+        allowedUsers: access.allowedUsers,
+        usePairing: access.usePairing,
+        allowAllUsers: access.allowAllUsers,
+      };
+    }
+  }
+
+  private async collectWhatsAppSetup(input: {
+    enabled?: string;
+    mode?: string;
+    allowedUsers?: string;
+  }, options: { allowAnyone: boolean }): Promise<WhatsAppSetup> {
+    const presetEnabled = /^(1|true|yes)$/i.test((input.enabled ?? "").trim());
+    const presetMode = ((input.mode ?? "").trim() || "bot") as "bot" | "self-chat";
+    if (presetEnabled) {
+      return this.buildWhatsAppSetupFromInputs(presetMode, input.allowedUsers);
+    }
+
+    if (!this.prompts.isInteractive()) {
+      return { enabled: false, mode: "bot" };
+    }
+
+    this.prompts.write("\nConnect WhatsApp\n");
+    this.prompts.write("Hermes will finish WhatsApp pairing after deploy by opening the remote WhatsApp setup flow in this terminal.\n\n");
+    this.prompts.write("   1  Bot mode      Use a dedicated WhatsApp bot account\n");
+    this.prompts.write("   2  Self-chat     Use your own WhatsApp account in self-chat mode\n\n");
+
+    const modeChoice = await this.chooseNumber("Choose a mode [1]: ", 2, 1);
+    const mode: "bot" | "self-chat" = modeChoice === 2 ? "self-chat" : "bot";
+    const access = await this.collectGatewayAccessPolicy("WhatsApp", options, {
+      invalidMessage: "WhatsApp numbers must use digits only, with country code and no plus sign.",
+      prompt: "WhatsApp phone numbers (comma-separated): ",
+      parse: (raw) => this.parseWhatsAppNumbers(raw),
+      allowOpen: false,
+    });
+
+    return {
+      enabled: true,
+      mode,
+      allowedUsers: access.allowedUsers,
+      usePairing: access.usePairing,
+      allowAllUsers: access.allowAllUsers,
+    };
+  }
+
+  private async collectGatewayAccessPolicy(
+    platformLabel: string,
+    options: { allowAnyone: boolean },
+    input: {
+      invalidMessage: string;
+      prompt: string;
+      parse: (raw: string) => string[];
+      allowOpen: boolean;
+    }
+  ): Promise<{ allowedUsers?: string; usePairing?: boolean; allowAllUsers?: boolean }> {
+    while (true) {
+      this.prompts.write(`\nWho should be able to talk to your ${platformLabel} bot?\n\n`);
+      this.prompts.write("   1  Only me          Just you. Hermes will use DM pairing after deploy.\n");
+      this.prompts.write("   2  Specific people  You and other approved users.\n");
+      const canOfferAnyone = options.allowAnyone && input.allowOpen;
+      if (canOfferAnyone) {
+        this.prompts.write("   3  Anyone           No restrictions. Not recommended for most setups.\n\n");
+      } else {
+        this.prompts.write("\n");
+      }
+
+      const choice = await this.chooseNumber("Choose an option [1]: ", canOfferAnyone ? 3 : 2, 1);
+      if (choice === 1) {
+        return { usePairing: true };
+      }
+      if (choice === 2) {
+        while (true) {
+          const answer = (await this.prompts.ask(input.prompt)).trim();
+          try {
+            return { allowedUsers: input.parse(answer).join(",") };
+          } catch {
+            this.prompts.write(`${input.invalidMessage}\n`);
+          }
+        }
+      }
+      if (await this.confirmYesNo(`Allow anyone to use this ${platformLabel} bot? This is not recommended for most setups. [y/N]: `, false)) {
+        return { allowAllUsers: true };
+      }
+    }
+  }
+
+  private async validateDiscordBotToken(token: string): Promise<DiscordBotIdentity | null> {
+    try {
+      const result = await this.process.run(
+        "curl",
+        [
+          "-fsSL",
+          "--max-time",
+          "10",
+          "-H",
+          `Authorization: Bot ${token}`,
+          "https://discord.com/api/v10/users/@me",
+        ],
+        { env: this.env }
+      );
+      if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
+        return null;
+      }
+
+      const payload = JSON.parse(result.stdout) as { id?: unknown; username?: unknown };
+      const applicationId = String(payload.id ?? "").trim();
+      const username = String(payload.username ?? "").trim();
+      if (!/^[0-9]+$/.test(applicationId) || username.length === 0) {
+        return null;
+      }
+      return { applicationId, username };
+    } catch {
+      return null;
+    }
+  }
+
+  private async validateSlackBotToken(token: string): Promise<SlackBotIdentity | null> {
+    try {
+      const result = await this.process.run(
+        "curl",
+        [
+          "-fsSL",
+          "--max-time",
+          "10",
+          "-X",
+          "POST",
+          "-H",
+          `Authorization: Bearer ${token}`,
+          "https://slack.com/api/auth.test",
+        ],
+        { env: this.env }
+      );
+      if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
+        return null;
+      }
+
+      const payload = JSON.parse(result.stdout) as { ok?: boolean; team?: unknown; user_id?: unknown };
+      if (payload.ok !== true) {
+        return null;
+      }
+
+      const teamName = String(payload.team ?? "").trim();
+      const botUserId = String(payload.user_id ?? "").trim();
+      if (teamName.length === 0 || botUserId.length === 0) {
+        return null;
+      }
+      return { teamName, botUserId };
+    } catch {
+      return null;
+    }
+  }
+
+  private async validateSlackAppToken(token: string): Promise<boolean> {
+    try {
+      const result = await this.process.run(
+        "curl",
+        [
+          "-fsSL",
+          "--max-time",
+          "10",
+          "-X",
+          "POST",
+          "-H",
+          `Authorization: Bearer ${token}`,
+          "https://slack.com/api/apps.connections.open",
+        ],
+        { env: this.env }
+      );
+      if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
+        return false;
+      }
+
+      const payload = JSON.parse(result.stdout) as { ok?: boolean };
+      return payload.ok === true;
+    } catch {
+      return false;
+    }
+  }
+
+  private buildDiscordSetupFromInputs(
+    botToken: string,
+    identity: DiscordBotIdentity,
+    allowedUsersInput: string | undefined
+  ): DiscordSetup {
+    const allowedUsers = this.normalizeOptionalIdentifierList(allowedUsersInput, (raw) => this.parseDiscordUserIds(raw));
+    return {
+      botToken,
+      applicationId: identity.applicationId,
+      botUsername: identity.username,
+      allowedUsers,
+      usePairing: !allowedUsers,
+    };
+  }
+
+  private buildSlackSetupFromInputs(
+    botToken: string,
+    appToken: string,
+    identity: SlackBotIdentity,
+    allowedUsersInput: string | undefined
+  ): SlackSetup {
+    const allowedUsers = this.normalizeOptionalIdentifierList(allowedUsersInput, (raw) => this.parseSlackUserIds(raw));
+    return {
+      botToken,
+      appToken,
+      teamName: identity.teamName,
+      botUserId: identity.botUserId,
+      allowedUsers,
+      usePairing: !allowedUsers,
+    };
+  }
+
+  private buildWhatsAppSetupFromInputs(
+    mode: "bot" | "self-chat",
+    allowedUsersInput: string | undefined
+  ): WhatsAppSetup {
+    const allowedUsers = this.normalizeOptionalIdentifierList(allowedUsersInput, (raw) => this.parseWhatsAppNumbers(raw));
+    return {
+      enabled: true,
+      mode,
+      allowedUsers,
+      usePairing: !allowedUsers,
+    };
+  }
+
+  private normalizeOptionalIdentifierList(
+    raw: string | undefined,
+    parser: (value: string) => string[]
+  ): string | undefined {
+    const trimmed = (raw ?? "").trim();
+    if (trimmed.length === 0) {
+      return undefined;
+    }
+    return parser(trimmed).join(",");
+  }
+
+  private parseDiscordUserIds(raw: string): string[] {
+    const pieces = raw.split(",").map((value) => value.trim()).filter(Boolean);
+    if (pieces.length === 0 || pieces.some((value) => !/^[0-9]+$/.test(value))) {
+      throw new Error("Discord user ids invalid");
+    }
+    return [...new Set(pieces)];
+  }
+
+  private parseSlackUserIds(raw: string): string[] {
+    const pieces = raw.split(",").map((value) => value.trim().toUpperCase()).filter(Boolean);
+    if (pieces.length === 0 || pieces.some((value) => !/^[UW][A-Z0-9]{5,}$/.test(value))) {
+      throw new Error("Slack user ids invalid");
+    }
+    return [...new Set(pieces)];
+  }
+
+  private parseWhatsAppNumbers(raw: string): string[] {
+    const pieces = raw.split(",").map((value) => value.trim()).filter(Boolean);
+    if (pieces.length === 0 || pieces.some((value) => !/^[0-9]{7,15}$/.test(value))) {
+      throw new Error("WhatsApp phone numbers invalid");
+    }
+    return [...new Set(pieces)];
+  }
+
+  private async confirmConfig(config: DeployConfig, messagingSetup: MessagingSetup): Promise<void> {
     this.prompts.write("\nReview your setup\n");
     this.prompts.write(`  Fly organization: ${config.orgSlug}\n`);
     this.prompts.write(`  Deployment name: ${config.appName}\n`);
@@ -1918,14 +2588,29 @@ export class FlyDeployWizard implements DeployWizardPort {
     if (config.reasoningEffort) {
       this.prompts.write(`  Reasoning:       ${config.reasoningEffort}\n`);
     }
+    if (messagingSetup.platforms.length > 0) {
+      this.prompts.write(`  Messaging:       ${messagingSetup.platforms.join(", ")}\n`);
+    } else {
+      this.prompts.write("  Messaging:       skip for now\n");
+    }
     if (config.botToken) {
-      this.prompts.write(`  Telegram:        ${this.describeTelegramBot(telegramSetup)}\n`);
+      this.prompts.write(`  Telegram:        ${this.describeTelegramBot(messagingSetup.telegram ?? { botToken: config.botToken })}\n`);
       this.prompts.write(`  Telegram access: ${this.describeTelegramAccess(config)}\n`);
       if (config.telegramHomeChannel) {
         this.prompts.write(`  Home channel:    ${config.telegramHomeChannel}\n`);
       }
-    } else {
-      this.prompts.write("  Telegram:        skip for now\n");
+    }
+    if (config.discordBotToken) {
+      this.prompts.write(`  Discord:         ${this.describeDiscordBot(messagingSetup.discord)}\n`);
+      this.prompts.write(`  Discord access:  ${this.describeDiscordAccessSummary(config)}\n`);
+    }
+    if (config.slackBotToken && config.slackAppToken) {
+      this.prompts.write(`  Slack:           ${this.describeSlackBot(messagingSetup.slack)}\n`);
+      this.prompts.write(`  Slack access:    ${this.describeSlackAccessSummary(config)}\n`);
+    }
+    if (config.whatsappEnabled) {
+      this.prompts.write(`  WhatsApp:        ${this.describeWhatsAppSetup(messagingSetup.whatsapp)}\n`);
+      this.prompts.write(`  WhatsApp access: ${this.describeWhatsAppAccessSummary(config)}\n`);
     }
     this.prompts.write(`  Release channel: ${config.channel || DEFAULT_CHANNEL}\n\n`);
 
@@ -2011,15 +2696,21 @@ export class FlyDeployWizard implements DeployWizardPort {
 
   private async collectTelegramAccessPolicy(
     botToken: string,
-    identity: TelegramBotIdentity
+    identity: TelegramBotIdentity,
+    options: { allowAnyone: boolean } = { allowAnyone: true }
   ): Promise<MessagingPolicy> {
     while (true) {
       this.prompts.write("\nWho should be able to talk to this bot?\n\n");
       this.prompts.write("   1  Only me          Just you. Hermes will detect your Telegram user ID automatically.\n");
       this.prompts.write("   2  Specific people  You and other approved users.\n");
-      this.prompts.write("   3  Anyone           No restrictions. Not recommended for most setups.\n\n");
+      if (options.allowAnyone) {
+        this.prompts.write("   3  Anyone           No restrictions. Not recommended for most setups.\n\n");
+      } else {
+        this.prompts.write("\n");
+      }
 
-      const choice = await this.chooseNumber("Choose an option [1]: ", 3, 1);
+      const maxChoice = options.allowAnyone ? 3 : 2;
+      const choice = await this.chooseNumber("Choose an option [1]: ", maxChoice, 1);
       if (choice === 1) {
         return await this.collectTelegramOnlyMePolicy(botToken, identity.username);
       }
@@ -2028,7 +2719,7 @@ export class FlyDeployWizard implements DeployWizardPort {
         this.prompts.write("Use commas to separate multiple users.\n\n");
         return await this.collectTelegramUserIds("specific_users", "Telegram user IDs (comma-separated): ");
       }
-      if (await this.confirmYesNo("Allow anyone to use this bot? This is not recommended for most setups. [y/N]: ", false)) {
+      if (options.allowAnyone && await this.confirmYesNo("Allow anyone to use this bot? This is not recommended for most setups. [y/N]: ", false)) {
         return MessagingPolicy.create("anyone", []);
       }
     }
@@ -2235,6 +2926,168 @@ export class FlyDeployWizard implements DeployWizardPort {
       return `Only me (${users[0]})`;
     }
     return `Specific people (${users.join(", ")})`;
+  }
+
+  private describeDiscordBot(setup?: DiscordSetup): string {
+    if (!setup) {
+      return "set up now";
+    }
+    if (setup.botUsername && setup.applicationId) {
+      return `@${setup.botUsername} (${setup.applicationId})`;
+    }
+    if (setup.botUsername) {
+      return `@${setup.botUsername}`;
+    }
+    if (setup.applicationId) {
+      return setup.applicationId;
+    }
+    return "configured";
+  }
+
+  private describeDiscordAccessSummary(config: DeployConfig): string {
+    if (config.gatewayAllowAllUsers) {
+      return "Anyone";
+    }
+    if (config.discordUsePairing) {
+      return "Only me (DM pairing)";
+    }
+    if (!config.discordAllowedUsers) {
+      return "Set up now";
+    }
+    return `Specific people (${config.discordAllowedUsers})`;
+  }
+
+  private describeSlackBot(setup?: SlackSetup): string {
+    if (!setup) {
+      return "set up now";
+    }
+    if (setup.teamName) {
+      return setup.teamName;
+    }
+    return "configured";
+  }
+
+  private describeSlackAccessSummary(config: DeployConfig): string {
+    if (config.gatewayAllowAllUsers) {
+      return "Anyone";
+    }
+    if (config.slackUsePairing) {
+      return "Only me (DM pairing)";
+    }
+    if (!config.slackAllowedUsers) {
+      return "Set up now";
+    }
+    return `Specific people (${config.slackAllowedUsers})`;
+  }
+
+  private describeWhatsAppSetup(setup?: WhatsAppSetup): string {
+    if (!setup?.enabled) {
+      return "set up now";
+    }
+    return setup.mode === "self-chat" ? "Self-chat" : "Bot mode";
+  }
+
+  private describeWhatsAppAccessSummary(config: DeployConfig): string {
+    if (config.gatewayAllowAllUsers) {
+      return "Anyone";
+    }
+    if (config.whatsappUsePairing) {
+      return "Only me (DM pairing)";
+    }
+    if (!config.whatsappAllowedUsers) {
+      return "Set up now";
+    }
+    return `Specific people (${config.whatsappAllowedUsers})`;
+  }
+
+  private resolveConfiguredMessagingPlatforms(config: DeployConfig): string[] {
+    const platforms = [...(config.messagingPlatforms ?? [])];
+    if (platforms.length > 0) {
+      return platforms;
+    }
+
+    const inferred: string[] = [];
+    if (config.botToken) inferred.push("telegram");
+    if (config.discordBotToken) inferred.push("discord");
+    if (config.slackBotToken && config.slackAppToken) inferred.push("slack");
+    if (config.whatsappEnabled) inferred.push("whatsapp");
+    return inferred;
+  }
+
+  private buildDiscordInviteUrl(applicationId: string): string {
+    return `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(applicationId)}&scope=bot%20applications.commands`;
+  }
+
+  private async completeRemotePairing(input: {
+    appName: string;
+    platform: "discord" | "slack" | "whatsapp";
+    promptLabel: string;
+    intro: string;
+    stdout: { write: (s: string) => void };
+    stderr: { write: (s: string) => void };
+  }): Promise<void> {
+    input.stdout.write(`\n${input.promptLabel} pairing\n`);
+    input.stdout.write(input.intro);
+
+    while (true) {
+      const code = (await this.prompts.ask(`${input.promptLabel} pairing code: `)).trim().toUpperCase();
+      if (code.length === 0) {
+        input.stderr.write(`[warn] ${input.promptLabel} pairing was skipped.\n`);
+        return;
+      }
+
+      const approved = await this.runRemoteHermesCommand(input.appName, ["pairing", "approve", input.platform, code]);
+      if (approved.ok) {
+        input.stdout.write(`${input.promptLabel} pairing approved.\n`);
+        return;
+      }
+
+      input.stderr.write(`[warn] ${input.promptLabel} pairing approval failed. Check the code and try again.\n`);
+    }
+  }
+
+  private async runRemoteHermesCommand(appName: string, hermesArgs: string[]): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const result = await this.process.run(
+        "fly",
+        ["ssh", "console", "-a", appName, "-C", this.buildRemoteHermesCommand(hermesArgs)],
+        { env: this.env }
+      );
+      if (result.exitCode !== 0) {
+        return { ok: false, error: result.stderr || result.stdout || "remote Hermes command failed" };
+      }
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async runRemoteHermesForeground(appName: string, hermesArgs: string[]): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const result = await this.process.runForeground(
+        "fly",
+        ["ssh", "console", "-a", appName, "--pty", "-C", this.buildRemoteHermesCommand(hermesArgs)],
+        { env: this.env }
+      );
+      if (result.exitCode !== 0) {
+        return { ok: false, error: "remote Hermes session failed" };
+      }
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private buildRemoteHermesCommand(hermesArgs: string[]): string {
+    const renderedArgs = hermesArgs.map((value) => this.shellEscape(value)).join(" ");
+    const launch = renderedArgs.length > 0
+      ? `cd ${this.shellEscape("/root/.hermes")} && exec ${this.shellEscape("/opt/hermes/hermes-agent/venv/bin/hermes")} ${renderedArgs}`
+      : `cd ${this.shellEscape("/root/.hermes")} && exec ${this.shellEscape("/opt/hermes/hermes-agent/venv/bin/hermes")}`;
+    return `sh -lc ${this.shellEscape(launch)}`;
+  }
+
+  private shellEscape(value: string): string {
+    return `'${value.replaceAll("'", `'\"'\"'`)}'`;
   }
 
   private parseVolumeSize(value: string, label: string): number {
