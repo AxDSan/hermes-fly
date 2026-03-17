@@ -1,1 +1,1 @@
-export const HERMES_FLY_TS_VERSION = "0.1.51";
+export const HERMES_FLY_TS_VERSION = "0.1.52";
