@@ -10,6 +10,8 @@ export interface DeployConfig {
   channel: "stable" | "preview" | "edge";
   hermesRef: string;
   botToken: string;
+  telegramBotUsername?: string;
+  telegramBotName?: string;
   telegramAllowedUsers?: string;
   gatewayAllowAllUsers?: boolean;
   telegramHomeChannel?: string;

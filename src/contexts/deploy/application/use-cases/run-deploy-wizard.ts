@@ -8,8 +8,100 @@ export type DeployWizardResult =
 
 export type DeployChannel = "stable" | "preview" | "edge";
 
+const VM_SIZE_LABELS = new Map<string, string>([
+  ["shared-cpu-1x", "Starter (shared-cpu-1x, 256 MB)"],
+  ["shared-cpu-2x", "Standard (shared-cpu-2x, 512 MB)"],
+  ["performance-1x", "Pro (performance-1x, 2 GB)"],
+  ["performance-2x", "Power (performance-2x, 4 GB)"],
+]);
+
 function resolveChannel(input: string): DeployChannel {
   return VALID_CHANNELS.has(input) ? (input as DeployChannel) : "stable";
+}
+
+function describeVmSize(vmSize: string): string {
+  return VM_SIZE_LABELS.get(vmSize) ?? vmSize;
+}
+
+function describeTelegram(config: DeployConfig): string | undefined {
+  if (!config.botToken) {
+    return undefined;
+  }
+  if (config.telegramBotUsername && config.telegramBotName) {
+    return `@${config.telegramBotUsername} (${config.telegramBotName})`;
+  }
+  if (config.telegramBotUsername) {
+    return `@${config.telegramBotUsername}`;
+  }
+  if (config.telegramBotName) {
+    return config.telegramBotName;
+  }
+  return "configured";
+}
+
+function describeTelegramAccess(config: DeployConfig): string | undefined {
+  if (!config.botToken) {
+    return undefined;
+  }
+  if (config.gatewayAllowAllUsers) {
+    return "Anyone";
+  }
+  if (!config.telegramAllowedUsers) {
+    return undefined;
+  }
+
+  const users = config.telegramAllowedUsers.split(",").map((value) => value.trim()).filter(Boolean);
+  if (users.length === 1) {
+    return `Only me (${users[0]})`;
+  }
+  if (users.length > 1) {
+    return `Specific people (${users.join(", ")})`;
+  }
+  return undefined;
+}
+
+function buildTelegramChatLink(config: DeployConfig): string | undefined {
+  if (!config.telegramBotUsername) {
+    return undefined;
+  }
+  return `https://t.me/${config.telegramBotUsername}?start=${config.appName}`;
+}
+
+function writeCompletionSummary(stdout: { write: (s: string) => void }, config: DeployConfig): void {
+  stdout.write("Deployment complete\n");
+  stdout.write(`  Fly organization: ${config.orgSlug}\n`);
+  stdout.write(`  Deployment name: ${config.appName}\n`);
+  stdout.write(`  Location:        ${config.region}\n`);
+  stdout.write(`  Server size:     ${describeVmSize(config.vmSize)}\n`);
+  stdout.write(`  Storage:         ${config.volumeSize} GB\n`);
+  stdout.write(`  AI model:        ${config.model}\n`);
+  if (config.reasoningEffort) {
+    stdout.write(`  Reasoning:       ${config.reasoningEffort}\n`);
+  }
+  stdout.write(`  Hermes ref:      ${config.hermesRef.slice(0, 8)}\n`);
+  stdout.write(`  Release channel: ${config.channel}\n`);
+
+  const telegram = describeTelegram(config);
+  if (telegram) {
+    stdout.write(`  Telegram:        ${telegram}\n`);
+    const access = describeTelegramAccess(config);
+    if (access) {
+      stdout.write(`  Telegram access: ${access}\n`);
+    }
+    if (config.telegramHomeChannel) {
+      stdout.write(`  Home channel:    ${config.telegramHomeChannel}\n`);
+    }
+    const chatLink = buildTelegramChatLink(config);
+    if (chatLink) {
+      stdout.write(`  Chat link:       ${chatLink}\n`);
+    }
+  }
+
+  stdout.write("\n");
+  stdout.write("  Next steps:\n");
+  stdout.write(`    - Check app status:  hermes-fly status -a ${config.appName}\n`);
+  stdout.write(`    - View logs:         hermes-fly logs -a ${config.appName}\n`);
+  stdout.write(`    - Run diagnostics:   hermes-fly doctor -a ${config.appName}\n`);
 }
 
 export class RunDeployWizardUseCase {
@@ -101,9 +193,7 @@ export class RunDeployWizardUseCase {
     // Save app configuration
     await this.port.saveApp(config.appName, config.region);
 
-    stdout.write("Deployment complete\n");
-    stdout.write(`App: ${config.appName}\n`);
-    stdout.write(`Check status: hermes-fly status -a ${config.appName}\n`);
+    writeCompletionSummary(stdout, config);
 
     return { kind: "ok" };
   }

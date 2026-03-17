@@ -365,6 +365,8 @@ export class FlyDeployWizard implements DeployWizardPort {
       channel: intent.channel,
       hermesRef,
       botToken: telegramSetup.botToken,
+      telegramBotUsername: telegramSetup.botUsername,
+      telegramBotName: telegramSetup.botName,
       telegramAllowedUsers: telegramSetup.allowedUsers,
       gatewayAllowAllUsers: telegramSetup.allowAllUsers ? true : undefined,
       telegramHomeChannel: telegramSetup.homeChannel,

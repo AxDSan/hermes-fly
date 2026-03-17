@@ -210,8 +210,33 @@ describe("RunDeployWizardUseCase - happy path", () => {
     await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
 
     assert.match(io.outText, /Deployment complete/);
-    assert.match(io.outText, /App: test-app/);
+    assert.match(io.outText, /Fly organization:\s+personal/);
+    assert.match(io.outText, /Deployment name:\s+test-app/);
+    assert.match(io.outText, /Location:\s+iad/);
+    assert.match(io.outText, /AI model:\s+anthropic\/claude-sonnet-4-20250514/);
     assert.match(io.outText, /hermes-fly status -a test-app/);
+    assert.match(io.outText, /hermes-fly logs -a test-app/);
+    assert.match(io.outText, /hermes-fly doctor -a test-app/);
+  });
+
+  it("prints telegram bot coordinates after a successful deploy", async () => {
+    const io = makeIO();
+    const uc = new RunDeployWizardUseCase(makePort({
+      collectConfig: async () => ({
+        ...DEFAULT_CONFIG,
+        botToken: "123:abc",
+        telegramBotUsername: "testhermesbot",
+        telegramBotName: "Test Hermes Bot",
+        telegramAllowedUsers: "1467489858",
+        telegramHomeChannel: "1467489858"
+      })
+    }));
+
+    await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
+
+    assert.match(io.outText, /Telegram:\s+@testhermesbot/);
+    assert.match(io.outText, /Chat link:\s+https:\/\/t\.me\/testhermesbot\?start=test-app/);
+    assert.match(io.outText, /Home channel:\s+1467489858/);
   });
 });
 

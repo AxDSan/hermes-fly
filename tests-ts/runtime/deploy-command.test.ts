@@ -66,8 +66,32 @@ describe("runDeployCommand - successful deploy", () => {
 
     assert.equal(code, 0);
     assert.match(io.outText, /Deployment complete/);
-    assert.match(io.outText, /App: test-app/);
+    assert.match(io.outText, /Fly organization:\s+personal/);
+    assert.match(io.outText, /Deployment name:\s+test-app/);
+    assert.match(io.outText, /Location:\s+iad/);
     assert.match(io.outText, /hermes-fly status -a test-app/);
+  });
+
+  it("prints the configured Telegram chat link when a bot is set up", async () => {
+    const io = makeIO();
+
+    const code = await runDeployCommand([], {
+      wizard: makeWizardPort({
+        collectConfig: async () => ({
+          ...DEFAULT_CONFIG,
+          botToken: "123:abc",
+          telegramBotUsername: "testhermesbot",
+          telegramBotName: "Test Hermes Bot",
+          telegramAllowedUsers: "1467489858"
+        })
+      }),
+      stdout: io.stdout,
+      stderr: io.stderr
+    });
+
+    assert.equal(code, 0);
+    assert.match(io.outText, /Telegram:\s+@testhermesbot/);
+    assert.match(io.outText, /Chat link:\s+https:\/\/t\.me\/testhermesbot\?start=test-app/);
   });
 });
 
