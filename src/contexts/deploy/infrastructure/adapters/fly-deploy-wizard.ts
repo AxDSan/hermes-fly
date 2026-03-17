@@ -158,6 +158,7 @@ type WhatsAppSetup = {
   mode: "bot" | "self-chat";
   allowedUsers?: string;
   usePairing?: boolean;
+  completeAccessDuringSetup?: boolean;
   allowAllUsers?: boolean;
 };
 
@@ -504,6 +505,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       whatsappMode: messagingSetup.whatsapp?.mode,
       whatsappAllowedUsers: messagingSetup.whatsapp?.allowedUsers,
       whatsappUsePairing: messagingSetup.whatsapp?.usePairing,
+      whatsappCompleteAccessDuringSetup: messagingSetup.whatsapp?.completeAccessDuringSetup,
     };
 
     if (this.prompts.isInteractive()) {
@@ -728,23 +730,23 @@ export class FlyDeployWizard implements DeployWizardPort {
       );
       if (shouldPair) {
         stdout.write("\nOpening WhatsApp setup on the deployed agent...\n");
+        stdout.write("This is part of deploy setup on Fly.\n");
+        stdout.write("If the WhatsApp wizard mentions starting 'hermes gateway' or installing it as a service, ignore that here — this deployed app already runs the gateway for you.\n");
+        stdout.write("After you scan the QR code, WhatsApp may briefly show 'Logging in...' or 'Syncing messages...' while the linked session finishes syncing. That is normal.\n\n");
         const paired = await this.runRemoteHermesForeground(config.appName, ["whatsapp"]);
         if (!paired.ok) {
           stderr.write(`[warn] WhatsApp pairing did not complete cleanly: ${paired.error ?? "unknown error"}\n`);
           stderr.write(`Tip: run 'hermes-fly agent -a ${config.appName} whatsapp' to retry pairing.\n`);
           return;
         }
-      }
 
-      if (config.whatsappUsePairing && !config.gatewayAllowAllUsers) {
-        await this.completeRemotePairing({
-          appName: config.appName,
-          platform: "whatsapp",
-          promptLabel: "WhatsApp",
-          stdout,
-          stderr,
-          intro: "Send a WhatsApp message to the paired agent and copy the pairing code it replies with.\n",
-        });
+        stdout.write("\nWhatsApp setup completed on the deployed agent.\n");
+        if (config.whatsappMode === "self-chat") {
+          stdout.write("Next step: open WhatsApp, go to Message yourself, and send a test message.\n");
+        } else {
+          stdout.write("Next step: send a test message to the WhatsApp number linked to Hermes.\n");
+        }
+        stdout.write("If Linked Devices still shows 'Logging in...' or 'Syncing messages...' for a short time, wait a moment and try again.\n");
       }
     }
   }
@@ -2353,20 +2355,36 @@ export class FlyDeployWizard implements DeployWizardPort {
 
     const modeChoice = await this.chooseNumber("Choose a mode [1]: ", 2, 1);
     const mode: "bot" | "self-chat" = modeChoice === 2 ? "self-chat" : "bot";
-    const access = await this.collectGatewayAccessPolicy("WhatsApp", options, {
-      invalidMessage: "WhatsApp numbers must use digits only, with country code and no plus sign.",
-      prompt: "WhatsApp phone numbers (comma-separated): ",
-      parse: (raw) => this.parseWhatsAppNumbers(raw),
-      allowOpen: false,
-    });
+    const access = await this.collectWhatsAppAccessPolicy(options);
 
     return {
       enabled: true,
       mode,
       allowedUsers: access.allowedUsers,
-      usePairing: access.usePairing,
-      allowAllUsers: access.allowAllUsers,
+      completeAccessDuringSetup: access.completeAccessDuringSetup,
     };
+  }
+
+  private async collectWhatsAppAccessPolicy(
+    _options: { allowAnyone: boolean }
+  ): Promise<{ allowedUsers?: string; completeAccessDuringSetup?: boolean }> {
+    while (true) {
+      this.prompts.write("\nWho should be able to talk to your WhatsApp setup?\n\n");
+      this.prompts.write("   1  Only me          Hermes will ask for your own phone number during WhatsApp pairing.\n");
+      this.prompts.write("   2  Specific people  Enter the phone numbers that should be allowed.\n\n");
+
+      const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
+      if (choice === 1) {
+        return { completeAccessDuringSetup: true };
+      }
+
+      const answer = (await this.prompts.ask("WhatsApp phone numbers (comma-separated): ")).trim();
+      try {
+        return { allowedUsers: this.parseWhatsAppNumbers(answer).join(",") };
+      } catch {
+        this.prompts.write("WhatsApp numbers must use digits only, with country code and no plus sign.\n");
+      }
+    }
   }
 
   private async collectGatewayAccessPolicy(
@@ -2544,7 +2562,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       enabled: true,
       mode,
       allowedUsers,
-      usePairing: !allowedUsers,
+      completeAccessDuringSetup: !allowedUsers,
     };
   }
 
@@ -2998,8 +3016,11 @@ export class FlyDeployWizard implements DeployWizardPort {
     if (config.gatewayAllowAllUsers) {
       return "Anyone";
     }
+    if (config.whatsappCompleteAccessDuringSetup) {
+      return "Only me (finish during WhatsApp setup)";
+    }
     if (config.whatsappUsePairing) {
-      return "Only me (DM pairing)";
+      return "Only me (finish during WhatsApp setup)";
     }
     if (!config.whatsappAllowedUsers) {
       return "Set up now";

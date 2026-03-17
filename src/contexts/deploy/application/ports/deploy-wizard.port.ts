@@ -37,6 +37,7 @@ export interface DeployConfig {
   whatsappMode?: "bot" | "self-chat";
   whatsappAllowedUsers?: string;
   whatsappUsePairing?: boolean;
+  whatsappCompleteAccessDuringSetup?: boolean;
 }
 
 export type SuccessfulDeploymentAction = "conclude" | "destroy";

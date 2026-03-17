@@ -141,8 +141,11 @@ function describeWhatsAppAccess(config: DeployConfig): string | undefined {
   if (config.gatewayAllowAllUsers) {
     return "Anyone";
   }
+  if (config.whatsappCompleteAccessDuringSetup) {
+    return "Only me (finish during WhatsApp setup)";
+  }
   if (config.whatsappUsePairing) {
-    return "Only me (DM pairing)";
+    return "Only me (finish during WhatsApp setup)";
   }
   if (!config.whatsappAllowedUsers) {
     return undefined;

@@ -306,7 +306,7 @@ describe("RunDeployWizardUseCase - happy path", () => {
         slackUsePairing: true,
         whatsappEnabled: true,
         whatsappMode: "self-chat",
-        whatsappUsePairing: true,
+        whatsappCompleteAccessDuringSetup: true,
       })
     }));
 
@@ -317,7 +317,7 @@ describe("RunDeployWizardUseCase - happy path", () => {
     assert.match(io.outText, /Slack:\s+Hermes Workspace/);
     assert.match(io.outText, /Slack access:\s+Only me \(DM pairing\)/);
     assert.match(io.outText, /WhatsApp:\s+Self-chat/);
-    assert.match(io.outText, /WhatsApp access:\s+Only me \(DM pairing\)/);
+    assert.match(io.outText, /WhatsApp access:\s+Only me \(finish during WhatsApp setup\)/);
   });
 
   it("runs post-deploy messaging finalization after the completion summary", async () => {
@@ -842,8 +842,9 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.match(io.outText, /Discord pairing/);
   });
 
-  it("runs remote WhatsApp pairing and then approves the WhatsApp DM pairing code", async () => {
-    const prompts = makePromptPort(["y", "CODE9XYZ"], { interactive: true });
+  it("runs remote WhatsApp pairing and then prints deployed-app guidance without a second pairing-code step", async () => {
+    const prompts = makePromptPort(["y"], { interactive: true });
+    const io = makeIO();
     const foregroundCalls: Array<{ command: string; args: string[] }> = [];
     const backgroundCalls: Array<{ command: string; args: string[] }> = [];
     const runner = makeProcessRunner(
@@ -862,22 +863,16 @@ describe("FlyDeployWizard.postDeployActions", () => {
       ...DEFAULT_CONFIG,
       appName: "test-app",
       whatsappEnabled: true,
-      whatsappMode: "bot",
-      whatsappUsePairing: true,
-    }, makeIO().stdout, makeIO().stderr);
+      whatsappMode: "self-chat",
+      whatsappCompleteAccessDuringSetup: true,
+    }, io.stdout, io.stderr);
 
     assert.ok(foregroundCalls.some((call) => call.args.join(" ").includes("hermes-agent/venv/bin/hermes") && call.args.join(" ").includes("whatsapp")));
-    assert.ok(backgroundCalls.some((call) => {
-      const commandIndex = call.args.indexOf("-C");
-      if (commandIndex === -1) {
-        return false;
-      }
-      const remoteCommand = call.args[commandIndex + 1] ?? "";
-      return /pairing/.test(remoteCommand)
-        && /approve/.test(remoteCommand)
-        && /whatsapp/.test(remoteCommand)
-        && /CODE9XYZ/.test(remoteCommand);
-    }));
+    assert.equal(backgroundCalls.length, 0);
+    assert.match(io.outText, /ignore that here — this deployed app already runs the gateway/);
+    assert.match(io.outText, /may briefly show 'Logging in\.\.\.' or 'Syncing messages\.\.\.'/);
+    assert.match(io.outText, /Message yourself/);
+    assert.ok(!prompts.asked.some((message) => message.includes("WhatsApp pairing code")));
   });
 });
 
@@ -1969,7 +1964,7 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.deepEqual(config.messagingPlatforms, ["whatsapp"]);
     assert.equal(config.whatsappEnabled, true);
     assert.equal(config.whatsappMode, "self-chat");
-    assert.equal(config.whatsappUsePairing, true);
+    assert.equal(config.whatsappCompleteAccessDuringSetup, true);
     const guidedCopy = prompts.writes.join("");
     assert.match(guidedCopy, /WhatsApp has two setup styles/);
     assert.match(guidedCopy, /If you are just testing for yourself, pick Self-chat/);
