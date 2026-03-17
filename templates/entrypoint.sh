@@ -25,6 +25,33 @@ if [[ -n "${HERMES_ANTHROPIC_OAUTH_JSON_B64:-}" ]] && [[ ! -f /root/.hermes/.ant
   printf '%s' "${HERMES_ANTHROPIC_OAUTH_JSON_B64}" | base64 -d > /root/.hermes/.anthropic_oauth.json
   chmod 600 /root/.hermes/.anthropic_oauth.json
 fi
+# Mirror Anthropic OAuth into Claude Code's credential store so Hermes CLI
+# recognizes the provider as configured before launching interactive chat.
+if [[ -f /root/.hermes/.anthropic_oauth.json ]]; then
+  python3 - <<'PYEOF'
+import json
+from pathlib import Path
+
+source = Path('/root/.hermes/.anthropic_oauth.json')
+target = Path('/root/.claude/.credentials.json')
+
+try:
+    oauth = json.loads(source.read_text(encoding='utf-8'))
+except Exception:
+    raise SystemExit(0)
+
+target.parent.mkdir(parents=True, exist_ok=True)
+payload = {
+    'claudeAiOauth': {
+        'accessToken': oauth.get('accessToken', ''),
+        'refreshToken': oauth.get('refreshToken', ''),
+        'expiresAt': oauth.get('expiresAt', 0),
+    }
+}
+target.write_text(json.dumps(payload), encoding='utf-8')
+target.chmod(0o600)
+PYEOF
+fi
 # Bridge Fly secrets into /root/.hermes/.env on every boot (not just first deploy)
 for var in OPENROUTER_API_KEY LLM_MODEL LLM_BASE_URL LLM_API_KEY NOUS_API_KEY \
   HERMES_REASONING_EFFORT \

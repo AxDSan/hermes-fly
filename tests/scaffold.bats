@@ -112,6 +112,14 @@ teardown() {
   assert_output --partial "base64"
 }
 
+@test "entrypoint.sh mirrors Anthropic OAuth credentials into Claude Code format for Hermes CLI detection" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "/root/.claude/.credentials.json"
+  assert_output --partial "claudeAiOauth"
+  assert_output --partial ".anthropic_oauth.json"
+}
+
 @test "entrypoint.sh bridges all messaging and LLM secrets" {
   run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
   assert_success
