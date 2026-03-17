@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, it } from "node:test";
+import { tmpdir } from "node:os";
 
 import { runDestroyCommand } from "../../src/commands/destroy.ts";
 import type { DestroyRunnerPort } from "../../src/contexts/release/application/ports/destroy-runner.port.ts";
+import type { FlyctlPort } from "../../src/adapters/flyctl.ts";
 
 function makeRunner(overrides: Partial<DestroyRunnerPort> = {}): DestroyRunnerPort {
   return {
@@ -10,6 +14,13 @@ function makeRunner(overrides: Partial<DestroyRunnerPort> = {}): DestroyRunnerPo
     cleanupVolumes: async () => {},
     telegramLogout: async () => {},
     removeConfig: async () => {},
+    ...overrides
+  };
+}
+
+function makeFlyctl(overrides: Partial<Pick<FlyctlPort, "getTelegramBotIdentity">> = {}): Pick<FlyctlPort, "getTelegramBotIdentity"> {
+  return {
+    getTelegramBotIdentity: async () => ({ configured: false, username: null, link: null }),
     ...overrides
   };
 }
@@ -82,6 +93,91 @@ describe("runDestroyCommand - confirmation flow", () => {
   });
 });
 
+describe("runDestroyCommand - Telegram cleanup guidance", () => {
+  it("prints BotFather delete guidance after destroying a Telegram deployment", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "destroy-command-config-"));
+
+    try {
+      await writeFile(
+        join(dir, "config.yaml"),
+        [
+          "current_app: test-app",
+          "apps:",
+          "  - name: test-app",
+          "    region: fra",
+          "    platform: telegram",
+          "    telegram_bot_username: testhermesbot",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+
+      const io = makeIO();
+      const code = await runDestroyCommand(["-a", "test-app"], {
+        runner: makeRunner(),
+        flyctl: makeFlyctl(),
+        confirmationInput: "yes",
+        env: {
+          ...process.env,
+          HERMES_FLY_CONFIG_DIR: dir
+        },
+        ...io
+      });
+
+      const combined = io.outText + io.errText;
+      assert.equal(code, 0);
+      assert.match(combined, /Telegram bot cleanup/);
+      assert.match(combined, /@testhermesbot/);
+      assert.match(combined, /https:\/\/t\.me\/testhermesbot/);
+      assert.match(combined, /https:\/\/t\.me\/BotFather\?text=%2Fdeletebot/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses live Fly bot identity when saved config lacks the username", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "destroy-command-config-live-"));
+
+    try {
+      await writeFile(
+        join(dir, "config.yaml"),
+        [
+          "current_app: test-app",
+          "apps:",
+          "  - name: test-app",
+          "    region: fra",
+          "    platform: telegram",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+
+      const io = makeIO();
+      const code = await runDestroyCommand(["-a", "test-app", "--force"], {
+        runner: makeRunner(),
+        flyctl: makeFlyctl({
+          getTelegramBotIdentity: async () => ({
+            configured: true,
+            username: "livebot",
+            link: "https://t.me/livebot"
+          })
+        }),
+        env: {
+          ...process.env,
+          HERMES_FLY_CONFIG_DIR: dir
+        },
+        ...io
+      });
+
+      assert.equal(code, 0);
+      assert.match(io.outText, /@livebot/);
+      assert.match(io.outText, /https:\/\/t\.me\/livebot/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("runDestroyCommand - not_found exit code", () => {
   it("returns 4 when app is not found", async () => {
     const runner = makeRunner({ destroyApp: async () => ({ ok: false }) });
@@ -94,14 +190,42 @@ describe("runDestroyCommand - not_found exit code", () => {
 
 describe("runDestroyCommand - no app specified", () => {
   it("returns 1 with error message when no app and no config", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "destroy-command-empty-config-"));
     const runner = makeRunner();
     const io = makeIO();
-    // No appName, no -a, empty app list → error
-    const code = await runDestroyCommand([], {
-      runner,
-      availableApps: [],
+    try {
+      const code = await runDestroyCommand([], {
+        runner,
+        availableApps: [],
+        env: {
+          HOME: "",
+          HERMES_FLY_CONFIG_DIR: dir
+        },
+        ...io
+      });
+      assert.equal(code, 1);
+      assert.match(io.errText, /No app specified/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("runDestroyCommand - missing flyctl", () => {
+  it("returns a friendly error when flyctl is missing", async () => {
+    const error = Object.assign(new Error("spawn fly ENOENT"), { code: "ENOENT" });
+    const io = makeIO();
+    const code = await runDestroyCommand(["-a", "test-app", "--force"], {
+      runner: makeRunner({
+        destroyApp: async () => {
+          throw error;
+        }
+      }),
+      flyctl: makeFlyctl(),
       ...io
     });
+
     assert.equal(code, 1);
+    assert.match(io.errText, /Fly\.io CLI not found/);
   });
 });

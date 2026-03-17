@@ -215,14 +215,15 @@ describe("RunDeployWizardUseCase - happy path", () => {
   });
 
   it("saves app after successful deploy", async () => {
-    const saved: Array<{ appName: string; region: string }> = [];
+    const saved: DeployConfig[] = [];
     const io = makeIO();
     const uc = new RunDeployWizardUseCase(makePort({
-      saveApp: async (appName, region) => { saved.push({ appName, region }); }
+      saveApp: async (config) => { saved.push(config); }
     }));
     await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
     assert.equal(saved.length, 1);
     assert.equal(saved[0].appName, "test-app");
+    assert.equal(saved[0].region, "iad");
   });
 
   it("prints a completion summary after a successful deploy", async () => {
@@ -1631,12 +1632,20 @@ describe("FlyDeployWizard.saveApp - persistence contract", () => {
     const dir = await mkdtemp(join(tmpdir(), "saveapp-test-"));
     try {
       const wizard = new FlyDeployWizard({ HERMES_FLY_CONFIG_DIR: dir, HOME: dir });
-      await wizard.saveApp("my-app", "iad");
+      await wizard.saveApp({
+        ...DEFAULT_CONFIG,
+        appName: "my-app",
+        region: "iad",
+        botToken: "123:abc",
+        telegramBotUsername: "testhermesbot"
+      });
       const content = await readFile(join(dir, "config.yaml"), "utf8");
       assert.ok(content.includes("current_app:"), `current_app: not found in:\n${content}`);
       assert.ok(content.includes("apps:"), `apps: not found in:\n${content}`);
       assert.ok(content.includes("- name:"), `- name: not found in:\n${content}`);
       assert.ok(content.includes("region:"), `region: not found in:\n${content}`);
+      assert.ok(content.includes("platform: telegram"), `platform missing in:\n${content}`);
+      assert.ok(content.includes("telegram_bot_username: testhermesbot"), `telegram bot username missing in:\n${content}`);
     } finally {
       await rm(dir, { recursive: true });
     }
@@ -1646,8 +1655,8 @@ describe("FlyDeployWizard.saveApp - persistence contract", () => {
     const dir = await mkdtemp(join(tmpdir(), "saveapp-test-"));
     try {
       const wizard = new FlyDeployWizard({ HERMES_FLY_CONFIG_DIR: dir, HOME: dir });
-      await wizard.saveApp("my-app", "iad");
-      await wizard.saveApp("my-app", "lax");
+      await wizard.saveApp({ ...DEFAULT_CONFIG, appName: "my-app", region: "iad" });
+      await wizard.saveApp({ ...DEFAULT_CONFIG, appName: "my-app", region: "lax" });
       const content = await readFile(join(dir, "config.yaml"), "utf8");
       const nameMatches = (content.match(/  - name: my-app/g) ?? []).length;
       assert.equal(nameMatches, 1, `expected exactly 1 name entry, got ${nameMatches} in:\n${content}`);
@@ -1673,7 +1682,7 @@ describe("FlyDeployWizard.saveApp - trailing lines preservation", () => {
       await writeFile(join(dir, "config.yaml"), seed, "utf8");
 
       const wizard = new FlyDeployWizard({ HERMES_FLY_CONFIG_DIR: dir, HOME: dir });
-      await wizard.saveApp("my-app", "iad");
+      await wizard.saveApp({ ...DEFAULT_CONFIG, appName: "my-app", region: "iad" });
       const content = await readFile(join(dir, "config.yaml"), "utf8");
       assert.ok(content.includes("metadata: keep-me"), `metadata lost:\n${content}`);
       assert.ok(content.includes("current_app: my-app"), `current_app wrong:\n${content}`);
@@ -1699,7 +1708,7 @@ describe("FlyDeployWizard.saveApp - whitespace-normalized dedup", () => {
       await writeFile(join(dir, "config.yaml"), seed, "utf8");
 
       const wizard = new FlyDeployWizard({ HERMES_FLY_CONFIG_DIR: dir, HOME: dir });
-      await wizard.saveApp("my-app", "lax");
+      await wizard.saveApp({ ...DEFAULT_CONFIG, appName: "my-app", region: "lax" });
       const content = await readFile(join(dir, "config.yaml"), "utf8");
       const nameMatches = (content.match(/  - name: my-app/g) ?? []).length;
       assert.equal(nameMatches, 1, `expected exactly 1 name entry, got ${nameMatches} in:\n${content}`);

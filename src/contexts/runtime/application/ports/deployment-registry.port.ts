@@ -3,6 +3,8 @@ export interface DeploymentListRow {
   region: string;
   platform: string;
   machine: string;
+  telegramBot: string;
+  telegramLink: string;
 }
 
 export interface DeploymentRegistryPort {

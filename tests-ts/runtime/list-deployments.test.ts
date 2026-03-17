@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 
 import { FlyctlAdapter } from "../../src/adapters/flyctl.ts";
 import { NodeProcessRunner, type ProcessRunner } from "../../src/adapters/process.ts";
+import { runListCommand } from "../../src/commands/list.ts";
 import type { FlyctlPort } from "../../src/adapters/flyctl.ts";
 import type { DeploymentListRow, DeploymentRegistryPort } from "../../src/contexts/runtime/application/ports/deployment-registry.port.ts";
 import { ListDeploymentsUseCase } from "../../src/contexts/runtime/application/use-cases/list-deployments.ts";
@@ -42,24 +43,55 @@ describe("process adapter", () => {
 });
 
 describe("flyctl adapter", () => {
-  it("parses first machine state from fly status json", async () => {
+  it("parses the first machine from fly machine list json", async () => {
     const runner: ProcessRunner = {
       run: async () => ({
-        stdout: JSON.stringify({
-          Machines: [
-            { state: "started" },
-            { state: "stopped" }
-          ]
-        }),
+        stdout: JSON.stringify([
+          { id: "machine123", state: "started", region: "fra" },
+          { id: "machine456", state: "stopped", region: "ams" }
+        ]),
         stderr: "",
         exitCode: 0
       })
     };
 
     const adapter = new FlyctlAdapter(runner);
+    const machine = await adapter.getMachineSummary("test-app");
     const state = await adapter.getMachineState("test-app");
 
+    assert.deepEqual(machine, { id: "machine123", state: "started", region: "fra" });
     assert.equal(state, "started");
+  });
+
+  it("falls back to fly status json when machine list parsing fails", async () => {
+    let callCount = 0;
+    const runner: ProcessRunner = {
+      run: async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return {
+            stdout: "not-json",
+            stderr: "",
+            exitCode: 0
+          };
+        }
+
+        return {
+          stdout: JSON.stringify({
+            Machines: [
+              { ID: "machine789", state: "started", region: "ord" }
+            ]
+          }),
+          stderr: "",
+          exitCode: 0
+        };
+      }
+    };
+
+    const adapter = new FlyctlAdapter(runner);
+    const machine = await adapter.getMachineSummary("test-app");
+
+    assert.deepEqual(machine, { id: "machine789", state: "started", region: "ord" });
   });
 
   it("returns null on non-zero exit", async () => {
@@ -111,13 +143,17 @@ describe("list deployments use-case", () => {
         appName: "app-b",
         region: "ord",
         platform: "-",
-        machine: "started"
+        machine: "machine123 (started)",
+        telegramBot: "-",
+        telegramLink: "-"
       },
       {
         appName: "app-a",
         region: "ams",
         platform: "telegram",
-        machine: "stopped"
+        machine: "machine456 (stopped)",
+        telegramBot: "@testhermesbot",
+        telegramLink: "https://t.me/testhermesbot"
       }
     ];
 
@@ -132,6 +168,37 @@ describe("list deployments use-case", () => {
       kind: "rows",
       rows
     });
+  });
+});
+
+describe("runListCommand", () => {
+  it("prints machine and Telegram coordinates in the table", async () => {
+    const stdoutChunks: string[] = [];
+    const useCase = new ListDeploymentsUseCase({
+      listDeployments: async () => [
+        {
+          appName: "test-app",
+          region: "fra",
+          platform: "telegram",
+          machine: "machine123 (started)",
+          telegramBot: "@testhermesbot",
+          telegramLink: "https://t.me/testhermesbot"
+        }
+      ]
+    });
+
+    const code = await runListCommand({
+      stdout: { write: (value: string) => { stdoutChunks.push(value); } },
+      useCase
+    });
+
+    const output = stdoutChunks.join("");
+    assert.equal(code, 0);
+    assert.match(output, /Telegram Bot/);
+    assert.match(output, /Telegram Link/);
+    assert.match(output, /machine123 \(started\)/);
+    assert.match(output, /@testhermesbot/);
+    assert.match(output, /https:\/\/t\.me\/testhermesbot/);
   });
 });
 
@@ -156,6 +223,8 @@ describe("fly deployment registry", () => {
         [
           "apps:",
           `  - name: ${longApp}`,
+          "    platform: telegram",
+          "    telegram_bot_username: longhermesbot",
           "    deployed_at: 2026-03-12T00:00:00Z",
           `  - name: ${secondApp}`,
           "    region: ord",
@@ -172,7 +241,17 @@ describe("fly deployment registry", () => {
       );
 
       const flyctl: FlyctlPort = {
-        getMachineState: async (appName: string) => (appName === longApp ? "started" : null)
+        getMachineSummary: async (appName: string) => (
+          appName === longApp
+            ? { id: "machine123", state: "started", region: "ord" }
+            : { id: null, state: null, region: null }
+        ),
+        getMachineState: async (appName: string) => (appName === longApp ? "started" : null),
+        getTelegramBotIdentity: async (appName: string) => (
+          appName === secondApp
+            ? { configured: true, username: "secondbot", link: "https://t.me/secondbot" }
+            : { configured: false, username: null, link: null }
+        )
       };
 
       const registry = new FlyDeploymentRegistry({
@@ -190,13 +269,17 @@ describe("fly deployment registry", () => {
           appName: "my-extremely-long-herme...",
           region: "?",
           platform: "telegram",
-          machine: "started"
+          machine: "machine123 (started)",
+          telegramBot: "@longhermesbot",
+          telegramLink: "https://t.me/longhermesbot"
         },
         {
           appName: "test-app",
           region: "ord",
-          platform: "-",
-          machine: "?"
+          platform: "telegram",
+          machine: "?",
+          telegramBot: "@secondbot",
+          telegramLink: "https://t.me/secondbot"
         }
       ]);
     } finally {
@@ -220,7 +303,9 @@ describe("fly deployment registry", () => {
       process.chdir(root);
 
       const flyctl: FlyctlPort = {
-        getMachineState: async () => "started"
+        getMachineSummary: async () => ({ id: "machine123", state: "started", region: "ord" }),
+        getMachineState: async () => "started",
+        getTelegramBotIdentity: async () => ({ configured: false, username: null, link: null })
       };
 
       const registry = new FlyDeploymentRegistry({
@@ -254,7 +339,9 @@ describe("fly deployment registry", () => {
       process.chdir(root);
 
       const flyctl: FlyctlPort = {
-        getMachineState: async () => "started"
+        getMachineSummary: async () => ({ id: "machine123", state: "started", region: "ord" }),
+        getMachineState: async () => "started",
+        getTelegramBotIdentity: async () => ({ configured: false, username: null, link: null })
       };
 
       const registry = new FlyDeploymentRegistry({

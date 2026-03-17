@@ -11,6 +11,11 @@ import {
   type ResolvedCodexAuth,
 } from "./openai-codex-auth.js";
 import { MessagingPolicy, type MessagingPolicyMode } from "../../../messaging/domain/messaging-policy.js";
+import {
+  TELEGRAM_BOTFATHER_DELETEBOT_URL,
+  TELEGRAM_BOTFATHER_NEWBOT_URL,
+  TELEGRAM_USERINFOBOT_URL
+} from "../../../messaging/infrastructure/adapters/telegram-links.js";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,10 +32,6 @@ const OPENROUTER_KEY_URL = "https://openrouter.ai/settings/keys";
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/models";
 const OPENROUTER_KEY_API_URL = "https://openrouter.ai/api/v1/key";
 const OPENROUTER_MODELS_API_URL = "https://openrouter.ai/api/v1/models";
-const TELEGRAM_BOTFATHER_URL = "https://t.me/BotFather";
-const TELEGRAM_BOTFATHER_NEWBOT_URL = `${TELEGRAM_BOTFATHER_URL}?text=${encodeURIComponent("/newbot")}`;
-const TELEGRAM_BOTFATHER_DELETEBOT_URL = `${TELEGRAM_BOTFATHER_URL}?text=${encodeURIComponent("/deletebot")}`;
-const TELEGRAM_USERINFOBOT_URL = "https://t.me/userinfobot";
 
 type RegionOption = {
   code: string;
@@ -479,9 +480,11 @@ export class FlyDeployWizard implements DeployWizardPort {
     return { ok: false, error: `machine not running after deploy (${lastState})` };
   }
 
-  async saveApp(appName: string, region: string): Promise<void> {
+  async saveApp(config: DeployConfig): Promise<void> {
     const { readFile, writeFile, mkdir } = await import("node:fs/promises");
     const { join: pathJoin } = await import("node:path");
+    const appName = config.appName;
+    const region = config.region;
     const configDir = this.env.HERMES_FLY_CONFIG_DIR
       ?? `${this.env.HOME ?? process.env.HOME}/.hermes-fly`;
     await mkdir(configDir, { recursive: true });
@@ -515,7 +518,14 @@ export class FlyDeployWizard implements DeployWizardPort {
     if (current !== null) entries.push(current);
 
     const filtered = entries.filter(e => e.name !== appName);
-    filtered.push({ name: appName, lines: [`  - name: ${appName}`, `    region: ${region}`] });
+    const entryLines = [`  - name: ${appName}`, `    region: ${region}`];
+    if (config.botToken) {
+      entryLines.push("    platform: telegram");
+    }
+    if ((config.telegramBotUsername ?? "").trim().length > 0) {
+      entryLines.push(`    telegram_bot_username: ${config.telegramBotUsername?.trim()}`);
+    }
+    filtered.push({ name: appName, lines: entryLines });
 
     const newLines = [
       `current_app: ${appName}`,

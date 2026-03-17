@@ -2,14 +2,17 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { FlyctlPort } from "../../../../adapters/flyctl.js";
+import { telegramBotLink } from "../../../messaging/infrastructure/adapters/telegram-links.js";
 import type {
   DeploymentListRow,
   DeploymentRegistryPort
 } from "../../application/ports/deployment-registry.port.js";
 
-interface ConfigEntry {
+export interface SavedDeploymentEntry {
   name: string;
   region: string | null;
+  platform: string | null;
+  telegramBotUsername: string | null;
 }
 
 interface FlyDeploymentRegistryOptions {
@@ -38,14 +41,39 @@ export class FlyDeploymentRegistry implements DeploymentRegistryPort {
     const rows: DeploymentListRow[] = [];
 
     for (const entry of entries) {
-      const platform = await resolvePlatform(configDir, entry.name);
+      let platform = entry.platform;
+      if (platform === null) {
+        platform = await resolvePlatform(configDir, entry.name);
+      }
+
       const machine = await resolveMachine(this.flyctl, entry.name);
+      let telegramBotUsername = entry.telegramBotUsername;
+      let telegramLink = "-";
+
+      if (telegramBotUsername === null || platform === "-") {
+        const botIdentity = await this.flyctl.getTelegramBotIdentity(entry.name);
+        if (botIdentity.configured) {
+          platform = "telegram";
+        }
+        if (telegramBotUsername === null && botIdentity.username) {
+          telegramBotUsername = botIdentity.username;
+        }
+        if (botIdentity.link) {
+          telegramLink = botIdentity.link;
+        }
+      }
+
+      if (telegramBotUsername !== null && telegramLink === "-") {
+        telegramLink = telegramBotLink(telegramBotUsername);
+      }
 
       rows.push({
         appName: truncate(entry.name, 26),
         region: entry.region ?? "?",
-        platform,
-        machine
+        platform: platform ?? "-",
+        machine,
+        telegramBot: telegramBotUsername ? `@${telegramBotUsername}` : "-",
+        telegramLink
       });
     }
 
@@ -80,9 +108,23 @@ async function safeReadText(path: string): Promise<string | null> {
   }
 }
 
-function parseConfigEntries(configContent: string): ConfigEntry[] {
-  const entries: ConfigEntry[] = [];
-  let current: ConfigEntry | null = null;
+export async function readSavedDeploymentEntry(
+  appName: string,
+  env: NodeJS.ProcessEnv
+): Promise<SavedDeploymentEntry | null> {
+  const configDir = resolveConfigDir(env);
+  const configPath = join(configDir, "config.yaml");
+  const configContent = await safeReadText(configPath);
+  if (configContent === null) {
+    return null;
+  }
+
+  return parseConfigEntries(configContent).find((entry) => entry.name === appName) ?? null;
+}
+
+function parseConfigEntries(configContent: string): SavedDeploymentEntry[] {
+  const entries: SavedDeploymentEntry[] = [];
+  let current: SavedDeploymentEntry | null = null;
 
   for (const line of configContent.split(/\r?\n/)) {
     const nameMatch = line.match(/^  - name:[ \t]*(.+)$/);
@@ -91,7 +133,9 @@ function parseConfigEntries(configContent: string): ConfigEntry[] {
       if (isSafeAppName(rawName)) {
         current = {
           name: rawName,
-          region: null
+          region: null,
+          platform: null,
+          telegramBotUsername: null
         };
         entries.push(current);
       } else {
@@ -104,6 +148,20 @@ function parseConfigEntries(configContent: string): ConfigEntry[] {
     if (regionMatch && current !== null) {
       const region = regionMatch[1].trim();
       current.region = region.length > 0 ? region : null;
+      continue;
+    }
+
+    const platformMatch = line.match(/^    platform:[ \t]*(.*)$/);
+    if (platformMatch && current !== null) {
+      const platform = platformMatch[1].trim();
+      current.platform = platform.length > 0 ? platform : null;
+      continue;
+    }
+
+    const telegramUserMatch = line.match(/^    telegram_bot_username:[ \t]*(.*)$/);
+    if (telegramUserMatch && current !== null) {
+      const username = telegramUserMatch[1].trim();
+      current.telegramBotUsername = username.length > 0 ? username : null;
     }
   }
 
@@ -170,9 +228,12 @@ function leadingWhitespace(line: string): string {
 
 async function resolveMachine(flyctl: FlyctlPort, appName: string): Promise<string> {
   try {
-    const machine = await flyctl.getMachineState(appName);
-    if (typeof machine === "string" && machine.length > 0) {
-      return machine;
+    const machine = await flyctl.getMachineSummary(appName);
+    if (typeof machine.id === "string" && machine.id.length > 0) {
+      return machine.state ? `${machine.id} (${machine.state})` : machine.id;
+    }
+    if (typeof machine.state === "string" && machine.state.length > 0) {
+      return machine.state;
     }
   } catch {
     // Runtime lookup failures intentionally degrade to placeholder value.

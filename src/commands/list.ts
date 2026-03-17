@@ -18,11 +18,11 @@ export async function runListCommand(options: ListCommandOptions = {}): Promise<
     return 0;
   }
 
-  stdout.write(formatRow("App Name", "Region", "Platform", "Machine"));
-  stdout.write(formatRow("--------------------------", "------", "--------", "-------"));
+  stdout.write(formatRow("App Name", "Region", "Platform", "Machine", "Telegram Bot", "Telegram Link"));
+  stdout.write(formatRow("--------------------------", "------", "--------", "-------", "------------", "-------------"));
 
   for (const row of result.rows) {
-    stdout.write(formatRow(row.appName, row.region, row.platform, row.machine));
+    stdout.write(formatRow(row.appName, row.region, row.platform, row.machine, row.telegramBot, row.telegramLink));
   }
 
   return 0;
@@ -34,8 +34,15 @@ function buildUseCase(): ListDeploymentsUseCase {
   return new ListDeploymentsUseCase(registry);
 }
 
-function formatRow(appName: string, region: string, platform: string, machine: string): string {
-  return `  ${pad(appName, 26)} ${pad(region, 8)} ${pad(platform, 10)} ${pad(machine, 9)}\n`;
+function formatRow(
+  appName: string,
+  region: string,
+  platform: string,
+  machine: string,
+  telegramBot: string,
+  telegramLink: string
+): string {
+  return `  ${pad(appName, 26)} ${pad(region, 8)} ${pad(platform, 10)} ${pad(machine, 16)} ${pad(telegramBot, 24)} ${telegramLink}\n`;
 }
 
 function pad(value: string, width: number): string {

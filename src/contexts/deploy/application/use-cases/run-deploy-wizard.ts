@@ -189,7 +189,7 @@ export class RunDeployWizardUseCase {
     const deployResult = await this.port.runDeploy(buildDir, config);
     if (!deployResult.ok) {
       // Save app so resume works
-      await this.port.saveApp(config.appName, config.region);
+      await this.port.saveApp(config);
       stderr.write(`[error] Deploy failed: ${deployResult.error ?? "unknown error"}\n`);
       stderr.write(`Tip: run 'hermes-fly resume -a ${config.appName}' to retry post-deploy checks.\n`);
       return { kind: "failed", error: deployResult.error ?? "deploy failed" };
@@ -203,7 +203,7 @@ export class RunDeployWizardUseCase {
     }
 
     // Save app configuration
-    await this.port.saveApp(config.appName, config.region);
+    await this.port.saveApp(config);
 
     writeCompletionSummary(stdout, config);
 

@@ -31,7 +31,7 @@ export interface DeployWizardPort {
   provisionResources(config: DeployConfig): Promise<{ ok: boolean; error?: string }>;
   runDeploy(buildDir: string, config: DeployConfig): Promise<{ ok: boolean; error?: string }>;
   postDeployCheck(appName: string): Promise<{ ok: boolean; error?: string }>;
-  saveApp(appName: string, region: string): Promise<void>;
+  saveApp(config: DeployConfig): Promise<void>;
   chooseSuccessfulDeploymentAction(config: DeployConfig): Promise<SuccessfulDeploymentAction>;
   showTelegramBotDeletionGuidance(config: DeployConfig): Promise<void>;
 }
