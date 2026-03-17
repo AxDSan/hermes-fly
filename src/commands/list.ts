@@ -18,11 +18,11 @@ export async function runListCommand(options: ListCommandOptions = {}): Promise<
     return 0;
   }
 
-  stdout.write(formatRow("App Name", "Region", "Platform", "Machine", "Telegram Bot", "Telegram Link"));
-  stdout.write(formatRow("--------------------------", "------", "--------", "-------", "------------", "-------------"));
+  stdout.write(formatRow("App Name", "Region", "AI Access", "Platform", "Machine", "Telegram Bot", "Telegram Link"));
+  stdout.write(formatRow("--------------------------", "------", "------------------", "--------", "-------", "------------", "-------------"));
 
   for (const row of result.rows) {
-    stdout.write(formatRow(row.appName, row.region, row.platform, row.machine, row.telegramBot, row.telegramLink));
+    stdout.write(formatRow(row.appName, row.region, row.aiAccess, row.platform, row.machine, row.telegramBot, row.telegramLink));
   }
 
   return 0;
@@ -37,12 +37,13 @@ function buildUseCase(): ListDeploymentsUseCase {
 function formatRow(
   appName: string,
   region: string,
+  aiAccess: string,
   platform: string,
   machine: string,
   telegramBot: string,
   telegramLink: string
 ): string {
-  return `  ${pad(appName, 26)} ${pad(region, 8)} ${pad(platform, 10)} ${pad(machine, 16)} ${pad(telegramBot, 24)} ${telegramLink}\n`;
+  return `  ${pad(appName, 26)} ${pad(region, 8)} ${pad(aiAccess, 19)} ${pad(platform, 10)} ${pad(machine, 24)} ${pad(telegramBot, 24)} ${telegramLink}\n`;
 }
 
 function pad(value: string, width: number): string {

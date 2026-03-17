@@ -34,6 +34,7 @@ export interface FlyctlPort {
   listLiveAppNames(): Promise<Set<string> | null>;
   getMachineSummary(appName: string): Promise<MachineSummary>;
   getMachineState(appName: string): Promise<string | null>;
+  getAiAccessMode(appName: string): Promise<string | null>;
   getTelegramBotIdentity(appName: string): Promise<TelegramBotIdentity>;
   getAppStatus(appName: string): Promise<AppStatusResult>;
   getAppLogs(appName: string): Promise<ProcessResult>;
@@ -86,6 +87,15 @@ export class FlyctlAdapter implements FlyctlPort {
   async getMachineState(appName: string): Promise<string | null> {
     const machine = await this.getMachineSummary(appName);
     return machine.state;
+  }
+
+  async getAiAccessMode(appName: string): Promise<string | null> {
+    if (!await this.isFlyReady()) {
+      return null;
+    }
+
+    const secretNames = await this.getSecretNames(appName);
+    return inferAiAccessMode(secretNames);
   }
 
   async getTelegramBotIdentity(appName: string): Promise<TelegramBotIdentity> {
@@ -290,6 +300,16 @@ export class FlyctlAdapter implements FlyctlPort {
       return false;
     }
   }
+}
+
+function inferAiAccessMode(secretNames: string[]): string | null {
+  if (secretNames.includes("HERMES_AUTH_JSON_B64")) {
+    return "openai-codex";
+  }
+  if (secretNames.includes("OPENROUTER_API_KEY")) {
+    return "openrouter";
+  }
+  return null;
 }
 
 function parseMachineList(stdout: string | null): MachineSummary | null {

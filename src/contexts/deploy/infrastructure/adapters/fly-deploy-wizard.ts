@@ -14,7 +14,7 @@ import { MessagingPolicy, type MessagingPolicyMode } from "../../../messaging/do
 import {
   TELEGRAM_BOTFATHER_DELETEBOT_URL,
   TELEGRAM_BOTFATHER_NEWBOT_URL,
-  TELEGRAM_USERINFOBOT_URL
+  telegramBotLink
 } from "../../../messaging/infrastructure/adapters/telegram-links.js";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
@@ -32,6 +32,7 @@ const OPENROUTER_KEY_URL = "https://openrouter.ai/settings/keys";
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/models";
 const OPENROUTER_KEY_API_URL = "https://openrouter.ai/api/v1/key";
 const OPENROUTER_MODELS_API_URL = "https://openrouter.ai/api/v1/models";
+const CHATGPT_SECURITY_SETTINGS_URL = "https://chatgpt.com/#settings/Security";
 
 type RegionOption = {
   code: string;
@@ -531,6 +532,7 @@ export class FlyDeployWizard implements DeployWizardPort {
 
     const filtered = entries.filter(e => e.name !== appName);
     const entryLines = [`  - name: ${appName}`, `    region: ${region}`];
+    entryLines.push(`    provider: ${config.provider}`);
     if (config.botToken) {
       entryLines.push("    platform: telegram");
     }
@@ -955,7 +957,7 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     if (!stored) {
-      return this.codexAuth.runDeviceCodeLogin(this.prompts);
+      return this.runCodexDeviceCodeLoginWithRetry();
     }
 
     if (stored.source === "hermes") {
@@ -966,7 +968,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       if (choice === 1) {
         return stored;
       }
-      return this.codexAuth.runDeviceCodeLogin(this.prompts);
+      return this.runCodexDeviceCodeLoginWithRetry();
     }
 
     this.prompts.write("I found an existing Codex login on this machine.\n");
@@ -977,7 +979,30 @@ export class FlyDeployWizard implements DeployWizardPort {
     if (choice === 1) {
       return stored;
     }
-    return this.codexAuth.runDeviceCodeLogin(this.prompts);
+    return this.runCodexDeviceCodeLoginWithRetry();
+  }
+
+  private async runCodexDeviceCodeLoginWithRetry(): Promise<ResolvedCodexAuth> {
+    while (true) {
+      this.prompts.write("If device-code sign-in has trouble in a remote or headless terminal, open:\n");
+      this.prompts.write(`${CHATGPT_SECURITY_SETTINGS_URL}\n`);
+      this.prompts.write("Then enable \"Enable device code authorization for Codex\" under Secure sign in with ChatGPT.\n\n");
+
+      try {
+        return await this.codexAuth.runDeviceCodeLogin(this.prompts);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "OpenAI Codex sign-in failed.";
+        this.prompts.write(`${message}\n`);
+        this.prompts.write("If you're using ChatGPT OAuth here, check the ChatGPT security settings link above and retry.\n\n");
+        this.prompts.write("   1  Retry sign-in   Start the OpenAI Codex device-code flow again\n");
+        this.prompts.write("   2  Cancel setup    Stop this deployment wizard\n\n");
+
+        const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
+        if (choice === 2) {
+          throw new Error("Deployment cancelled.");
+        }
+      }
+    }
   }
 
   private async collectCodexModel(envValue: string | undefined, accessToken: string): Promise<string> {
@@ -1267,7 +1292,7 @@ export class FlyDeployWizard implements DeployWizardPort {
         continue;
       }
 
-      const accessPolicy = await this.collectTelegramAccessPolicy();
+      const accessPolicy = await this.collectTelegramAccessPolicy(token, identity);
       const homeChannel = accessPolicy.allowedUsers.length > 0
         ? await this.collectTelegramHomeChannel(accessPolicy.allowedUsers[0])
         : undefined;
@@ -1386,20 +1411,23 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   }
 
-  private async collectTelegramAccessPolicy(): Promise<MessagingPolicy> {
+  private async collectTelegramAccessPolicy(
+    botToken: string,
+    identity: TelegramBotIdentity
+  ): Promise<MessagingPolicy> {
     while (true) {
       this.prompts.write("\nWho should be able to talk to this bot?\n\n");
-      this.prompts.write("   1  Only me          Just you. You'll enter your Telegram user ID.\n");
+      this.prompts.write("   1  Only me          Just you. Hermes will detect your Telegram user ID automatically.\n");
       this.prompts.write("   2  Specific people  You and other approved users.\n");
       this.prompts.write("   3  Anyone           No restrictions. Not recommended for most setups.\n\n");
 
       const choice = await this.chooseNumber("Choose an option [1]: ", 3, 1);
       if (choice === 1) {
-        this.prompts.write(`Find your Telegram user ID here: ${TELEGRAM_USERINFOBOT_URL}\n\n`);
-        return await this.collectTelegramUserIds("only_me", "Your Telegram user ID: ");
+        return await this.collectTelegramOnlyMePolicy(botToken, identity.username);
       }
       if (choice === 2) {
-        this.prompts.write(`Find Telegram user IDs here: ${TELEGRAM_USERINFOBOT_URL}\n\n`);
+        this.prompts.write("Enter the numeric Telegram user IDs for the people who should be allowed.\n");
+        this.prompts.write("Use commas to separate multiple users.\n\n");
         return await this.collectTelegramUserIds("specific_users", "Telegram user IDs (comma-separated): ");
       }
       if (await this.confirmYesNo("Allow anyone to use this bot? This is not recommended for most setups. [y/N]: ", false)) {
@@ -1416,6 +1444,80 @@ export class FlyDeployWizard implements DeployWizardPort {
       } catch {
         this.prompts.write("Telegram user IDs must be numeric. Use commas to separate multiple IDs.\n");
       }
+    }
+  }
+
+  private async collectTelegramOnlyMePolicy(
+    botToken: string,
+    botUsername: string
+  ): Promise<MessagingPolicy> {
+    const directLink = telegramBotLink(botUsername);
+    this.prompts.write(`Open your bot directly: ${directLink}\n`);
+    this.prompts.write("Send /start from the Telegram account that should be allowed.\n");
+    this.prompts.write("After that, press Enter here and Hermes will detect your Telegram user ID automatically.\n\n");
+
+    while (true) {
+      await this.prompts.ask("Press Enter after sending /start: ");
+
+      const detectedUserId = await this.fetchLatestTelegramPrivateUserId(botToken);
+      if (detectedUserId !== null) {
+        this.prompts.write(`Detected your Telegram user ID: ${detectedUserId}\n`);
+        return MessagingPolicy.create("only_me", [detectedUserId]);
+      }
+
+      this.prompts.write("I couldn't detect a recent private message to this bot yet.\n");
+      this.prompts.write("Send /start to the bot from the Telegram account that should be allowed, then press Enter to retry.\n");
+    }
+  }
+
+  private async fetchLatestTelegramPrivateUserId(botToken: string): Promise<number | null> {
+    try {
+      const result = await this.process.run(
+        "curl",
+        [
+          "-fsSL",
+          "--max-time",
+          "10",
+          `https://api.telegram.org/bot${botToken}/getUpdates?offset=-20&limit=20&allowed_updates=${encodeURIComponent("[\"message\"]")}`
+        ],
+        { env: this.env }
+      );
+      if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
+        return null;
+      }
+
+      const payload = JSON.parse(result.stdout) as {
+        ok?: boolean;
+        result?: Array<{
+          message?: {
+            chat?: { id?: unknown; type?: unknown };
+            from?: { id?: unknown; is_bot?: unknown };
+          };
+        }>;
+      };
+      if (payload.ok !== true || !Array.isArray(payload.result)) {
+        return null;
+      }
+
+      for (const update of [...payload.result].reverse()) {
+        const message = update.message;
+        const chatType = String(message?.chat?.type ?? "").trim();
+        const isBot = message?.from?.is_bot === true;
+        const fromId = Number(message?.from?.id);
+        const chatId = Number(message?.chat?.id);
+        if (chatType !== "private" || isBot) {
+          continue;
+        }
+        if (Number.isInteger(fromId) && fromId > 0) {
+          return fromId;
+        }
+        if (Number.isInteger(chatId) && chatId > 0) {
+          return chatId;
+        }
+      }
+      return null;
+    } catch {
+      return null;
     }
   }
 

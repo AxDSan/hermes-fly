@@ -13,7 +13,7 @@ import { runVersionCommand } from "../../src/commands/version.ts";
 // ---------------------------------------------------------------
 
 describe("CLI root contracts - command registration", () => {
-  it("registers all 9 public commands", () => {
+  it("registers all 10 public commands", () => {
     const program = buildProgram();
     const names = program.commands.map((c) => c.name());
 
@@ -24,6 +24,7 @@ describe("CLI root contracts - command registration", () => {
       "status",
       "logs",
       "doctor",
+      "console",
       "destroy",
       "help",
       "version",
@@ -52,6 +53,7 @@ describe("CLI root contracts - help output", () => {
       "status",
       "logs",
       "doctor",
+      "console",
       "destroy",
       "help",
       "version",
@@ -104,7 +106,7 @@ describe("CLI root contracts - entrypoint detection", () => {
 });
 
 // ---------------------------------------------------------------
-// Stubs: deploy, resume, doctor, destroy
+// Stubs: deploy, resume, doctor, console, destroy
 // ---------------------------------------------------------------
 
 describe("CLI root contracts - stub commands sentinel", () => {
@@ -124,6 +126,12 @@ describe("CLI root contracts - stub commands sentinel", () => {
     const program = buildProgram();
     const cmd = program.commands.find((c) => c.name() === "doctor");
     assert.ok(cmd !== undefined, "doctor command not registered");
+  });
+
+  it("console stub is registered", () => {
+    const program = buildProgram();
+    const cmd = program.commands.find((c) => c.name() === "console");
+    assert.ok(cmd !== undefined, "console command not registered");
   });
 
   it("destroy stub is registered", () => {

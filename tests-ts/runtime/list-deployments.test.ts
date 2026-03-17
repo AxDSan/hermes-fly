@@ -192,13 +192,41 @@ describe("flyctl adapter", () => {
     const adapter = new FlyctlAdapter(runner, { HOME: "" });
 
     const machine = await adapter.getMachineSummary("test-app");
+    const aiAccess = await adapter.getAiAccessMode("test-app");
     const identity = await adapter.getTelegramBotIdentity("test-app");
 
     assert.deepEqual(machine, { id: null, state: null, region: null });
+    assert.equal(aiAccess, null);
     assert.deepEqual(identity, { configured: false, username: null, link: null });
     assert.deepEqual(calls, [
       ["auth", "whoami", "-j"]
     ]);
+  });
+
+  it("infers AI access mode from Fly secrets", async () => {
+    const runner: ProcessRunner = {
+      run: async (_command, args) => {
+        if (args[0] === "auth" && args[1] === "whoami") {
+          return { stdout: "{\"name\":\"alex\"}", stderr: "", exitCode: 0 };
+        }
+        if (args[0] === "secrets" && args[1] === "list") {
+          return {
+            stdout: JSON.stringify([
+              { Name: "HERMES_AUTH_JSON_B64" },
+              { Name: "HERMES_LLM_PROVIDER" }
+            ]),
+            stderr: "",
+            exitCode: 0
+          };
+        }
+        return { stdout: "", stderr: "", exitCode: 1 };
+      }
+    };
+
+    const adapter = new FlyctlAdapter(runner, { HOME: "" });
+    const mode = await adapter.getAiAccessMode("test-app");
+
+    assert.equal(mode, "openai-codex");
   });
 });
 
@@ -219,6 +247,7 @@ describe("list deployments use-case", () => {
       {
         appName: "app-b",
         region: "ord",
+        aiAccess: "OpenRouter API key",
         platform: "-",
         machine: "machine123 (started)",
         telegramBot: "-",
@@ -227,6 +256,7 @@ describe("list deployments use-case", () => {
       {
         appName: "app-a",
         region: "ams",
+        aiAccess: "OpenAI OAuth",
         platform: "telegram",
         machine: "machine456 (stopped)",
         telegramBot: "@testhermesbot",
@@ -256,6 +286,7 @@ describe("runListCommand", () => {
         {
           appName: "test-app",
           region: "fra",
+          aiAccess: "OpenAI OAuth",
           platform: "telegram",
           machine: "machine123 (started)",
           telegramBot: "@testhermesbot",
@@ -271,8 +302,10 @@ describe("runListCommand", () => {
 
     const output = stdoutChunks.join("");
     assert.equal(code, 0);
+    assert.match(output, /AI Access/);
     assert.match(output, /Telegram Bot/);
     assert.match(output, /Telegram Link/);
+    assert.match(output, /OpenAI OAuth/);
     assert.match(output, /machine123 \(started\)/);
     assert.match(output, /@testhermesbot/);
     assert.match(output, /https:\/\/t\.me\/testhermesbot/);
@@ -363,6 +396,7 @@ describe("fly deployment registry", () => {
         [
           "apps:",
           `  - name: ${longApp}`,
+          "    provider: openrouter",
           "    platform: telegram",
           "    telegram_bot_username: longhermesbot",
           "    deployed_at: 2026-03-12T00:00:00Z",
@@ -388,6 +422,9 @@ describe("fly deployment registry", () => {
             : { id: null, state: null, region: null }
         ),
         getMachineState: async (appName: string) => (appName === longApp ? "started" : null),
+        getAiAccessMode: async (appName: string) => (
+          appName === secondApp ? "openai-codex" : "openrouter"
+        ),
         getTelegramBotIdentity: async (appName: string) => (
           appName === secondApp
             ? { configured: true, username: "secondbot", link: "https://t.me/secondbot" }
@@ -409,6 +446,7 @@ describe("fly deployment registry", () => {
         {
           appName: "my-extremely-long-herme...",
           region: "?",
+          aiAccess: "OpenRouter API key",
           platform: "telegram",
           machine: "machine123 (started)",
           telegramBot: "@longhermesbot",
@@ -417,6 +455,7 @@ describe("fly deployment registry", () => {
         {
           appName: "test-app",
           region: "ord",
+          aiAccess: "OpenAI OAuth",
           platform: "telegram",
           machine: "?",
           telegramBot: "@secondbot",
@@ -453,6 +492,7 @@ describe("fly deployment registry", () => {
         listLiveAppNames: async () => new Set(["live-app"]),
         getMachineSummary: async () => ({ id: "machine123", state: "started", region: "ams" }),
         getMachineState: async () => "started",
+        getAiAccessMode: async () => "openrouter",
         getTelegramBotIdentity: async () => ({ configured: true, username: "livebot", link: "https://t.me/livebot" }),
         getAppStatus: async () => ({ ok: false, error: "unused" }),
         getAppLogs: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
@@ -472,6 +512,7 @@ describe("fly deployment registry", () => {
         {
           appName: "live-app",
           region: "ams",
+          aiAccess: "OpenRouter API key",
           platform: "telegram",
           machine: "machine123 (started)",
           telegramBot: "@livebot",
@@ -502,6 +543,7 @@ describe("fly deployment registry", () => {
         listLiveAppNames: async () => null,
         getMachineSummary: async () => ({ id: "machine123", state: "started", region: "ord" }),
         getMachineState: async () => "started",
+        getAiAccessMode: async () => null,
         getTelegramBotIdentity: async () => ({ configured: false, username: null, link: null }),
         getAppStatus: async () => ({ ok: false, error: "unused" }),
         getAppLogs: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
@@ -542,6 +584,7 @@ describe("fly deployment registry", () => {
         listLiveAppNames: async () => null,
         getMachineSummary: async () => ({ id: "machine123", state: "started", region: "ord" }),
         getMachineState: async () => "started",
+        getAiAccessMode: async () => null,
         getTelegramBotIdentity: async () => ({ configured: false, username: null, link: null }),
         getAppStatus: async () => ({ ok: false, error: "unused" }),
         getAppLogs: async () => ({ stdout: "", stderr: "", exitCode: 0 }),

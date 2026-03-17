@@ -779,7 +779,7 @@ describe("FlyDeployWizard.collectConfig", () => {
       "123:abc",
       "y",
       "1",
-      "12345",
+      "",
       "y",
       "y"
     ], { interactive: true });
@@ -815,6 +815,23 @@ describe("FlyDeployWizard.collectConfig", () => {
               first_name: "Hermes Test Bot",
               username: "test_hermes_bot"
             }
+          })
+        };
+      }
+      if (command === "curl" && args.some((value) => value.includes("api.telegram.org/bot123:abc/getUpdates"))) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            ok: true,
+            result: [
+              {
+                update_id: 1,
+                message: {
+                  chat: { id: 12345, type: "private" },
+                  from: { id: 12345, is_bot: false }
+                }
+              }
+            ]
           })
         };
       }
@@ -980,8 +997,84 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.equal(config.sttModel, "base");
     const guidedCopy = prompts.writes.join("");
     assert.match(guidedCopy, /https:\/\/auth\.openai\.com\/codex\/device/);
+    assert.match(guidedCopy, /https:\/\/chatgpt\.com\/#settings\/Security/);
+    assert.match(guidedCopy, /Enable device code authorization for Codex/);
     assert.match(guidedCopy, /ABCD-EFGH/);
     assert.match(guidedCopy, /Fetching available Codex models from OpenAI/);
+  });
+
+  it("shows Codex security guidance and lets the user retry the OAuth device-code flow after a failure", async () => {
+    const home = await mkdtemp(join(tmpdir(), "hermes-fly-codex-retry-"));
+    const prompts = makePromptPort([
+      "",
+      "",
+      "",
+      "",
+      "",
+      "2",
+      "1",
+      "1",
+      "2",
+      "y"
+    ], { interactive: true });
+    let userCodeAttempts = 0;
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command !== "curl") {
+        return { exitCode: 1 };
+      }
+      const target = args.find((value) => value.startsWith("https://"));
+      if (target?.includes("/api/accounts/deviceauth/usercode")) {
+        userCodeAttempts += 1;
+        if (userCodeAttempts === 1) {
+          return { exitCode: 0, stdout: "" };
+        }
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            user_code: "RETRY-CODE",
+            device_auth_id: "device-auth-retry",
+            interval: 0
+          })
+        };
+      }
+      if (target?.includes("/api/accounts/deviceauth/token")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            authorization_code: "authorization-code-retry",
+            code_verifier: "verifier-retry"
+          })
+        };
+      }
+      if (target?.includes("/oauth/token")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            access_token: "access-retry",
+            refresh_token: "refresh-retry"
+          })
+        };
+      }
+      if (target?.includes("https://chatgpt.com/backend-api/codex/models?client_version=1.0.0")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify(liveCodexModelsFixture())
+        };
+      }
+      return { exitCode: 1 };
+    });
+    const wizard = new FlyDeployWizard({ HOME: home }, { prompts, process: runner });
+
+    const config = await wizard.collectConfig({ channel: "stable" });
+
+    assert.equal(config.provider, "openai-codex");
+    assert.ok(config.authJsonB64);
+    assert.equal(userCodeAttempts, 2);
+    const guidedCopy = prompts.writes.join("");
+    assert.match(guidedCopy, /https:\/\/chatgpt\.com\/#settings\/Security/);
+    assert.match(guidedCopy, /Enable device code authorization for Codex/);
+    assert.match(guidedCopy, /Retry sign-in/);
+    assert.match(guidedCopy, /RETRY-CODE/);
   });
 
   it("prompts for Hermes-compatible reasoning effort for Codex GPT-5 models", async () => {
@@ -1179,7 +1272,7 @@ describe("FlyDeployWizard.collectConfig", () => {
       "123:abc",
       "y",
       "1",
-      "12345",
+      "",
       "y",
       "y"
     ], { interactive: true });
@@ -1222,6 +1315,23 @@ describe("FlyDeployWizard.collectConfig", () => {
           })
         };
       }
+      if (command === "curl" && args.some((value) => value.includes("api.telegram.org/bot123:abc/getUpdates"))) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            ok: true,
+            result: [
+              {
+                update_id: 1,
+                message: {
+                  chat: { id: 12345, type: "private" },
+                  from: { id: 12345, is_bot: false }
+                }
+              }
+            ]
+          })
+        };
+      }
       return { exitCode: 1 };
     });
     const wizard = new FlyDeployWizard({}, {
@@ -1242,7 +1352,8 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /tap Send to submit \/newbot/);
     assert.match(guidedCopy, /Guide: https:\/\/core\.telegram\.org\/bots#6-botfather/);
     assert.match(guidedCopy, /Found bot: @test_hermes_bot \(Hermes Test Bot\)/);
-    assert.match(guidedCopy, /t\.me\/userinfobot/);
+    assert.match(guidedCopy, /Open your bot directly: https:\/\/t\.me\/test_hermes_bot/);
+    assert.match(guidedCopy, /Detected your Telegram user ID: 12345/);
     assert.ok(prompts.asked.some((message) => message.includes("Use 12345 as the home channel")));
   });
 
@@ -1648,6 +1759,7 @@ describe("FlyDeployWizard.saveApp - persistence contract", () => {
       assert.ok(content.includes("apps:"), `apps: not found in:\n${content}`);
       assert.ok(content.includes("- name:"), `- name: not found in:\n${content}`);
       assert.ok(content.includes("region:"), `region: not found in:\n${content}`);
+      assert.ok(content.includes("provider: openrouter"), `provider missing in:\n${content}`);
       assert.ok(content.includes("platform: telegram"), `platform missing in:\n${content}`);
       assert.ok(content.includes("telegram_bot_username: testhermesbot"), `telegram bot username missing in:\n${content}`);
     } finally {

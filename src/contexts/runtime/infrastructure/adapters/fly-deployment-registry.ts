@@ -11,6 +11,7 @@ import type {
 export interface SavedDeploymentEntry {
   name: string;
   region: string | null;
+  provider: string | null;
   platform: string | null;
   telegramBotUsername: string | null;
 }
@@ -45,6 +46,11 @@ export class FlyDeploymentRegistry implements DeploymentRegistryPort {
 
     return await Promise.all(
       visibleEntries.map(async (entry) => {
+        let provider = entry.provider;
+        if (provider === null) {
+          provider = await this.flyctl.getAiAccessMode(entry.name);
+        }
+
         let platform = entry.platform;
         if (platform === null) {
           platform = await resolvePlatform(configDir, entry.name);
@@ -74,6 +80,7 @@ export class FlyDeploymentRegistry implements DeploymentRegistryPort {
         return {
           appName: truncate(entry.name, 26),
           region: entry.region ?? "?",
+          aiAccess: describeAiAccess(provider),
           platform: platform ?? "-",
           machine,
           telegramBot: telegramBotUsername ? `@${telegramBotUsername}` : "-",
@@ -137,6 +144,7 @@ function parseConfigEntries(configContent: string): SavedDeploymentEntry[] {
         current = {
           name: rawName,
           region: null,
+          provider: null,
           platform: null,
           telegramBotUsername: null
         };
@@ -161,6 +169,13 @@ function parseConfigEntries(configContent: string): SavedDeploymentEntry[] {
       continue;
     }
 
+    const providerMatch = line.match(/^    provider:[ \t]*(.*)$/);
+    if (providerMatch && current !== null) {
+      const provider = providerMatch[1].trim();
+      current.provider = provider.length > 0 ? provider : null;
+      continue;
+    }
+
     const telegramUserMatch = line.match(/^    telegram_bot_username:[ \t]*(.*)$/);
     if (telegramUserMatch && current !== null) {
       const username = telegramUserMatch[1].trim();
@@ -169,6 +184,19 @@ function parseConfigEntries(configContent: string): SavedDeploymentEntry[] {
   }
 
   return entries;
+}
+
+function describeAiAccess(provider: string | null): string {
+  switch (provider) {
+    case "openai-codex":
+      return "OpenAI OAuth";
+    case "openrouter":
+      return "OpenRouter API key";
+    case null:
+      return "-";
+    default:
+      return provider.length > 0 ? provider : "-";
+  }
 }
 
 export function isSafeAppName(value: string): boolean {

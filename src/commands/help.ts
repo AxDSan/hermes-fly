@@ -10,6 +10,7 @@ Commands:
   status [-a APP]     Check deployment health
   logs [-a APP]       View application logs
   doctor [-a APP]     Diagnose common issues
+  console [-a APP]    Open Hermes CLI inside a deployed agent
   destroy [-a APP]    Remove deployment (interactive or -a APP)
   help                Show this help message
   version             Show version
@@ -25,6 +26,7 @@ Examples:
   hermes-fly resume                  # Resume checks for current app
   hermes-fly status                  # Check current app status
   hermes-fly status -a my-hermes     # Check specific app
+  hermes-fly console -a my-hermes    # Open Hermes CLI in the deployed agent
   hermes-fly doctor                  # Run diagnostics
   hermes-fly destroy --force         # Force destroy without confirmation
 

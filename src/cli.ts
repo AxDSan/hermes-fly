@@ -10,6 +10,7 @@ import { runDeployCommand } from "./commands/deploy.js";
 import { runResumeCommand } from "./commands/resume.js";
 import { runDoctorCommand } from "./commands/doctor.js";
 import { runDestroyCommand } from "./commands/destroy.js";
+import { runConsoleCommand } from "./commands/console.js";
 import { HERMES_FLY_TS_VERSION } from "./version.js";
 
 export function buildProgram(): Command {
@@ -93,6 +94,16 @@ export function buildProgram(): Command {
     .allowExcessArguments(true)
     .action(async (_, cmd: Command) => {
       process.exitCode = await runDestroyCommand(cmd.args);
+    });
+
+  program
+    .command("console")
+    .description("Open Hermes CLI in a deployed agent")
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .action(async (_, cmd: Command) => {
+      process.exitCode = await runConsoleCommand(cmd.args);
     });
 
   program
