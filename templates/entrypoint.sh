@@ -23,6 +23,7 @@ fi
 # Bridge Fly secrets into /root/.hermes/.env on every boot (not just first deploy)
 for var in OPENROUTER_API_KEY LLM_MODEL LLM_BASE_URL LLM_API_KEY NOUS_API_KEY \
   HERMES_REASONING_EFFORT \
+  HERMES_STT_PROVIDER HERMES_STT_MODEL \
   TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_USERS DISCORD_BOT_TOKEN DISCORD_ALLOWED_USERS \
   HERMES_APP_NAME GATEWAY_ALLOW_ALL_USERS TELEGRAM_HOME_CHANNEL; do
   val="${!var:-}"
@@ -75,42 +76,59 @@ if not config_path.exists():
 lines = config_path.read_text(encoding='utf-8').splitlines()
 model_default = os.environ.get('LLM_MODEL', '').strip()
 model_provider = os.environ.get('HERMES_LLM_PROVIDER', '').strip()
+stt_provider = os.environ.get('HERMES_STT_PROVIDER', '').strip()
+stt_model = os.environ.get('HERMES_STT_MODEL', '').strip()
 
-if not model_default and not model_provider:
+if not model_default and not model_provider and not stt_provider and not stt_model:
     raise SystemExit(0)
 
-model_index = next((i for i, line in enumerate(lines) if line.strip() == 'model:'), None)
-if model_index is None:
-    raise SystemExit(0)
-
-section_start = model_index + 1
-section_end = section_start
-while section_end < len(lines):
-    line = lines[section_end]
-    if line and not line.startswith(' '):
-        break
-    section_end += 1
-
-section = lines[section_start:section_end]
-
-def upsert(section_lines, key, value):
+def upsert(section_lines, key, value, indent='  '):
     if not value:
         return section_lines
     rendered = []
     updated = False
     for line in section_lines:
-        if line.startswith(f'  {key}:'):
-            rendered.append(f'  {key}: "{value}"')
+        if line.startswith(f'{indent}{key}:'):
+            rendered.append(f'{indent}{key}: "{value}"')
             updated = True
         else:
             rendered.append(line)
     if not updated:
-        rendered.append(f'  {key}: "{value}"')
+        rendered.append(f'{indent}{key}: "{value}"')
     return rendered
 
-section = upsert(section, 'default', model_default)
-section = upsert(section, 'provider', model_provider)
-lines = lines[:section_start] + section + lines[section_end:]
+def upsert_top_level_section(lines, section_name, values):
+    if not any(values.values()):
+        return lines
+
+    section_index = next((i for i, line in enumerate(lines) if line.strip() == f'{section_name}:'), None)
+    if section_index is None:
+        if lines and lines[-1].strip():
+            lines = lines + ['']
+        lines = lines + [f'{section_name}:']
+        section_index = len(lines) - 1
+
+    section_start = section_index + 1
+    section_end = section_start
+    while section_end < len(lines):
+        line = lines[section_end]
+        if line and not line.startswith(' '):
+            break
+        section_end += 1
+
+    section = lines[section_start:section_end]
+    for key, value in values.items():
+        section = upsert(section, key, value)
+    return lines[:section_start] + section + lines[section_end:]
+
+lines = upsert_top_level_section(lines, 'model', {
+    'default': model_default,
+    'provider': model_provider,
+})
+lines = upsert_top_level_section(lines, 'stt', {
+    'provider': stt_provider,
+    'model': stt_model,
+})
 config_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 PYEOF
 # Clear rate limit entries for already-approved users on every boot

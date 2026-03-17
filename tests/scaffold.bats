@@ -216,6 +216,21 @@ teardown() {
   assert_output --partial "HERMES_REASONING_EFFORT"
 }
 
+@test "entrypoint.sh bridges STT provider and model into .env for runtime bootstrap" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "HERMES_STT_PROVIDER"
+  assert_output --partial "HERMES_STT_MODEL"
+}
+
+@test "entrypoint.sh patches config.yaml stt settings from deploy secrets" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "stt_provider"
+  assert_output --partial "stt_model"
+  assert_output --partial "upsert_top_level_section(lines, 'stt'"
+}
+
 # --- PR-04: Runtime provenance manifest ---
 
 @test "entrypoint.sh writes deploy-manifest.json on boot (PR-04)" {

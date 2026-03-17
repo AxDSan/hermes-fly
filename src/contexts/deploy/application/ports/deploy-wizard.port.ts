@@ -9,6 +9,8 @@ export interface DeployConfig {
   authJsonB64?: string;
   model: string;
   reasoningEffort?: string;
+  sttProvider?: string;
+  sttModel?: string;
   channel: "stable" | "preview" | "edge";
   hermesRef: string;
   botToken: string;

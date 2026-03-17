@@ -904,6 +904,8 @@ describe("FlyDeployWizard.collectConfig", () => {
       assert.equal(config.apiKey, "");
       assert.ok(config.authJsonB64);
       assert.equal(config.model, "gpt-5.4");
+      assert.equal(config.sttProvider, "local");
+      assert.equal(config.sttModel, "base");
       const guidedCopy = prompts.writes.join("");
       assert.match(guidedCopy, /How should Hermes access AI models/);
       assert.match(guidedCopy, /ChatGPT subscription.*OpenAI Codex/);
@@ -974,6 +976,8 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.equal(config.provider, "openai-codex");
     assert.ok(config.authJsonB64);
     assert.equal(config.model, "gpt-5.3-codex");
+    assert.equal(config.sttProvider, "local");
+    assert.equal(config.sttModel, "base");
     const guidedCopy = prompts.writes.join("");
     assert.match(guidedCopy, /https:\/\/auth\.openai\.com\/codex\/device/);
     assert.match(guidedCopy, /ABCD-EFGH/);

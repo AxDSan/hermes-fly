@@ -45,6 +45,12 @@ export class ProvisionDeploymentUseCase {
     if (config.reasoningEffort) {
       secrets.HERMES_REASONING_EFFORT = config.reasoningEffort;
     }
+    if (config.sttProvider) {
+      secrets.HERMES_STT_PROVIDER = config.sttProvider;
+    }
+    if (config.sttModel) {
+      secrets.HERMES_STT_MODEL = config.sttModel;
+    }
     if (config.botToken) {
       secrets.TELEGRAM_BOT_TOKEN = config.botToken;
     }

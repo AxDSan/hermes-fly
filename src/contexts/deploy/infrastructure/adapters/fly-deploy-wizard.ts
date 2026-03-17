@@ -112,6 +112,8 @@ type AiAccessSelection = {
   authJsonB64?: string;
   model: string;
   reasoningEffort?: string;
+  sttProvider?: string;
+  sttModel?: string;
 };
 
 const STATIC_REGIONS: RegionOption[] = [
@@ -356,6 +358,8 @@ export class FlyDeployWizard implements DeployWizardPort {
       model: env.HERMES_FLY_MODEL,
       reasoningEffort: env.HERMES_REASONING_EFFORT,
       authJsonB64: env.HERMES_AUTH_JSON_B64,
+      sttProvider: env.HERMES_FLY_STT_PROVIDER ?? env.HERMES_STT_PROVIDER,
+      sttModel: env.HERMES_FLY_STT_MODEL ?? env.HERMES_STT_MODEL,
     });
     const telegramSetup = await this.collectTelegramSetup({
       botToken: env.TELEGRAM_BOT_TOKEN,
@@ -386,6 +390,8 @@ export class FlyDeployWizard implements DeployWizardPort {
       authJsonB64: aiAccess.authJsonB64,
       model: intent.model,
       reasoningEffort: intent.reasoningEffort.length > 0 ? intent.reasoningEffort : undefined,
+      sttProvider: aiAccess.sttProvider,
+      sttModel: aiAccess.sttModel,
       channel: intent.channel,
       hermesRef,
       botToken: telegramSetup.botToken,
@@ -431,6 +437,12 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
     if (config.reasoningEffort) {
       secrets.HERMES_REASONING_EFFORT = config.reasoningEffort;
+    }
+    if (config.sttProvider) {
+      secrets.HERMES_STT_PROVIDER = config.sttProvider;
+    }
+    if (config.sttModel) {
+      secrets.HERMES_STT_MODEL = config.sttModel;
     }
     if (config.botToken) {
       secrets.TELEGRAM_BOT_TOKEN = config.botToken;
@@ -818,21 +830,29 @@ export class FlyDeployWizard implements DeployWizardPort {
     model?: string;
     reasoningEffort?: string;
     authJsonB64?: string;
+    sttProvider?: string;
+    sttModel?: string;
   }): Promise<AiAccessSelection> {
     const normalizedProvider = this.normalizeAiProvider(input.provider);
     if (normalizedProvider === "openrouter") {
-      return this.collectOpenRouterAccess(input.model, input.reasoningEffort);
+      return this.collectOpenRouterAccess(input.model, input.reasoningEffort, input.sttProvider, input.sttModel);
     }
     if (normalizedProvider === "openai-codex") {
-      return this.collectOpenAICodexAccess(input.model, input.reasoningEffort, input.authJsonB64);
+      return this.collectOpenAICodexAccess(input.model, input.reasoningEffort, input.authJsonB64, input.sttProvider, input.sttModel);
     }
 
     if (!this.prompts.isInteractive()) {
       const bundledCodexAuth = (input.authJsonB64 ?? "").trim();
       if (bundledCodexAuth.length > 0) {
-        return this.collectOpenAICodexAccess(input.model, input.reasoningEffort, bundledCodexAuth);
+        return this.collectOpenAICodexAccess(
+          input.model,
+          input.reasoningEffort,
+          bundledCodexAuth,
+          input.sttProvider,
+          input.sttModel
+        );
       }
-      return this.collectOpenRouterAccess(input.model, input.reasoningEffort);
+      return this.collectOpenRouterAccess(input.model, input.reasoningEffort, input.sttProvider, input.sttModel);
     }
 
     this.prompts.write("How should Hermes access AI models?\n");
@@ -842,41 +862,78 @@ export class FlyDeployWizard implements DeployWizardPort {
 
     const selection = await this.chooseNumber("Choose an option [1]: ", 2, 1);
     if (selection === 2) {
-      return this.collectOpenAICodexAccess(input.model, input.reasoningEffort, input.authJsonB64);
+      return this.collectOpenAICodexAccess(
+        input.model,
+        input.reasoningEffort,
+        input.authJsonB64,
+        input.sttProvider,
+        input.sttModel
+      );
     }
-    return this.collectOpenRouterAccess(input.model, input.reasoningEffort);
+    return this.collectOpenRouterAccess(input.model, input.reasoningEffort, input.sttProvider, input.sttModel);
   }
 
   private async collectOpenRouterAccess(
     envModel: string | undefined,
-    envReasoningEffort: string | undefined
+    envReasoningEffort: string | undefined,
+    envSttProvider?: string,
+    envSttModel?: string
   ): Promise<AiAccessSelection> {
     const apiKey = await this.collectOpenRouterApiKey();
     const model = await this.collectModel(envModel, apiKey);
     const reasoningEffort = await this.collectReasoningEffort(envReasoningEffort, model);
+    const stt = this.resolveSttDefaults("openrouter", envSttProvider, envSttModel);
     return {
       provider: "openrouter",
       apiKey,
       model,
       reasoningEffort,
+      sttProvider: stt.provider,
+      sttModel: stt.model,
     };
   }
 
   private async collectOpenAICodexAccess(
     envModel: string | undefined,
     envReasoningEffort: string | undefined,
-    bundledAuthJsonB64?: string
+    bundledAuthJsonB64?: string,
+    envSttProvider?: string,
+    envSttModel?: string
   ): Promise<AiAccessSelection> {
     const auth = await this.collectCodexAuth(bundledAuthJsonB64);
     const model = await this.collectCodexModel(envModel, auth.accessToken);
     const reasoningEffort = await this.collectReasoningEffort(envReasoningEffort, model);
+    const stt = this.resolveSttDefaults("openai-codex", envSttProvider, envSttModel);
     return {
       provider: "openai-codex",
       apiKey: "",
       authJsonB64: auth.authJsonB64,
       model,
       reasoningEffort,
+      sttProvider: stt.provider,
+      sttModel: stt.model,
     };
+  }
+
+  private resolveSttDefaults(
+    aiProvider: AiAccessSelection["provider"],
+    envSttProvider?: string,
+    envSttModel?: string
+  ): { provider?: string; model?: string } {
+    const provider = envSttProvider?.trim();
+    const model = envSttModel?.trim();
+    if (provider || model) {
+      return {
+        provider: provider && provider.length > 0 ? provider : undefined,
+        model: model && model.length > 0 ? model : undefined,
+      };
+    }
+
+    if (aiProvider === "openai-codex") {
+      return { provider: "local", model: "base" };
+    }
+
+    return {};
   }
 
   private async collectCodexAuth(bundledAuthJsonB64?: string): Promise<ResolvedCodexAuth> {
