@@ -262,7 +262,8 @@ describe("ProvisionDeploymentUseCase - happy path", () => {
       slackUsePairing: true,
       whatsappEnabled: true,
       whatsappMode: "self-chat",
-      whatsappUsePairing: true,
+      whatsappAllowedUsers: "393406844897",
+      whatsappCompleteAccessDuringSetup: true,
     }, io.stderr);
 
     assert.equal(result.ok, true);
@@ -271,6 +272,7 @@ describe("ProvisionDeploymentUseCase - happy path", () => {
     assert.equal(capturedSecrets?.SLACK_APP_TOKEN, "xapp-live");
     assert.equal(capturedSecrets?.WHATSAPP_ENABLED, "true");
     assert.equal(capturedSecrets?.WHATSAPP_MODE, "self-chat");
+    assert.equal(capturedSecrets?.WHATSAPP_ALLOWED_USERS, "393406844897");
   });
 });
 

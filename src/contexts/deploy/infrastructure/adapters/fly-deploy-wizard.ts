@@ -31,6 +31,7 @@ import {
   TELEGRAM_BOTFATHER_NEWBOT_URL,
   telegramBotLink
 } from "../../../messaging/infrastructure/adapters/telegram-links.js";
+import { resolveFlyCommand } from "../../../../adapters/fly-command.js";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
@@ -730,23 +731,30 @@ export class FlyDeployWizard implements DeployWizardPort {
       );
       if (shouldPair) {
         stdout.write("\nOpening WhatsApp setup on the deployed agent...\n");
-        stdout.write("This is part of deploy setup on Fly.\n");
-        stdout.write("If the WhatsApp wizard mentions starting 'hermes gateway' or installing it as a service, ignore that here — this deployed app already runs the gateway for you.\n");
-        stdout.write("After you scan the QR code, WhatsApp may briefly show 'Logging in...' or 'Syncing messages...' while the linked session finishes syncing. That is normal.\n\n");
-        const paired = await this.runRemoteHermesForeground(config.appName, ["whatsapp"]);
+        stdout.write("Scan the QR code with WhatsApp on your phone.\n");
+        stdout.write("hermes-fly will finish setup here and restart the deployed app automatically when pairing succeeds.\n\n");
+        const paired = await this.runRemoteWhatsAppSetup(config.appName, stdout, stderr);
         if (!paired.ok) {
           stderr.write(`[warn] WhatsApp pairing did not complete cleanly: ${paired.error ?? "unknown error"}\n`);
           stderr.write(`Tip: run 'hermes-fly agent -a ${config.appName} whatsapp' to retry pairing.\n`);
           return;
         }
 
-        stdout.write("\nWhatsApp setup completed on the deployed agent.\n");
+        stdout.write("\nRestarting the deployed app so WhatsApp comes online...\n");
+        const restarted = await this.restartAppAfterWhatsAppPairing(config.appName);
+        if (!restarted.ok) {
+          stderr.write(`[warn] WhatsApp paired, but the deployed app did not restart cleanly: ${restarted.error ?? "unknown error"}\n`);
+          stderr.write(`Tip: run 'hermes-fly status -a ${config.appName}' and 'hermes-fly logs -a ${config.appName}' before testing WhatsApp.\n`);
+          return;
+        }
+
+        stdout.write("WhatsApp setup completed on the deployed agent.\n");
         if (config.whatsappMode === "self-chat") {
           stdout.write("Next step: open WhatsApp, go to Message yourself, and send a test message.\n");
         } else {
           stdout.write("Next step: send a test message to the WhatsApp number linked to Hermes.\n");
         }
-        stdout.write("If Linked Devices still shows 'Logging in...' or 'Syncing messages...' for a short time, wait a moment and try again.\n");
+        stdout.write("If Linked Devices still shows 'Logging in...' or 'Syncing messages...' briefly after pairing, wait a moment and then try again.\n");
       }
     }
   }
@@ -2370,19 +2378,30 @@ export class FlyDeployWizard implements DeployWizardPort {
   ): Promise<{ allowedUsers?: string; completeAccessDuringSetup?: boolean }> {
     while (true) {
       this.prompts.write("\nWho should be able to talk to your WhatsApp setup?\n\n");
-      this.prompts.write("   1  Only me          Hermes will ask for your own phone number during WhatsApp pairing.\n");
+      this.prompts.write("   1  Only me          Enter your own WhatsApp number now. Hermes will use it after pairing.\n");
       this.prompts.write("   2  Specific people  Enter the phone numbers that should be allowed.\n\n");
 
       const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
       if (choice === 1) {
-        return { completeAccessDuringSetup: true };
+        this.prompts.write("Enter your own WhatsApp number now. You can paste it with +, spaces, or dashes — hermes-fly will normalize it.\n");
+        while (true) {
+          const answer = (await this.prompts.ask("Your WhatsApp number: ")).trim();
+          try {
+            return {
+              allowedUsers: this.parseWhatsAppNumbers(answer).join(","),
+              completeAccessDuringSetup: true,
+            };
+          } catch {
+            this.prompts.write("Enter a valid WhatsApp number with country code. Example: +39 340 6844897\n");
+          }
+        }
       }
 
       const answer = (await this.prompts.ask("WhatsApp phone numbers (comma-separated): ")).trim();
       try {
         return { allowedUsers: this.parseWhatsAppNumbers(answer).join(",") };
       } catch {
-        this.prompts.write("WhatsApp numbers must use digits only, with country code and no plus sign.\n");
+        this.prompts.write("Enter valid WhatsApp numbers with country code. You can paste +39 340 6844897 and hermes-fly will normalize it.\n");
       }
     }
   }
@@ -2594,7 +2613,10 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private parseWhatsAppNumbers(raw: string): string[] {
-    const pieces = raw.split(",").map((value) => value.trim()).filter(Boolean);
+    const pieces = raw
+      .split(",")
+      .map((value) => value.replaceAll(/[^0-9]/g, "").trim())
+      .filter(Boolean);
     if (pieces.length === 0 || pieces.some((value) => !/^[0-9]{7,15}$/.test(value))) {
       throw new Error("WhatsApp phone numbers invalid");
     }
@@ -3017,7 +3039,13 @@ export class FlyDeployWizard implements DeployWizardPort {
       return "Anyone";
     }
     if (config.whatsappCompleteAccessDuringSetup) {
-      return "Only me (finish during WhatsApp setup)";
+      if (config.whatsappAllowedUsers) {
+        const ownNumber = config.whatsappAllowedUsers.split(",").map((value) => value.trim()).filter(Boolean)[0];
+        if (ownNumber) {
+          return `Only me (${ownNumber})`;
+        }
+      }
+      return "Only me";
     }
     if (config.whatsappUsePairing) {
       return "Only me (finish during WhatsApp setup)";
@@ -3101,6 +3129,150 @@ export class FlyDeployWizard implements DeployWizardPort {
         return { ok: false, error: "remote Hermes session failed" };
       }
       return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async runRemoteWhatsAppSetup(
+    appName: string,
+    stdout: { write: (s: string) => void },
+    stderr: { write: (s: string) => void }
+  ): Promise<{ ok: boolean; error?: string }> {
+    const state = {
+      stdoutBuffer: "",
+      stderrBuffer: "",
+      suppressNextSteps: false,
+    };
+
+    const flush = (kind: "stdout" | "stderr") => {
+      const key = kind === "stdout" ? "stdoutBuffer" : "stderrBuffer";
+      const sink = kind === "stdout" ? stdout : stderr;
+      const remainder = state[key];
+      if (remainder.length === 0) {
+        return;
+      }
+      state[key] = "";
+      const filtered = this.filterWhatsAppSetupLine(remainder, state);
+      if (filtered) {
+        sink.write(filtered);
+      }
+    };
+
+    const handleChunk = (kind: "stdout" | "stderr", chunk: string) => {
+      const key = kind === "stdout" ? "stdoutBuffer" : "stderrBuffer";
+      const sink = kind === "stdout" ? stdout : stderr;
+      state[key] += chunk.replaceAll("\r", "\n");
+      while (true) {
+        const newlineIndex = state[key].indexOf("\n");
+        if (newlineIndex === -1) {
+          break;
+        }
+        const line = state[key].slice(0, newlineIndex + 1);
+        state[key] = state[key].slice(newlineIndex + 1);
+        const filtered = this.filterWhatsAppSetupLine(line, state);
+        if (filtered) {
+          sink.write(filtered);
+        }
+      }
+    };
+
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      const result = await this.process.runStreaming(
+        flyCommand,
+        ["ssh", "console", "-a", appName, "--pty", "-C", this.buildRemoteHermesCommand(["whatsapp"])],
+        {
+          env: this.env,
+          timeoutMs: 10 * 60 * 1000,
+          onStdoutChunk: (chunk) => { handleChunk("stdout", chunk); },
+          onStderrChunk: (chunk) => { handleChunk("stderr", chunk); },
+        }
+      );
+      flush("stdout");
+      flush("stderr");
+      if (result.exitCode !== 0) {
+        return { ok: false, error: "remote WhatsApp setup failed" };
+      }
+      return { ok: true };
+    } catch (error) {
+      flush("stdout");
+      flush("stderr");
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private filterWhatsAppSetupLine(
+    line: string,
+    state: { suppressNextSteps: boolean }
+  ): string | null {
+    const trimmed = line.trim();
+
+    if (state.suppressNextSteps) {
+      if (trimmed.length === 0) {
+        state.suppressNextSteps = false;
+      }
+      return null;
+    }
+
+    if (trimmed.length === 0) {
+      return line;
+    }
+
+    if (/^\{"level":\d+/.test(trimmed)) {
+      return null;
+    }
+
+    if (/^Next steps:$/i.test(trimmed) || /^Next steps:/i.test(trimmed)) {
+      state.suppressNextSteps = true;
+      return null;
+    }
+
+    if (
+      /Start the gateway:/i.test(trimmed)
+      || /install as a service/i.test(trimmed)
+      || /Agent responses are prefixed/i.test(trimmed)
+    ) {
+      return null;
+    }
+
+    return line;
+  }
+
+  private async restartAppAfterWhatsAppPairing(appName: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      const restart = await this.process.run(
+        flyCommand,
+        ["machine", "restart", "-a", appName],
+        { env: this.env, timeoutMs: 60_000 }
+      );
+      if (restart.exitCode !== 0) {
+        return { ok: false, error: restart.stderr || restart.stdout || "app restart failed" };
+      }
+
+      let lastState = "unknown";
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const result = await this.process.run(
+          flyCommand,
+          ["machine", "list", "-a", appName, "--json"],
+          { env: this.env, timeoutMs: 4_000 }
+        );
+        if (result.exitCode === 0) {
+          const state = this.readPrimaryMachineState(result.stdout);
+          if (state === "started") {
+            return { ok: true };
+          }
+          if (state) {
+            lastState = state;
+          }
+        }
+        if (attempt < 19) {
+          await new Promise((resolve) => setTimeout(resolve, 1_500));
+        }
+      }
+
+      return { ok: false, error: `machine not running after WhatsApp restart (${lastState})` };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }

@@ -142,7 +142,13 @@ function describeWhatsAppAccess(config: DeployConfig): string | undefined {
     return "Anyone";
   }
   if (config.whatsappCompleteAccessDuringSetup) {
-    return "Only me (finish during WhatsApp setup)";
+    if (config.whatsappAllowedUsers) {
+      const ownNumber = config.whatsappAllowedUsers.split(",").map((value) => value.trim()).filter(Boolean)[0];
+      if (ownNumber) {
+        return `Only me (${ownNumber})`;
+      }
+    }
+    return "Only me";
   }
   if (config.whatsappUsePairing) {
     return "Only me (finish during WhatsApp setup)";

@@ -306,6 +306,7 @@ describe("RunDeployWizardUseCase - happy path", () => {
         slackUsePairing: true,
         whatsappEnabled: true,
         whatsappMode: "self-chat",
+        whatsappAllowedUsers: "393406844897",
         whatsappCompleteAccessDuringSetup: true,
       })
     }));
@@ -317,7 +318,7 @@ describe("RunDeployWizardUseCase - happy path", () => {
     assert.match(io.outText, /Slack:\s+Hermes Workspace/);
     assert.match(io.outText, /Slack access:\s+Only me \(DM pairing\)/);
     assert.match(io.outText, /WhatsApp:\s+Self-chat/);
-    assert.match(io.outText, /WhatsApp access:\s+Only me \(finish during WhatsApp setup\)/);
+    assert.match(io.outText, /WhatsApp access:\s+Only me \(393406844897\)/);
   });
 
   it("runs post-deploy messaging finalization after the completion summary", async () => {
@@ -842,21 +843,40 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.match(io.outText, /Discord pairing/);
   });
 
-  it("runs remote WhatsApp pairing and then prints deployed-app guidance without a second pairing-code step", async () => {
+  it("runs filtered remote WhatsApp pairing, restarts the deployed app, and avoids local-machine guidance", async () => {
     const prompts = makePromptPort(["y"], { interactive: true });
     const io = makeIO();
-    const foregroundCalls: Array<{ command: string; args: string[] }> = [];
+    const streamingCalls: Array<{ command: string; args: string[] }> = [];
     const backgroundCalls: Array<{ command: string; args: string[] }> = [];
-    const runner = makeProcessRunner(
-      async (command, args) => {
+    const runner: ForegroundProcessRunner = {
+      run: async (command, args) => {
         backgroundCalls.push({ command, args });
+        if (args[0] === "machine" && args[1] === "list") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify([{ id: "machine123", state: "started", region: "fra" }]),
+            stderr: "",
+          };
+        }
         return { exitCode: 0, stdout: "", stderr: "" };
       },
-      async (command, args) => {
-        foregroundCalls.push({ command, args });
+      runStreaming: async (command, args, options) => {
+        streamingCalls.push({ command, args });
+        options?.onStdoutChunk?.("⚕ WhatsApp Setup\n");
+        options?.onStdoutChunk?.("📱 Scan this QR code with WhatsApp on your phone:\n");
+        options?.onStdoutChunk?.("▄▄▄▄ QR ▄▄▄▄\n");
+        options?.onStdoutChunk?.("{\"level\":50,\"msg\":\"stream errored out\"}\n");
+        options?.onStdoutChunk?.("↻ WhatsApp requested restart (code 515). Reconnecting...\n");
+        options?.onStdoutChunk?.("✅ WhatsApp connected!\n");
+        options?.onStdoutChunk?.("✅ Pairing complete. Credentials saved.\n");
+        options?.onStdoutChunk?.("\n  Next steps:\n");
+        options?.onStdoutChunk?.("    1. Start the gateway:  hermes gateway\n");
+        options?.onStdoutChunk?.("    2. Open WhatsApp → Message Yourself\n");
+        options?.onStdoutChunk?.("  Or install as a service: hermes gateway install\n");
         return { exitCode: 0 };
-      }
-    );
+      },
+      runForeground: async () => ({ exitCode: 0 }),
+    };
     const wizard = new FlyDeployWizard({}, { prompts, process: runner });
 
     await wizard.finalizeMessagingSetup({
@@ -864,14 +884,19 @@ describe("FlyDeployWizard.postDeployActions", () => {
       appName: "test-app",
       whatsappEnabled: true,
       whatsappMode: "self-chat",
+      whatsappAllowedUsers: "393406844897",
       whatsappCompleteAccessDuringSetup: true,
     }, io.stdout, io.stderr);
 
-    assert.ok(foregroundCalls.some((call) => call.args.join(" ").includes("hermes-agent/venv/bin/hermes") && call.args.join(" ").includes("whatsapp")));
-    assert.equal(backgroundCalls.length, 0);
-    assert.match(io.outText, /ignore that here — this deployed app already runs the gateway/);
-    assert.match(io.outText, /may briefly show 'Logging in\.\.\.' or 'Syncing messages\.\.\.'/);
+    assert.ok(streamingCalls.some((call) => call.args.join(" ").includes("hermes-agent/venv/bin/hermes") && call.args.join(" ").includes("whatsapp")));
+    assert.ok(backgroundCalls.some((call) => call.args.slice(0, 4).join(" ") === "machine restart -a test-app"));
+    assert.ok(backgroundCalls.some((call) => call.args.slice(0, 4).join(" ") === "machine list -a test-app"));
+    assert.match(io.outText, /Scan the QR code with WhatsApp on your phone/);
+    assert.match(io.outText, /Restarting the deployed app so WhatsApp comes online/);
     assert.match(io.outText, /Message yourself/);
+    assert.doesNotMatch(io.outText, /Start the gateway:  hermes gateway/);
+    assert.doesNotMatch(io.outText, /Or install as a service: hermes gateway install/);
+    assert.doesNotMatch(io.outText, /stream errored out/);
     assert.ok(!prompts.asked.some((message) => message.includes("WhatsApp pairing code")));
   });
 });
@@ -1926,7 +1951,7 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /Connected Slack workspace: Hermes Workspace/);
   });
 
-  it("configures WhatsApp and marks it for post-deploy pairing", async () => {
+  it("configures WhatsApp, normalizes the user's own phone number locally, and keeps pairing for after deploy", async () => {
     const prompts = makePromptPort([
       "",
       "",
@@ -1940,6 +1965,7 @@ describe("FlyDeployWizard.collectConfig", () => {
       "4",
       "2",
       "1",
+      "+39 340 6844897",
       "y"
     ], { interactive: true });
     const runner = makeProcessRunner(async (command, args) => {
@@ -1964,6 +1990,7 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.deepEqual(config.messagingPlatforms, ["whatsapp"]);
     assert.equal(config.whatsappEnabled, true);
     assert.equal(config.whatsappMode, "self-chat");
+    assert.equal(config.whatsappAllowedUsers, "393406844897");
     assert.equal(config.whatsappCompleteAccessDuringSetup, true);
     const guidedCopy = prompts.writes.join("");
     assert.match(guidedCopy, /WhatsApp has two setup styles/);
@@ -1972,6 +1999,7 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /a dedicated WhatsApp number is the recommended setup/);
     assert.match(guidedCopy, /Hermes will finish WhatsApp pairing after deploy by opening the remote WhatsApp setup flow in this terminal/);
     assert.match(guidedCopy, /Recommended for safe personal testing/);
+    assert.match(guidedCopy, /Enter your own WhatsApp number now/);
   });
 
   it("prompts for Hermes-compatible reasoning effort when the selected model supports it", async () => {
