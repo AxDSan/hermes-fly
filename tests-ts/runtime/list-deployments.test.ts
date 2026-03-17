@@ -40,6 +40,18 @@ describe("process adapter", () => {
     assert.equal(result.stderr, "stderr-line\n");
     assert.equal(result.exitCode, 7);
   });
+
+  it("returns exit code 124 when a process exceeds timeoutMs", async () => {
+    const runner = new NodeProcessRunner();
+
+    const result = await runner.run(
+      process.execPath,
+      ["-e", "setTimeout(() => {}, 1000)"],
+      { timeoutMs: 50 }
+    );
+
+    assert.equal(result.exitCode, 124);
+  });
 });
 
 describe("flyctl adapter", () => {
@@ -123,6 +135,30 @@ describe("flyctl adapter", () => {
 
     assert.equal(state, null);
   });
+
+  it("degrades to placeholders when fly auth is unavailable", async () => {
+    const calls: string[][] = [];
+    const runner: ProcessRunner = {
+      run: async (_command, args) => {
+        calls.push(args);
+        if (args[0] === "auth" && args[1] === "whoami") {
+          return { stdout: "", stderr: "not logged in", exitCode: 1 };
+        }
+        throw new Error(`unexpected fly call: ${args.join(" ")}`);
+      }
+    };
+
+    const adapter = new FlyctlAdapter(runner, { HOME: "" });
+
+    const machine = await adapter.getMachineSummary("test-app");
+    const identity = await adapter.getTelegramBotIdentity("test-app");
+
+    assert.deepEqual(machine, { id: null, state: null, region: null });
+    assert.deepEqual(identity, { configured: false, username: null, link: null });
+    assert.deepEqual(calls, [
+      ["auth", "whoami", "-j"]
+    ]);
+  });
 });
 
 describe("list deployments use-case", () => {
@@ -199,6 +235,30 @@ describe("runListCommand", () => {
     assert.match(output, /machine123 \(started\)/);
     assert.match(output, /@testhermesbot/);
     assert.match(output, /https:\/\/t\.me\/testhermesbot/);
+  });
+
+  it("prints the empty-state message when no deploy has ever been saved", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hermes-fly-list-empty-"));
+    const stdoutChunks: string[] = [];
+    const previousConfigDir = process.env.HERMES_FLY_CONFIG_DIR;
+
+    try {
+      process.env.HERMES_FLY_CONFIG_DIR = root;
+
+      const code = await runListCommand({
+        stdout: { write: (value: string) => { stdoutChunks.push(value); } }
+      });
+
+      assert.equal(code, 0);
+      assert.equal(stdoutChunks.join(""), "No deployed agents found. Run: hermes-fly deploy\n");
+    } finally {
+      if (typeof previousConfigDir === "string") {
+        process.env.HERMES_FLY_CONFIG_DIR = previousConfigDir;
+      } else {
+        delete process.env.HERMES_FLY_CONFIG_DIR;
+      }
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

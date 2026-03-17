@@ -40,12 +40,18 @@ export interface FlyctlPort {
 }
 
 export class FlyctlAdapter implements FlyctlPort {
+  private flyReadyPromise: Promise<boolean> | null = null;
+
   constructor(
     private readonly processRunner: ProcessRunner,
     private readonly env?: NodeJS.ProcessEnv
   ) {}
 
   async getMachineSummary(appName: string): Promise<MachineSummary> {
+    if (!await this.isFlyReady()) {
+      return { id: null, state: null, region: null };
+    }
+
     const flyCommand = await resolveFlyCommand(this.env);
     const machineList = await this.runFlyJson(flyCommand, ["machine", "list", "-a", appName, "--json"]);
     const listedMachine = parseMachineList(machineList);
@@ -68,6 +74,10 @@ export class FlyctlAdapter implements FlyctlPort {
   }
 
   async getTelegramBotIdentity(appName: string): Promise<TelegramBotIdentity> {
+    if (!await this.isFlyReady()) {
+      return { configured: false, username: null, link: null };
+    }
+
     const secretNames = await this.getSecretNames(appName);
     const hasTelegramToken = secretNames.includes("TELEGRAM_BOT_TOKEN") || secretNames.includes("BOT_TOKEN");
     if (!hasTelegramToken) {
@@ -85,7 +95,8 @@ export class FlyctlAdapter implements FlyctlPort {
           appName,
           "-C",
           "sh -lc 'token=${TELEGRAM_BOT_TOKEN:-${BOT_TOKEN:-}}; if [ -n \"$token\" ]; then curl -fsSL --max-time 10 \"https://api.telegram.org/bot${token}/getMe\"; fi'"
-        ]
+        ],
+        { timeoutMs: 4_000 }
       );
       if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
         return { configured: true, username: null, link: null };
@@ -111,10 +122,14 @@ export class FlyctlAdapter implements FlyctlPort {
   }
 
   async getAppStatus(appName: string): Promise<AppStatusResult> {
+    if (!await this.isFlyReady()) {
+      return { ok: false, error: "Fly.io CLI not ready" };
+    }
+
     let result;
     try {
       const flyCommand = await resolveFlyCommand(this.env);
-      result = await this.processRunner.run(flyCommand, ["status", "--app", appName, "--json"]);
+      result = await this.processRunner.run(flyCommand, ["status", "--app", appName, "--json"], { timeoutMs: 4_000 });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { ok: false, error: msg };
@@ -182,11 +197,19 @@ export class FlyctlAdapter implements FlyctlPort {
   }
 
   async getAppLogs(appName: string): Promise<ProcessResult> {
+    if (!await this.isFlyReady()) {
+      return { stdout: "", stderr: "Fly.io CLI not ready", exitCode: 1 };
+    }
+
     const flyCommand = await resolveFlyCommand(this.env);
-    return this.processRunner.run(flyCommand, ["logs", "--app", appName]);
+    return this.processRunner.run(flyCommand, ["logs", "--app", appName], { timeoutMs: 8_000 });
   }
 
   async streamAppLogs(appName: string, options?: ProcessRunOptions): Promise<{ exitCode: number }> {
+    if (!await this.isFlyReady()) {
+      return { exitCode: 1 };
+    }
+
     const flyCommand = await resolveFlyCommand(this.env);
     return this.processRunner.runStreaming(flyCommand, ["logs", "--app", appName], options);
   }
@@ -194,7 +217,11 @@ export class FlyctlAdapter implements FlyctlPort {
   private async getSecretNames(appName: string): Promise<string[]> {
     try {
       const flyCommand = await resolveFlyCommand(this.env);
-      const result = await this.processRunner.run(flyCommand, ["secrets", "list", "--app", appName, "--json"]);
+      const result = await this.processRunner.run(
+        flyCommand,
+        ["secrets", "list", "--app", appName, "--json"],
+        { timeoutMs: 3_000 }
+      );
       if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
         return [];
       }
@@ -217,13 +244,35 @@ export class FlyctlAdapter implements FlyctlPort {
 
   private async runFlyJson(command: string, args: string[]): Promise<string | null> {
     try {
-      const result = await this.processRunner.run(command, args);
+      const result = await this.processRunner.run(command, args, { timeoutMs: 3_000 });
       if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
         return null;
       }
       return result.stdout;
     } catch {
       return null;
+    }
+  }
+
+  private async isFlyReady(): Promise<boolean> {
+    if (this.flyReadyPromise === null) {
+      this.flyReadyPromise = this.probeFlyReady();
+    }
+
+    return await this.flyReadyPromise;
+  }
+
+  private async probeFlyReady(): Promise<boolean> {
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      const result = await this.processRunner.run(
+        flyCommand,
+        ["auth", "whoami", "-j"],
+        { timeoutMs: 2_000 }
+      );
+      return result.exitCode === 0;
+    } catch {
+      return false;
     }
   }
 }

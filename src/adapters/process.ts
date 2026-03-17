@@ -9,6 +9,7 @@ export interface ProcessResult {
 export interface ProcessRunOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
   onStdoutChunk?: (chunk: string) => void;
   onStderrChunk?: (chunk: string) => void;
 }
@@ -36,6 +37,14 @@ export class NodeProcessRunner implements ForegroundProcessRunner {
 
       let stdout = "";
       let stderr = "";
+      let timedOut = false;
+      const timeout =
+        typeof options.timeoutMs === "number" && options.timeoutMs > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              child.kill("SIGTERM");
+            }, options.timeoutMs)
+          : null;
 
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
@@ -47,12 +56,20 @@ export class NodeProcessRunner implements ForegroundProcessRunner {
         stderr += chunk;
       });
 
-      child.on("error", reject);
+      child.on("error", (error) => {
+        if (timeout !== null) {
+          clearTimeout(timeout);
+        }
+        reject(error);
+      });
       child.on("close", (code) => {
+        if (timeout !== null) {
+          clearTimeout(timeout);
+        }
         resolve({
           stdout,
           stderr,
-          exitCode: typeof code === "number" ? code : 1
+          exitCode: timedOut ? 124 : typeof code === "number" ? code : 1
         });
       });
     });
@@ -69,6 +86,15 @@ export class NodeProcessRunner implements ForegroundProcessRunner {
         stdio: ["ignore", "pipe", "pipe"]
       });
 
+      let timedOut = false;
+      const timeout =
+        typeof options.timeoutMs === "number" && options.timeoutMs > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              child.kill("SIGTERM");
+            }, options.timeoutMs)
+          : null;
+
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
         options.onStdoutChunk?.(chunk);
@@ -79,9 +105,17 @@ export class NodeProcessRunner implements ForegroundProcessRunner {
         options.onStderrChunk?.(chunk);
       });
 
-      child.on("error", reject);
+      child.on("error", (error) => {
+        if (timeout !== null) {
+          clearTimeout(timeout);
+        }
+        reject(error);
+      });
       child.on("close", (code) => {
-        resolve({ exitCode: typeof code === "number" ? code : 1 });
+        if (timeout !== null) {
+          clearTimeout(timeout);
+        }
+        resolve({ exitCode: timedOut ? 124 : typeof code === "number" ? code : 1 });
       });
     });
   }
@@ -97,9 +131,26 @@ export class NodeProcessRunner implements ForegroundProcessRunner {
         stdio: "inherit"
       });
 
-      child.on("error", reject);
+      let timedOut = false;
+      const timeout =
+        typeof options.timeoutMs === "number" && options.timeoutMs > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              child.kill("SIGTERM");
+            }, options.timeoutMs)
+          : null;
+
+      child.on("error", (error) => {
+        if (timeout !== null) {
+          clearTimeout(timeout);
+        }
+        reject(error);
+      });
       child.on("close", (code) => {
-        resolve({ exitCode: typeof code === "number" ? code : 1 });
+        if (timeout !== null) {
+          clearTimeout(timeout);
+        }
+        resolve({ exitCode: timedOut ? 124 : typeof code === "number" ? code : 1 });
       });
     });
   }
