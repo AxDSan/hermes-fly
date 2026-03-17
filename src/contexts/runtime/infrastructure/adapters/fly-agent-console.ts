@@ -32,10 +32,22 @@ export class FlyAgentConsole implements AgentConsolePort {
 
 function buildRemoteHermesCommand(hermesArgs: string[]): string {
   const renderedArgs = hermesArgs.map(shellEscape).join(" ");
-  const command = renderedArgs.length > 0
+  const launchHermes = renderedArgs.length > 0
     ? `cd ${shellEscape(REMOTE_HERMES_HOME)} && exec ${shellEscape(REMOTE_HERMES_PATH)} ${renderedArgs}`
     : `cd ${shellEscape(REMOTE_HERMES_HOME)} && exec ${shellEscape(REMOTE_HERMES_PATH)}`;
-  return `sh -lc ${shellEscape(command)}`;
+  const anthropicBootstrap = [
+    "export HOME=/root",
+    `if [ -z "\${ANTHROPIC_TOKEN:-}" ] && [ -f ${shellEscape(`${REMOTE_HERMES_HOME}/.anthropic_oauth.json`)} ]; then`,
+    `  _anthropic_token="$(python3 -c ${shellEscape(
+      "import json; from pathlib import Path; data = json.loads(Path('/root/.hermes/.anthropic_oauth.json').read_text(encoding='utf-8')); token = str(data.get('accessToken', '')).strip(); print(token) if token else None"
+    )} 2>/dev/null || true)"`,
+    '  if [ -n "$_anthropic_token" ]; then',
+    '    export ANTHROPIC_TOKEN="$_anthropic_token"',
+    '  fi',
+    "fi",
+    launchHermes,
+  ].join("\n");
+  return `sh -lc ${shellEscape(anthropicBootstrap)}`;
 }
 
 function shellEscape(value: string): string {
