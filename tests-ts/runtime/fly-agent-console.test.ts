@@ -22,9 +22,10 @@ describe("FlyAgentConsole", () => {
     assert.deepEqual(result, { ok: true });
     assert.equal(calls[0]?.command, "fly");
     assert.deepEqual(calls[0]?.args.slice(0, 4), ["ssh", "console", "-a", "test-app"]);
-    assert.equal(calls[0]?.args[4], "-C");
-    assert.match(calls[0]?.args[5] ?? "", /\/opt\/hermes\/hermes-agent\/venv\/bin\/hermes/);
-    assert.match(calls[0]?.args[5] ?? "", /chat/);
-    assert.match(calls[0]?.args[5] ?? "", /hello world/);
+    assert.equal(calls[0]?.args[4], "--pty");
+    assert.equal(calls[0]?.args[5], "-C");
+    assert.match(calls[0]?.args[6] ?? "", /\/opt\/hermes\/hermes-agent\/venv\/bin\/hermes/);
+    assert.match(calls[0]?.args[6] ?? "", /chat/);
+    assert.match(calls[0]?.args[6] ?? "", /hello world/);
   });
 });

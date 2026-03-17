@@ -16,7 +16,7 @@ export class FlyAgentConsole implements AgentConsolePort {
       const flyCommand = await resolveFlyCommand(this.env);
       const result = await this.processRunner.runForeground(
         flyCommand,
-        ["ssh", "console", "-a", appName, "-C", buildRemoteHermesCommand(hermesArgs)],
+        ["ssh", "console", "-a", appName, "--pty", "-C", buildRemoteHermesCommand(hermesArgs)],
         { env: this.env }
       );
       if (result.exitCode !== 0) {
