@@ -40,6 +40,9 @@ describe("TemplateWriter", () => {
       assert.doesNotMatch(dockerfile, /ghcr\.io\/anthropics\/hermes-agent/);
       assert.match(dockerfile, /io\.hermes\.deploy\.channel="stable"/);
       assert.match(dockerfile, /io\.hermes\.compatibility_policy="1\.0\.0"/);
+      assert.match(dockerfile, /scripts\/whatsapp-bridge\/bridge\.js/);
+      assert.match(dockerfile, /messages\.upsert\.skipped/);
+      assert.match(dockerfile, /messages\.upsert\.accepted/);
 
       assert.match(flyToml, /^app = "test-app"$/m);
       assert.match(flyToml, /^primary_region = "fra"$/m);

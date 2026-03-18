@@ -4121,6 +4121,37 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
 
       const bridgeLog = await this.readRecentWhatsAppBridgeLog(appName);
+      const bridgeDiagnosis = bridgeLog ? this.diagnoseWhatsAppBridgeLog(bridgeLog) : { kind: "unknown" as const };
+      if (bridgeDiagnosis.kind === "accepted_but_unhandled") {
+        return {
+          ok: false,
+          error: `the self-chat test message reached the WhatsApp bridge, but Hermes did not process or reply before the timeout.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(lastLogs)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+        };
+      }
+      if (bridgeDiagnosis.kind === "missing_message_payload") {
+        return {
+          ok: false,
+          error: `WhatsApp emitted your self-chat activity, but the bridge only received a message stub without usable content.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(lastLogs)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+        };
+      }
+      if (bridgeDiagnosis.kind === "not_self_chat") {
+        return {
+          ok: false,
+          error: `WhatsApp emitted your message, but the bridge did not classify it as Message yourself self-chat.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(lastLogs)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+        };
+      }
+      if (bridgeDiagnosis.kind === "unauthorized_sender") {
+        return {
+          ok: false,
+          error: `WhatsApp emitted your message, but the bridge rejected it against the configured allowed users.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(lastLogs)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+        };
+      }
+      if (bridgeDiagnosis.kind === "empty_message") {
+        return {
+          ok: false,
+          error: `WhatsApp emitted your message, but the bridge saw no text or supported media to queue for Hermes.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(lastLogs)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+        };
+      }
       return {
         ok: false,
         error: `no inbound WhatsApp self-chat activity was observed after the test message.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(lastLogs)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
@@ -4201,6 +4232,25 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
     if (/Handler returned empty\/None response/i.test(logs)) {
       return { kind: "empty_response" };
+    }
+    return { kind: "unknown" };
+  }
+
+  private diagnoseWhatsAppBridgeLog(logs: string): { kind: "accepted_but_unhandled" | "missing_message_payload" | "not_self_chat" | "unauthorized_sender" | "empty_message" | "unknown" } {
+    if (/messages\.poll\.drained/i.test(logs) || /messages\.upsert\.accepted/i.test(logs) || /messages\.upsert\.queued/i.test(logs)) {
+      return { kind: "accepted_but_unhandled" };
+    }
+    if (/"reason":"missing-message-payload"/i.test(logs)) {
+      return { kind: "missing_message_payload" };
+    }
+    if (/"reason":"fromMe-not-self-chat"/i.test(logs) || /"reason":"fromMe-group-or-status"/i.test(logs)) {
+      return { kind: "not_self_chat" };
+    }
+    if (/"reason":"unauthorized-sender"/i.test(logs)) {
+      return { kind: "unauthorized_sender" };
+    }
+    if (/"reason":"empty-body-no-media"/i.test(logs)) {
+      return { kind: "empty_message" };
     }
     return { kind: "unknown" };
   }
