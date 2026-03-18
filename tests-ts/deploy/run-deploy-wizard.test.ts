@@ -885,6 +885,13 @@ describe("FlyDeployWizard.postDeployActions", () => {
     const runner: ForegroundProcessRunner = {
       run: async (command, args) => {
         backgroundCalls.push({ command, args });
+        if (args[0] === "ssh" && args[1] === "console") {
+          return {
+            exitCode: 0,
+            stdout: "empty_session\n",
+            stderr: "",
+          };
+        }
         if (args[0] === "machine" && args[1] === "list") {
           return {
             exitCode: 0,
@@ -922,7 +929,12 @@ describe("FlyDeployWizard.postDeployActions", () => {
       whatsappCompleteAccessDuringSetup: true,
     }, io.stdout, io.stderr);
 
-    assert.ok(streamingCalls.some((call) => call.args.join(" ").includes("hermes-agent/venv/bin/hermes") && call.args.join(" ").includes("whatsapp")));
+    const remoteSetupCall = streamingCalls.find((call) => call.args.join(" ").includes("hermes-agent/venv/bin/hermes") && call.args.join(" ").includes("whatsapp"));
+    assert.ok(remoteSetupCall);
+    const remoteSetupCommand = remoteSetupCall?.args[remoteSetupCall.args.indexOf("-C") + 1] ?? "";
+    assert.match(remoteSetupCommand, /WHATSAPP_ENABLED=.*true/);
+    assert.match(remoteSetupCommand, /WHATSAPP_MODE=.*self-chat/);
+    assert.match(remoteSetupCommand, /WHATSAPP_ALLOWED_USERS=.*393406844897/);
     assert.ok(backgroundCalls.some((call) => call.args.slice(0, 4).join(" ") === "machine restart -a test-app"));
     assert.ok(backgroundCalls.some((call) => call.args.slice(0, 4).join(" ") === "machine list -a test-app"));
     assert.match(io.outText, /Scan the QR code with WhatsApp on your phone/);
@@ -932,6 +944,45 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.doesNotMatch(io.outText, /Or install as a service: hermes gateway install/);
     assert.doesNotMatch(io.outText, /stream errored out/);
     assert.ok(!prompts.asked.some((message) => message.includes("WhatsApp pairing code")));
+  });
+
+  it("fails before opening the remote wizard when stale WhatsApp session data already exists", async () => {
+    const prompts = makePromptPort(["y"], { interactive: true });
+    const io = makeIO();
+    let streamed = false;
+    const backgroundCalls: Array<{ command: string; args: string[] }> = [];
+    const runner: ForegroundProcessRunner = {
+      run: async (command, args) => {
+        backgroundCalls.push({ command, args });
+        if (args[0] === "ssh" && args[1] === "console") {
+          return {
+            exitCode: 0,
+            stdout: "has_session\n",
+            stderr: "",
+          };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      runStreaming: async () => {
+        streamed = true;
+        return { exitCode: 0 };
+      },
+      runForeground: async () => ({ exitCode: 0 }),
+    };
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner });
+
+    await wizard.finalizeMessagingSetup({
+      ...DEFAULT_CONFIG,
+      appName: "test-app",
+      whatsappEnabled: true,
+      whatsappMode: "self-chat",
+      whatsappAllowedUsers: "393406844897",
+      whatsappCompleteAccessDuringSetup: true,
+    }, io.stdout, io.stderr);
+
+    assert.equal(streamed, false);
+    assert.ok(!backgroundCalls.some((call) => call.args.slice(0, 2).join(" ") === "machine restart"));
+    assert.match(io.errText, /existing WhatsApp session data was found before first-time pairing/i);
   });
 });
 

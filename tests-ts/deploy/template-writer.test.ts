@@ -60,9 +60,10 @@ describe("TemplateWriter", () => {
       assert.match(entrypoint, /DISCORD_BOT_TOKEN/);
       assert.match(entrypoint, /SLACK_BOT_TOKEN/);
       assert.match(entrypoint, /SLACK_APP_TOKEN/);
-      assert.match(entrypoint, /WHATSAPP_ENABLED/);
-      assert.match(entrypoint, /WHATSAPP_MODE/);
-      assert.match(entrypoint, /WHATSAPP_ALLOWED_USERS/);
+      assert.match(entrypoint, /HERMES_FLY_WHATSAPP_PENDING/);
+      assert.match(entrypoint, /HERMES_FLY_WHATSAPP_MODE/);
+      assert.match(entrypoint, /HERMES_FLY_WHATSAPP_ALLOWED_USERS/);
+      assert.match(entrypoint, /find \/root\/\.hermes\/whatsapp\/session -mindepth 1/);
 
       assert.match(sitecustomize, /HERMES_ZAI_THINKING/);
       assert.match(sitecustomize, /thinking/);

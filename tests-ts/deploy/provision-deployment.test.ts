@@ -270,9 +270,10 @@ describe("ProvisionDeploymentUseCase - happy path", () => {
     assert.equal(capturedSecrets?.DISCORD_BOT_TOKEN, "discord-live-token");
     assert.equal(capturedSecrets?.SLACK_BOT_TOKEN, "xoxb-live");
     assert.equal(capturedSecrets?.SLACK_APP_TOKEN, "xapp-live");
-    assert.equal(capturedSecrets?.WHATSAPP_ENABLED, "true");
-    assert.equal(capturedSecrets?.WHATSAPP_MODE, "self-chat");
-    assert.equal(capturedSecrets?.WHATSAPP_ALLOWED_USERS, "393406844897");
+    assert.equal(capturedSecrets?.HERMES_FLY_WHATSAPP_PENDING, "true");
+    assert.equal(capturedSecrets?.HERMES_FLY_WHATSAPP_MODE, "self-chat");
+    assert.equal(capturedSecrets?.HERMES_FLY_WHATSAPP_ALLOWED_USERS, "393406844897");
+    assert.equal(capturedSecrets?.WHATSAPP_ENABLED, undefined);
   });
 });
 

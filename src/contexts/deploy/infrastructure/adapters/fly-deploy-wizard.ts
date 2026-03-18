@@ -458,9 +458,9 @@ export class FlyDeployWizard implements DeployWizardPort {
       slackBotToken: env.SLACK_BOT_TOKEN,
       slackAppToken: env.SLACK_APP_TOKEN,
       slackAllowedUsers: env.SLACK_ALLOWED_USERS,
-      whatsappEnabled: env.WHATSAPP_ENABLED,
-      whatsappMode: env.WHATSAPP_MODE,
-      whatsappAllowedUsers: env.WHATSAPP_ALLOWED_USERS,
+      whatsappEnabled: env.WHATSAPP_ENABLED ?? env.HERMES_FLY_WHATSAPP_PENDING,
+      whatsappMode: env.WHATSAPP_MODE ?? env.HERMES_FLY_WHATSAPP_MODE,
+      whatsappAllowedUsers: env.WHATSAPP_ALLOWED_USERS ?? env.HERMES_FLY_WHATSAPP_ALLOWED_USERS,
     });
     const hermesRef = this.resolveHermesAgentRef(opts.channel);
 
@@ -595,13 +595,13 @@ export class FlyDeployWizard implements DeployWizardPort {
       secrets.SLACK_ALLOWED_USERS = config.slackAllowedUsers;
     }
     if (config.whatsappEnabled) {
-      secrets.WHATSAPP_ENABLED = "true";
+      secrets.HERMES_FLY_WHATSAPP_PENDING = "true";
     }
     if (config.whatsappMode) {
-      secrets.WHATSAPP_MODE = config.whatsappMode;
+      secrets.HERMES_FLY_WHATSAPP_MODE = config.whatsappMode;
     }
     if (config.whatsappAllowedUsers) {
-      secrets.WHATSAPP_ALLOWED_USERS = config.whatsappAllowedUsers;
+      secrets.HERMES_FLY_WHATSAPP_ALLOWED_USERS = config.whatsappAllowedUsers;
     }
     return this.runner.setSecrets(config.appName, secrets);
   }
@@ -746,7 +746,7 @@ export class FlyDeployWizard implements DeployWizardPort {
         stdout.write("\nOpening WhatsApp setup on the deployed agent...\n");
         stdout.write("Scan the QR code with WhatsApp on your phone.\n");
         stdout.write("hermes-fly will finish setup here and restart the deployed app automatically when pairing succeeds.\n\n");
-        const paired = await this.runRemoteWhatsAppSetup(config.appName, stdout, stderr);
+        const paired = await this.runRemoteWhatsAppSetup(config, stdout, stderr);
         if (!paired.ok) {
           stderr.write(`[warn] WhatsApp pairing did not complete cleanly: ${paired.error ?? "unknown error"}\n`);
           stderr.write(`Tip: run 'hermes-fly agent -a ${config.appName} whatsapp' to retry pairing.\n`);
@@ -3177,7 +3177,7 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private async runRemoteWhatsAppSetup(
-    appName: string,
+    config: DeployConfig,
     stdout: { write: (s: string) => void },
     stderr: { write: (s: string) => void }
   ): Promise<{ ok: boolean; error?: string }> {
@@ -3220,10 +3220,33 @@ export class FlyDeployWizard implements DeployWizardPort {
     };
 
     try {
+      const preflight = await this.checkRemoteWhatsAppSessionState(config.appName);
+      if (!preflight.ok) {
+        return { ok: false, error: preflight.error };
+      }
+      if (preflight.hasSession) {
+        return {
+          ok: false,
+          error: "existing WhatsApp session data was found before first-time pairing; destroy the app and redeploy or clear /root/.hermes/whatsapp/session before retrying",
+        };
+      }
+
       const flyCommand = await resolveFlyCommand(this.env);
       const result = await this.process.runStreaming(
         flyCommand,
-        ["ssh", "console", "-a", appName, "--pty", "-C", this.buildRemoteHermesCommand(["whatsapp"])],
+        [
+          "ssh",
+          "console",
+          "-a",
+          config.appName,
+          "--pty",
+          "-C",
+          this.buildRemoteHermesCommand(["whatsapp"], {
+            WHATSAPP_ENABLED: "true",
+            WHATSAPP_MODE: config.whatsappMode,
+            WHATSAPP_ALLOWED_USERS: config.whatsappAllowedUsers,
+          })
+        ],
         {
           env: this.env,
           timeoutMs: 10 * 60 * 1000,
@@ -3240,6 +3263,35 @@ export class FlyDeployWizard implements DeployWizardPort {
     } catch (error) {
       flush("stdout");
       flush("stderr");
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async checkRemoteWhatsAppSessionState(
+    appName: string
+  ): Promise<{ ok: true; hasSession: boolean } | { ok: false; error: string }> {
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      const result = await this.process.run(
+        flyCommand,
+        [
+          "ssh",
+          "console",
+          "-a",
+          appName,
+          "-C",
+          "sh -lc 'if find /root/.hermes/whatsapp/session -mindepth 1 -print -quit 2>/dev/null | grep -q .; then echo has_session; else echo empty_session; fi'"
+        ],
+        {
+          env: this.env,
+          timeoutMs: 20_000,
+        }
+      );
+      if (result.exitCode !== 0) {
+        return { ok: false, error: "could not inspect WhatsApp session state on the deployed app" };
+      }
+      return { ok: true, hasSession: /\bhas_session\b/.test(result.stdout) };
+    } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
@@ -3320,11 +3372,19 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   }
 
-  private buildRemoteHermesCommand(hermesArgs: string[]): string {
+  private buildRemoteHermesCommand(
+    hermesArgs: string[],
+    extraEnv: Record<string, string | undefined> = {}
+  ): string {
     const renderedArgs = hermesArgs.map((value) => this.shellEscape(value)).join(" ");
+    const renderedEnv = Object.entries(extraEnv)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0)
+      .map(([key, value]) => `${key}=${this.shellEscape(value)}`)
+      .join(" ");
+    const envPrefix = renderedEnv.length > 0 ? `env ${renderedEnv} ` : "";
     const launch = renderedArgs.length > 0
-      ? `cd ${this.shellEscape("/root/.hermes")} && exec ${this.shellEscape("/opt/hermes/hermes-agent/venv/bin/hermes")} ${renderedArgs}`
-      : `cd ${this.shellEscape("/root/.hermes")} && exec ${this.shellEscape("/opt/hermes/hermes-agent/venv/bin/hermes")}`;
+      ? `cd ${this.shellEscape("/root/.hermes")} && exec ${envPrefix}${this.shellEscape("/opt/hermes/hermes-agent/venv/bin/hermes")} ${renderedArgs}`
+      : `cd ${this.shellEscape("/root/.hermes")} && exec ${envPrefix}${this.shellEscape("/opt/hermes/hermes-agent/venv/bin/hermes")}`;
     return `sh -lc ${this.shellEscape(launch)}`;
   }
 

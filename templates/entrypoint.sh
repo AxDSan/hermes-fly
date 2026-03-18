@@ -52,6 +52,23 @@ target.write_text(json.dumps(payload), encoding='utf-8')
 target.chmod(0o600)
 PYEOF
 fi
+# Stage WhatsApp gateway config until the first pairing completes. This avoids
+# racing the live gateway against `hermes whatsapp` during deploy-time setup.
+if [[ -z "${WHATSAPP_ENABLED:-}" ]] && [[ "${HERMES_FLY_WHATSAPP_PENDING:-}" =~ ^(1|true|yes)$ ]]; then
+  if find /root/.hermes/whatsapp/session -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
+    export WHATSAPP_ENABLED=true
+    if [[ -n "${HERMES_FLY_WHATSAPP_MODE:-}" ]]; then
+      export WHATSAPP_MODE="${HERMES_FLY_WHATSAPP_MODE}"
+    fi
+    if [[ -n "${HERMES_FLY_WHATSAPP_ALLOWED_USERS:-}" ]]; then
+      export WHATSAPP_ALLOWED_USERS="${HERMES_FLY_WHATSAPP_ALLOWED_USERS}"
+    fi
+  else
+    sed -i '/^WHATSAPP_ENABLED=/d' /root/.hermes/.env 2>/dev/null || true
+    sed -i '/^WHATSAPP_MODE=/d' /root/.hermes/.env 2>/dev/null || true
+    sed -i '/^WHATSAPP_ALLOWED_USERS=/d' /root/.hermes/.env 2>/dev/null || true
+  fi
+fi
 # Bridge Fly secrets into /root/.hermes/.env on every boot (not just first deploy)
 for var in OPENROUTER_API_KEY GLM_API_KEY GLM_BASE_URL LLM_MODEL LLM_BASE_URL LLM_API_KEY NOUS_API_KEY \
   HERMES_ZAI_THINKING \

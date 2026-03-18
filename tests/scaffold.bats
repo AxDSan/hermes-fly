@@ -129,6 +129,15 @@ teardown() {
   assert_output --partial "GLM_BASE_URL"
 }
 
+@test "entrypoint.sh stages WhatsApp until a session exists" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "HERMES_FLY_WHATSAPP_PENDING"
+  assert_output --partial "HERMES_FLY_WHATSAPP_MODE"
+  assert_output --partial "HERMES_FLY_WHATSAPP_ALLOWED_USERS"
+  assert_output --partial "find /root/.hermes/whatsapp/session -mindepth 1"
+}
+
 @test "entrypoint.sh patches config.yaml model from LLM_MODEL" {
   run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
   assert_success

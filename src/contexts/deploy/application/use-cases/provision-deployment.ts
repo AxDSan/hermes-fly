@@ -89,13 +89,13 @@ export class ProvisionDeploymentUseCase {
       secrets.SLACK_ALLOWED_USERS = config.slackAllowedUsers;
     }
     if (config.whatsappEnabled) {
-      secrets.WHATSAPP_ENABLED = "true";
+      secrets.HERMES_FLY_WHATSAPP_PENDING = "true";
     }
     if (config.whatsappMode) {
-      secrets.WHATSAPP_MODE = config.whatsappMode;
+      secrets.HERMES_FLY_WHATSAPP_MODE = config.whatsappMode;
     }
     if (config.whatsappAllowedUsers) {
-      secrets.WHATSAPP_ALLOWED_USERS = config.whatsappAllowedUsers;
+      secrets.HERMES_FLY_WHATSAPP_ALLOWED_USERS = config.whatsappAllowedUsers;
     }
 
     const secretsResult = await this.runner.setSecrets(config.appName, secrets);
