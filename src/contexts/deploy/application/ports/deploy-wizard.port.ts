@@ -39,6 +39,7 @@ export interface DeployConfig {
   whatsappUsePairing?: boolean;
   whatsappCompleteAccessDuringSetup?: boolean;
   whatsappSessionConfirmed?: boolean;
+  whatsappTakeoverAppNames?: string[];
 }
 
 export interface FinalizeMessagingSetupResult {

@@ -167,6 +167,7 @@ type WhatsAppSetup = {
   usePairing?: boolean;
   completeAccessDuringSetup?: boolean;
   allowAllUsers?: boolean;
+  takeoverAppNames?: string[];
 };
 
 type MessagingSetup = {
@@ -523,6 +524,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       whatsappAllowedUsers: messagingSetup.whatsapp?.allowedUsers,
       whatsappUsePairing: messagingSetup.whatsapp?.usePairing,
       whatsappCompleteAccessDuringSetup: messagingSetup.whatsapp?.completeAccessDuringSetup,
+      whatsappTakeoverAppNames: messagingSetup.whatsapp?.takeoverAppNames,
     };
 
     if (this.prompts.isInteractive()) {
@@ -724,6 +726,56 @@ export class FlyDeployWizard implements DeployWizardPort {
     await writeFile(configPath, newLines.join("\n") + "\n", "utf8");
   }
 
+  private async clearSavedWhatsAppBinding(appName: string): Promise<void> {
+    const { readFile, writeFile, mkdir } = await import("node:fs/promises");
+    const { join: pathJoin } = await import("node:path");
+    const configDir = this.env.HERMES_FLY_CONFIG_DIR
+      ?? `${this.env.HOME ?? process.env.HOME}/.hermes-fly`;
+    await mkdir(configDir, { recursive: true });
+    const configPath = pathJoin(configDir, "config.yaml");
+
+    let existing = "";
+    try {
+      existing = await readFile(configPath, "utf8");
+    } catch {
+      return;
+    }
+
+    const lines = existing.split(/\r?\n/);
+    const updated: string[] = [];
+    let inTargetEntry = false;
+
+    for (const line of lines) {
+      const nameMatch = line.match(/^  - name:[ \t]*(.+)$/);
+      if (nameMatch) {
+        inTargetEntry = nameMatch[1].trim() === appName;
+        updated.push(line);
+        continue;
+      }
+
+      if (inTargetEntry) {
+        if (/^    whatsapp_mode:/.test(line) || /^    whatsapp_allowed_users:/.test(line)) {
+          continue;
+        }
+        const platformMatch = line.match(/^    platform:[ \t]*(.*)$/);
+        if (platformMatch) {
+          const platforms = platformMatch[1]
+            .split(",")
+            .map((value) => value.trim())
+            .filter((value) => value.length > 0 && value !== "whatsapp");
+          if (platforms.length > 0) {
+            updated.push(`    platform: ${platforms.join(",")}`);
+          }
+          continue;
+        }
+      }
+
+      updated.push(line);
+    }
+
+    await writeFile(configPath, updated.join("\n"), "utf8");
+  }
+
   async finalizeMessagingSetup(
     config: DeployConfig,
     stdout: { write: (s: string) => void },
@@ -769,6 +821,15 @@ export class FlyDeployWizard implements DeployWizardPort {
         true
       );
       if (shouldPair) {
+        if ((config.whatsappTakeoverAppNames?.length ?? 0) > 0) {
+          const takeover = await this.takeOverWhatsAppSelfChat(config.whatsappTakeoverAppNames ?? [], stdout);
+          if (!takeover.ok) {
+            stderr.write(`[warn] WhatsApp pairing did not start cleanly: ${takeover.error ?? "could not disconnect the older deployment"}\n`);
+            stderr.write(`Tip: disconnect WhatsApp from ${config.whatsappTakeoverAppNames?.join(", ")} and retry the deploy pairing step.\n`);
+            return {};
+          }
+        }
+
         stdout.write("\nOpening WhatsApp setup on the deployed agent...\n");
         stdout.write("Scan the QR code with WhatsApp on your phone.\n");
         stdout.write("hermes-fly will finish setup here and restart the deployed app automatically when pairing succeeds.\n\n");
@@ -2580,12 +2641,13 @@ export class FlyDeployWizard implements DeployWizardPort {
       mode,
       allowedUsers: access.allowedUsers,
       completeAccessDuringSetup: access.completeAccessDuringSetup,
+      takeoverAppNames: access.takeoverAppNames,
     };
   }
 
   private async collectWhatsAppAccessPolicy(
     options: { allowAnyone: boolean; appName: string; mode: "bot" | "self-chat" }
-  ): Promise<{ allowedUsers?: string; completeAccessDuringSetup?: boolean; skipSetup?: boolean }> {
+  ): Promise<{ allowedUsers?: string; completeAccessDuringSetup?: boolean; skipSetup?: boolean; takeoverAppNames?: string[] }> {
     while (true) {
       this.prompts.write("\nWho should be able to talk to your WhatsApp setup?\n\n");
       this.prompts.write("   1  Only me          Enter your own WhatsApp number now. Hermes will use it after pairing.\n");
@@ -2601,12 +2663,17 @@ export class FlyDeployWizard implements DeployWizardPort {
             const conflicts = await this.findWhatsAppConflicts(options.appName, normalized, options.mode);
             if (conflicts.length > 0) {
               const resolution = await this.resolveWhatsAppConflict(conflicts);
-              if (resolution === "retry") {
+              if (resolution.action === "retry") {
                 continue;
               }
-              if (resolution === "skip") {
+              if (resolution.action === "skip") {
                 return { skipSetup: true };
               }
+              return {
+                allowedUsers: normalized,
+                completeAccessDuringSetup: true,
+                takeoverAppNames: resolution.appNames,
+              };
             }
             return {
               allowedUsers: normalized,
@@ -2685,7 +2752,7 @@ export class FlyDeployWizard implements DeployWizardPort {
 
   private async resolveWhatsAppConflict(
     conflicts: SavedDeploymentEntry[]
-  ): Promise<"retry" | "skip" | "continue"> {
+  ): Promise<{ action: "retry" | "skip" | "takeover"; appNames: string[] }> {
     if (conflicts.length === 1) {
       this.prompts.write(`\nThis phone number still appears tied with deployment ${conflicts[0].name}:\n`);
     } else {
@@ -2695,19 +2762,19 @@ export class FlyDeployWizard implements DeployWizardPort {
       this.prompts.write(`  - ${entry.name}\n`);
     });
     this.prompts.write("\nUsing the same personal WhatsApp number in more than one Hermes deployment can make setup stall or move the linked session away from the older deployment.\n");
-    this.prompts.write("If you want this new deployment to own the number, destroy or disconnect the deployment above first.\n\n");
+    this.prompts.write("If you want this new deployment to own the number, hermes-fly can disconnect WhatsApp from the deployment above before pairing.\n\n");
     this.prompts.write("   1  Use a different number   Go back and enter another WhatsApp number\n");
     this.prompts.write("   2  Skip WhatsApp for now    Finish this deployment without WhatsApp\n");
-    this.prompts.write("   3  Continue anyway          Not recommended\n\n");
+    this.prompts.write("   3  Take over this number    Disconnect WhatsApp from the deployment above, then pair here\n\n");
 
     const choice = await this.chooseNumber("Choose an option [1]: ", 3, 1);
     if (choice === 1) {
-      return "retry";
+      return { action: "retry", appNames: [] };
     }
     if (choice === 2) {
-      return "skip";
+      return { action: "skip", appNames: [] };
     }
-    return "continue";
+    return { action: "takeover", appNames: conflicts.map((entry) => entry.name) };
   }
 
   private async readLiveFlyAppNames(): Promise<Set<string> | null> {
@@ -3774,55 +3841,144 @@ export class FlyDeployWizard implements DeployWizardPort {
 
   private async restartAppAfterWhatsAppPairing(appName: string): Promise<{ ok: boolean; error?: string }> {
     try {
+      return await this.restartPrimaryAppMachine(
+        appName,
+        "could not determine which Fly machine to restart after WhatsApp pairing",
+        "machine not running after WhatsApp restart"
+      );
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async takeOverWhatsAppSelfChat(
+    appNames: string[],
+    stdout: { write: (s: string) => void }
+  ): Promise<{ ok: boolean; error?: string }> {
+    const uniqueAppNames = [...new Set(appNames.map((value) => value.trim()).filter(Boolean))];
+    for (const appName of uniqueAppNames) {
+      stdout.write(`Taking over WhatsApp from deployment ${appName}...\n`);
+      const detached = await this.disconnectWhatsAppFromDeployment(appName);
+      if (!detached.ok) {
+        return detached;
+      }
+      await this.clearSavedWhatsAppBinding(appName);
+      this.whatsappBindingCache.set(appName, { hasSession: false, allowedUsers: null });
+    }
+    return { ok: true };
+  }
+
+  private async disconnectWhatsAppFromDeployment(appName: string): Promise<{ ok: boolean; error?: string }> {
+    try {
       const flyCommand = await resolveFlyCommand(this.env);
-      const machines = await this.process.run(
+      const unsetSecrets = await this.process.run(
+        flyCommand,
+        [
+          "secrets",
+          "unset",
+          "WHATSAPP_ENABLED",
+          "WHATSAPP_MODE",
+          "WHATSAPP_ALLOWED_USERS",
+          "HERMES_FLY_WHATSAPP_PENDING",
+          "HERMES_FLY_WHATSAPP_MODE",
+          "HERMES_FLY_WHATSAPP_ALLOWED_USERS",
+          "-a",
+          appName,
+        ],
+        { env: this.env, timeoutMs: 60_000 }
+      );
+      if (unsetSecrets.exitCode !== 0) {
+        return {
+          ok: false,
+          error: `could not disconnect WhatsApp from deployment ${appName}: ${unsetSecrets.stderr || unsetSecrets.stdout || "secrets unset failed"}`,
+        };
+      }
+
+      const clearSession = await this.process.run(
+        flyCommand,
+        [
+          "ssh",
+          "console",
+          "-a",
+          appName,
+          "-C",
+          "sh -lc 'rm -rf /root/.hermes/whatsapp/session && mkdir -p /root/.hermes/whatsapp/session && chmod 700 /root/.hermes/whatsapp/session'"
+        ],
+        { env: this.env, timeoutMs: 20_000 }
+      );
+      if (clearSession.exitCode !== 0) {
+        return {
+          ok: false,
+          error: `could not clear WhatsApp session data on deployment ${appName}: ${clearSession.stderr || clearSession.stdout || "session clear failed"}`,
+        };
+      }
+
+      const restarted = await this.restartPrimaryAppMachine(
+        appName,
+        `could not determine which Fly machine to restart after disconnecting WhatsApp from ${appName}`,
+        `machine not running after disconnecting WhatsApp from ${appName}`
+      );
+      if (!restarted.ok) {
+        return restarted;
+      }
+
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async restartPrimaryAppMachine(
+    appName: string,
+    missingMachineError: string,
+    notRunningPrefix: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const flyCommand = await resolveFlyCommand(this.env);
+    const machines = await this.process.run(
+      flyCommand,
+      ["machine", "list", "-a", appName, "--json"],
+      { env: this.env, timeoutMs: 4_000 }
+    );
+    if (machines.exitCode !== 0) {
+      return { ok: false, error: machines.stderr || machines.stdout || "machine status check failed before restart" };
+    }
+
+    const machineId = this.readPrimaryMachineId(machines.stdout);
+    if (!machineId) {
+      return { ok: false, error: missingMachineError };
+    }
+
+    const restart = await this.process.run(
+      flyCommand,
+      ["machine", "restart", machineId, "-a", appName],
+      { env: this.env, timeoutMs: 60_000 }
+    );
+    if (restart.exitCode !== 0) {
+      return { ok: false, error: restart.stderr || restart.stdout || "app restart failed" };
+    }
+
+    let lastState = "unknown";
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const result = await this.process.run(
         flyCommand,
         ["machine", "list", "-a", appName, "--json"],
         { env: this.env, timeoutMs: 4_000 }
       );
-      if (machines.exitCode !== 0) {
-        return { ok: false, error: machines.stderr || machines.stdout || "machine status check failed before restart" };
-      }
-
-      const machineId = this.readPrimaryMachineId(machines.stdout);
-      if (!machineId) {
-        return { ok: false, error: "could not determine which Fly machine to restart after WhatsApp pairing" };
-      }
-
-      const restart = await this.process.run(
-        flyCommand,
-        ["machine", "restart", machineId, "-a", appName],
-        { env: this.env, timeoutMs: 60_000 }
-      );
-      if (restart.exitCode !== 0) {
-        return { ok: false, error: restart.stderr || restart.stdout || "app restart failed" };
-      }
-
-      let lastState = "unknown";
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        const result = await this.process.run(
-          flyCommand,
-          ["machine", "list", "-a", appName, "--json"],
-          { env: this.env, timeoutMs: 4_000 }
-        );
-        if (result.exitCode === 0) {
-          const state = this.readPrimaryMachineState(result.stdout);
-          if (state === "started") {
-            return { ok: true };
-          }
-          if (state) {
-            lastState = state;
-          }
+      if (result.exitCode === 0) {
+        const state = this.readPrimaryMachineState(result.stdout);
+        if (state === "started") {
+          return { ok: true };
         }
-        if (attempt < 19) {
-          await this.sleep(1_500);
+        if (state) {
+          lastState = state;
         }
       }
-
-      return { ok: false, error: `machine not running after WhatsApp restart (${lastState})` };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      if (attempt < 19) {
+        await this.sleep(1_500);
+      }
     }
+
+    return { ok: false, error: `${notRunningPrefix} (${lastState})` };
   }
 
   private async waitForWhatsAppBridgeConnectedAfterPairing(appName: string): Promise<{ ok: boolean; error?: string }> {

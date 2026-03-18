@@ -1217,6 +1217,124 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.match(io.errText, /not connected after 30s/i);
     assert.doesNotMatch(io.outText, /WhatsApp setup completed on the deployed agent/);
   });
+
+  it("disconnects older WhatsApp self-chat deployments before pairing a takeover app", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "whatsapp-takeover-finalize-"));
+    try {
+      await writeFile(
+        join(dir, "config.yaml"),
+        [
+          "current_app: old-whatsapp-app",
+          "apps:",
+          "  - name: old-whatsapp-app",
+          "    region: fra",
+          "    provider: zai",
+          "    platform: whatsapp",
+          "    whatsapp_mode: self-chat",
+          "    whatsapp_allowed_users: 393406844897",
+        ].join("\n") + "\n",
+        "utf8"
+      );
+
+      const prompts = makePromptPort(["y"], { interactive: true });
+      const io = makeIO();
+      const backgroundCalls: Array<{ command: string; args: string[] }> = [];
+      const streamingCalls: Array<{ command: string; args: string[] }> = [];
+      const runner: ForegroundProcessRunner = {
+        run: async (command, args) => {
+          backgroundCalls.push({ command, args });
+          if (args[0] === "secrets" && args[1] === "unset") {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (args[0] === "ssh" && args[1] === "console" && /rm -rf \/root\/\.hermes\/whatsapp\/session/.test(args.join(" "))) {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (args[0] === "ssh" && args[1] === "console" && /127\.0\.0\.1:3000\/health/.test(args.join(" "))) {
+            return { exitCode: 0, stdout: "{\"status\":\"connected\"}\n", stderr: "" };
+          }
+          if (args[0] === "ssh" && args[1] === "console") {
+            return { exitCode: 0, stdout: "empty_session\n", stderr: "" };
+          }
+          if (args[0] === "machine" && args[1] === "list") {
+            if (args.includes("old-whatsapp-app")) {
+              return { exitCode: 0, stdout: JSON.stringify([{ id: "oldmachine", state: "started", region: "fra" }]), stderr: "" };
+            }
+            return { exitCode: 0, stdout: JSON.stringify([{ id: "newmachine", state: "started", region: "fra" }]), stderr: "" };
+          }
+          if (args[0] === "machine" && args[1] === "restart") {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+        runStreaming: async (command, args, options) => {
+          streamingCalls.push({ command, args });
+          options?.onStdoutChunk?.("✅ Pairing complete. Credentials saved.\n");
+          return { exitCode: 0 };
+        },
+        runForeground: async () => ({ exitCode: 0 }),
+      };
+      const wizard = new FlyDeployWizard({ HERMES_FLY_CONFIG_DIR: dir, HOME: dir }, { prompts, process: runner, sleep: async () => {} });
+
+      const result = await wizard.finalizeMessagingSetup({
+        ...DEFAULT_CONFIG,
+        appName: "test-app",
+        whatsappEnabled: true,
+        whatsappMode: "self-chat",
+        whatsappAllowedUsers: "393406844897",
+        whatsappCompleteAccessDuringSetup: true,
+        whatsappTakeoverAppNames: ["old-whatsapp-app"],
+      }, io.stdout, io.stderr);
+
+      assert.deepEqual(result, { whatsappSessionConfirmed: true });
+      assert.ok(backgroundCalls.some((call) => call.args.slice(0, 2).join(" ") === "secrets unset"));
+      assert.ok(backgroundCalls.some((call) => call.args.slice(0, 5).join(" ") === "machine restart oldmachine -a old-whatsapp-app"));
+      assert.ok(backgroundCalls.some((call) => call.args.slice(0, 5).join(" ") === "machine restart newmachine -a test-app"));
+      assert.ok(streamingCalls.some((call) => call.args.join(" ").includes("whatsapp")));
+      const saved = await readFile(join(dir, "config.yaml"), "utf8");
+      assert.doesNotMatch(saved, /whatsapp_mode:/);
+      assert.doesNotMatch(saved, /whatsapp_allowed_users:/);
+      assert.doesNotMatch(saved, /platform: whatsapp/);
+      assert.match(io.outText, /Taking over WhatsApp from deployment old-whatsapp-app/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops before pairing when takeover cleanup of the older WhatsApp deployment fails", async () => {
+    const prompts = makePromptPort(["y"], { interactive: true });
+    const io = makeIO();
+    let streamed = false;
+    const backgroundCalls: Array<{ command: string; args: string[] }> = [];
+    const runner: ForegroundProcessRunner = {
+      run: async (command, args) => {
+        backgroundCalls.push({ command, args });
+        if (args[0] === "secrets" && args[1] === "unset") {
+          return { exitCode: 1, stdout: "", stderr: "app not found" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      runStreaming: async () => {
+        streamed = true;
+        return { exitCode: 0 };
+      },
+      runForeground: async () => ({ exitCode: 0 }),
+    };
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner, sleep: async () => {} });
+
+    const result = await wizard.finalizeMessagingSetup({
+      ...DEFAULT_CONFIG,
+      appName: "test-app",
+      whatsappEnabled: true,
+      whatsappMode: "self-chat",
+      whatsappAllowedUsers: "393406844897",
+      whatsappCompleteAccessDuringSetup: true,
+      whatsappTakeoverAppNames: ["old-whatsapp-app"],
+    }, io.stdout, io.stderr);
+
+    assert.deepEqual(result, {});
+    assert.equal(streamed, false);
+    assert.match(io.errText, /could not disconnect WhatsApp from deployment old-whatsapp-app/i);
+  });
 });
 
 describe("FlyDeployWizard.collectConfig", () => {
@@ -2614,6 +2732,78 @@ describe("FlyDeployWizard.collectConfig", () => {
       const guidedCopy = prompts.writes.join("");
       assert.match(guidedCopy, /still appears tied with deployment old-whatsapp-app/i);
       assert.match(guidedCopy, /Skip WhatsApp for now/);
+      assert.match(guidedCopy, /Take over this number/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("captures a WhatsApp takeover intent when the user chooses to move a self-chat number from an older deployment", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "whatsapp-takeover-"));
+    try {
+      await writeFile(
+        join(dir, "config.yaml"),
+        [
+          "current_app: old-whatsapp-app",
+          "apps:",
+          "  - name: old-whatsapp-app",
+          "    region: fra",
+          "    provider: zai",
+          "    platform: whatsapp",
+          "    whatsapp_mode: self-chat",
+          "    whatsapp_allowed_users: 393406844897",
+        ].join("\n") + "\n",
+        "utf8"
+      );
+
+      const prompts = makePromptPort([
+        "",
+        "",
+        "",
+        "",
+        "",
+        "1",
+        "sk-live",
+        "",
+        "",
+        "4",
+        "2",
+        "1",
+        "+39 340 6844897",
+        "3",
+        "y"
+      ], { interactive: true });
+      const runner = makeProcessRunner(async (command, args) => {
+        if (isFlyCommand(command) && args[0] === "platform" && args[1] === "regions") {
+          return { exitCode: 0, stdout: JSON.stringify([{ code: "iad", name: "Ashburn, Virginia (US)" }]) };
+        }
+        if (isFlyCommand(command) && args[0] === "platform" && args[1] === "vm-sizes") {
+          return { exitCode: 0, stdout: JSON.stringify([{ name: "shared-cpu-2x", memory_mb: 512 }]) };
+        }
+        if (isFlyCommand(command) && args[0] === "apps" && args[1] === "list") {
+          return { exitCode: 0, stdout: JSON.stringify([{ name: "old-whatsapp-app" }]) };
+        }
+        if (isFlyCommand(command) && args[0] === "ssh" && args[1] === "console") {
+          return { exitCode: 0, stdout: "has_session\n393406844897", stderr: "" };
+        }
+        if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
+          return { exitCode: 0, stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } }) };
+        }
+        if (command === "curl" && args.includes("https://openrouter.ai/api/v1/models")) {
+          return { exitCode: 0, stdout: JSON.stringify({ data: liveOpenRouterModelsFixture() }) };
+        }
+        return { exitCode: 1 };
+      });
+      const wizard = new FlyDeployWizard({ HERMES_FLY_CONFIG_DIR: dir, HOME: dir }, { prompts, process: runner });
+
+      const config = await wizard.collectConfig({ channel: "stable" });
+
+      assert.deepEqual(config.messagingPlatforms, ["whatsapp"]);
+      assert.equal(config.whatsappEnabled, true);
+      assert.deepEqual(config.whatsappTakeoverAppNames, ["old-whatsapp-app"]);
+      const guidedCopy = prompts.writes.join("");
+      assert.match(guidedCopy, /Take over this number/i);
+      assert.match(guidedCopy, /disconnect WhatsApp from the deployment above before pairing/i);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
