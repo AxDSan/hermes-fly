@@ -1001,6 +1001,25 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   }
 
+  private readPrimaryMachineId(stdout: string): string | undefined {
+    try {
+      const parsed = JSON.parse(stdout) as Array<{ id?: unknown; ID?: unknown; state?: unknown; State?: unknown }>;
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        return undefined;
+      }
+
+      const startedMachine = parsed.find((machine) => {
+        const state = machine.state ?? machine.State;
+        return state === "started";
+      });
+      const preferredMachine = startedMachine ?? parsed[0];
+      const machineId = preferredMachine?.id ?? preferredMachine?.ID;
+      return typeof machineId === "string" && machineId.trim().length > 0 ? machineId.trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async readRecentDeployFailure(appName: string): Promise<string | undefined> {
     const result = await this.process.run(
       "fly",
@@ -3752,9 +3771,23 @@ export class FlyDeployWizard implements DeployWizardPort {
   private async restartAppAfterWhatsAppPairing(appName: string): Promise<{ ok: boolean; error?: string }> {
     try {
       const flyCommand = await resolveFlyCommand(this.env);
+      const machines = await this.process.run(
+        flyCommand,
+        ["machine", "list", "-a", appName, "--json"],
+        { env: this.env, timeoutMs: 4_000 }
+      );
+      if (machines.exitCode !== 0) {
+        return { ok: false, error: machines.stderr || machines.stdout || "machine status check failed before restart" };
+      }
+
+      const machineId = this.readPrimaryMachineId(machines.stdout);
+      if (!machineId) {
+        return { ok: false, error: "could not determine which Fly machine to restart after WhatsApp pairing" };
+      }
+
       const restart = await this.process.run(
         flyCommand,
-        ["machine", "restart", "-a", appName],
+        ["machine", "restart", machineId, "-a", appName],
         { env: this.env, timeoutMs: 60_000 }
       );
       if (restart.exitCode !== 0) {

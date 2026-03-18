@@ -1048,7 +1048,7 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.match(remoteSetupCommand, /WHATSAPP_ENABLED=.*true/);
     assert.match(remoteSetupCommand, /WHATSAPP_MODE=.*self-chat/);
     assert.match(remoteSetupCommand, /WHATSAPP_ALLOWED_USERS=.*393406844897/);
-    assert.ok(backgroundCalls.some((call) => call.args.slice(0, 4).join(" ") === "machine restart -a test-app"));
+    assert.ok(backgroundCalls.some((call) => call.args.slice(0, 5).join(" ") === "machine restart machine123 -a test-app"));
     assert.ok(backgroundCalls.some((call) => call.args.slice(0, 4).join(" ") === "machine list -a test-app"));
     assert.match(io.outText, /Scan the QR code with WhatsApp on your phone/);
     assert.match(io.outText, /▄▄▄▄ QR FRAME 1 ▄▄▄▄\r▄▄▄▄ QR FRAME 2 ▄▄▄▄\r/);
@@ -1099,6 +1099,50 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.equal(streamed, false);
     assert.ok(!backgroundCalls.some((call) => call.args.slice(0, 2).join(" ") === "machine restart"));
     assert.match(io.errText, /existing WhatsApp session data was found before first-time pairing/i);
+  });
+
+  it("warns clearly when WhatsApp pairing succeeds but no Fly machine ID can be resolved for the restart", async () => {
+    const prompts = makePromptPort(["y"], { interactive: true });
+    const io = makeIO();
+    const backgroundCalls: Array<{ command: string; args: string[] }> = [];
+    const runner: ForegroundProcessRunner = {
+      run: async (command, args) => {
+        backgroundCalls.push({ command, args });
+        if (args[0] === "ssh" && args[1] === "console") {
+          return {
+            exitCode: 0,
+            stdout: "empty_session\n",
+            stderr: "",
+          };
+        }
+        if (args[0] === "machine" && args[1] === "list") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify([{ state: "started", region: "fra" }]),
+            stderr: "",
+          };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      runStreaming: async (_command, _args, options) => {
+        options?.onStdoutChunk?.("✅ Pairing complete. Credentials saved.\n");
+        return { exitCode: 0 };
+      },
+      runForeground: async () => ({ exitCode: 0 }),
+    };
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner });
+
+    await wizard.finalizeMessagingSetup({
+      ...DEFAULT_CONFIG,
+      appName: "test-app",
+      whatsappEnabled: true,
+      whatsappMode: "self-chat",
+      whatsappAllowedUsers: "393406844897",
+      whatsappCompleteAccessDuringSetup: true,
+    }, io.stdout, io.stderr);
+
+    assert.ok(!backgroundCalls.some((call) => call.args.slice(0, 2).join(" ") === "machine restart"));
+    assert.match(io.errText, /could not determine which Fly machine to restart/i);
   });
 });
 
