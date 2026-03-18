@@ -787,9 +787,9 @@ export class FlyDeployWizard implements DeployWizardPort {
           return {};
         }
 
-        const gatewayReady = await this.waitForGatewayHealthyAfterWhatsAppPairing(config.appName);
-        if (!gatewayReady.ok) {
-          stderr.write(`[warn] WhatsApp paired, but ${gatewayReady.error ?? "the Hermes gateway did not come online cleanly"}\n`);
+        const bridgeReady = await this.waitForWhatsAppBridgeConnectedAfterPairing(config.appName);
+        if (!bridgeReady.ok) {
+          stderr.write(`[warn] WhatsApp paired, but ${bridgeReady.error ?? "the WhatsApp bridge did not come online cleanly"}\n`);
           stderr.write(`Tip: run 'hermes-fly doctor -a ${config.appName}' and 'hermes-fly logs -a ${config.appName}' before testing WhatsApp.\n`);
           return {};
         }
@@ -3825,7 +3825,7 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   }
 
-  private async waitForGatewayHealthyAfterWhatsAppPairing(appName: string): Promise<{ ok: boolean; error?: string }> {
+  private async waitForWhatsAppBridgeConnectedAfterPairing(appName: string): Promise<{ ok: boolean; error?: string }> {
     try {
       const flyCommand = await resolveFlyCommand(this.env);
       let lastOutput = "";
@@ -3833,10 +3833,10 @@ export class FlyDeployWizard implements DeployWizardPort {
       for (let attempt = 0; attempt < 20; attempt += 1) {
         const result = await this.process.run(
           flyCommand,
-          ["ssh", "console", "-a", appName, "-C", this.buildRemoteHermesCommand(["gateway", "status"])],
+          ["ssh", "console", "-a", appName, "-C", "sh -lc 'curl -sf --max-time 5 http://127.0.0.1:3000/health'"],
           { env: this.env, timeoutMs: 15_000 }
         );
-        if (result.exitCode === 0) {
+        if (result.exitCode === 0 && this.isWhatsAppBridgeConnected(result.stdout)) {
           return { ok: true };
         }
 
@@ -3846,13 +3846,42 @@ export class FlyDeployWizard implements DeployWizardPort {
         }
       }
 
+      const logTail = await this.readRecentWhatsAppBridgeLog(appName);
       const suffix = lastOutput.length > 0 ? `: ${lastOutput}` : "";
       return {
         ok: false,
-        error: `gateway status did not report a healthy Hermes gateway after WhatsApp pairing${suffix}`,
+        error: `the WhatsApp bridge did not report a connected session after pairing${suffix}${logTail ? `\nRecent bridge log:\n${logTail}` : ""}`,
       };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private isWhatsAppBridgeConnected(stdout: string): boolean {
+    const trimmed = stdout.trim();
+    if (trimmed.length === 0) {
+      return false;
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as { status?: unknown };
+      return parsed.status === "connected";
+    } catch {
+      return /"status"\s*:\s*"connected"/.test(trimmed);
+    }
+  }
+
+  private async readRecentWhatsAppBridgeLog(appName: string): Promise<string | undefined> {
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      const result = await this.process.run(
+        flyCommand,
+        ["ssh", "console", "-a", appName, "-C", "sh -lc 'tail -n 80 /root/.hermes/whatsapp/bridge.log 2>/dev/null || true'"],
+        { env: this.env, timeoutMs: 10_000 }
+      );
+      const text = (result.stdout || "").trim();
+      return text.length > 0 ? text : undefined;
+    } catch {
+      return undefined;
     }
   }
 

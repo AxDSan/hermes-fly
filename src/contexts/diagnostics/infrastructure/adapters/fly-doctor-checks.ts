@@ -87,6 +87,18 @@ export class FlyDoctorChecks implements DoctorChecksPort {
     }
 
     if (secretsResult.exitCode === 0 && this.hasAnyMessagingGatewaySecret(secretsResult.stdout)) {
+      if (this.hasSecret(secretsResult.stdout, "WHATSAPP_ENABLED") || this.hasSecret(secretsResult.stdout, "HERMES_FLY_WHATSAPP_PENDING")) {
+        const sshResult = await this.runner.run(
+          flyCommand,
+          [
+            "ssh", "console", "--app", appName, "-C",
+            this.whatsAppBridgeHealthProbeCommand()
+          ],
+          { env: this.env }
+        );
+        return sshResult.exitCode === 0 && this.isWhatsAppBridgeConnected(sshResult.stdout);
+      }
+
       const sshResult = await this.runner.run(
         flyCommand,
         [
@@ -189,5 +201,22 @@ export class FlyDoctorChecks implements DoctorChecksPort {
 
   private gatewayStatusProbeCommand(): string {
     return "sh -lc 'cd /root/.hermes && HERMES_DIR=/root/.hermes HOME=/root/.hermes /opt/hermes/hermes-agent/venv/bin/hermes gateway status'";
+  }
+
+  private whatsAppBridgeHealthProbeCommand(): string {
+    return "sh -lc 'curl -sf --max-time 5 http://127.0.0.1:3000/health'";
+  }
+
+  private isWhatsAppBridgeConnected(stdout: string): boolean {
+    const trimmed = stdout.trim();
+    if (!trimmed) {
+      return false;
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as { status?: unknown };
+      return parsed.status === "connected";
+    } catch {
+      return /\"status\"\s*:\s*\"connected\"/.test(trimmed);
+    }
   }
 }

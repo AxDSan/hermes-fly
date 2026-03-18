@@ -55,10 +55,10 @@ describe("FlyDoctorChecks.checkGatewayHealth", () => {
     ]);
   });
 
-  it("uses hermes gateway status over fly ssh when WhatsApp is configured", async () => {
+  it("uses the WhatsApp bridge health endpoint over fly ssh when WhatsApp is configured", async () => {
     const runner = new StubProcessRunner([
       { exitCode: 0, stdout: JSON.stringify([{ Name: "HERMES_FLY_WHATSAPP_PENDING", Digest: "abc123" }]), stderr: "" },
-      { exitCode: 0, stdout: "Hermes gateway is running\n", stderr: "" }
+      { exitCode: 0, stdout: "{\"status\":\"connected\"}\n", stderr: "" }
     ]);
     const checks = new FlyDoctorChecks(runner, "test-app");
 
@@ -67,8 +67,20 @@ describe("FlyDoctorChecks.checkGatewayHealth", () => {
     assert.equal(result, true);
     assert.deepEqual(runner.calls[1]?.args, [
       "ssh", "console", "--app", "test-app", "-C",
-      "sh -lc 'cd /root/.hermes && HERMES_DIR=/root/.hermes HOME=/root/.hermes /opt/hermes/hermes-agent/venv/bin/hermes gateway status'"
+      "sh -lc 'curl -sf --max-time 5 http://127.0.0.1:3000/health'"
     ]);
+  });
+
+  it("fails WhatsApp gateway health when the bridge is not connected", async () => {
+    const runner = new StubProcessRunner([
+      { exitCode: 0, stdout: JSON.stringify([{ Name: "WHATSAPP_ENABLED", Digest: "abc123" }]), stderr: "" },
+      { exitCode: 0, stdout: "{\"status\":\"connecting\"}\n", stderr: "" }
+    ]);
+    const checks = new FlyDoctorChecks(runner, "test-app");
+
+    const result = await checks.checkGatewayHealth("test-app");
+
+    assert.equal(result, false);
   });
 
   it("falls back to machine state when no messaging secrets are configured", async () => {

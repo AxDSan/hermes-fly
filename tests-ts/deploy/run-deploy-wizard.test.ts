@@ -989,7 +989,7 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.deepEqual(opened, ["https://discord.com/oauth2/authorize?client_id=123456789012345678&scope=bot%20applications.commands"]);
   });
 
-  it("preserves raw WhatsApp QR terminal redraws, verifies the gateway after restart, and avoids local-machine guidance afterward", async () => {
+  it("preserves raw WhatsApp QR terminal redraws, verifies the WhatsApp bridge after restart, and avoids local-machine guidance afterward", async () => {
     const prompts = makePromptPort(["y"], { interactive: true });
     const io = makeIO();
     const streamingCalls: Array<{ command: string; args: string[] }> = [];
@@ -997,10 +997,10 @@ describe("FlyDeployWizard.postDeployActions", () => {
     const runner: ForegroundProcessRunner = {
       run: async (command, args) => {
         backgroundCalls.push({ command, args });
-        if (args[0] === "ssh" && args[1] === "console" && /gateway.*status/.test(args.join(" "))) {
+        if (args[0] === "ssh" && args[1] === "console" && /127\.0\.0\.1:3000\/health/.test(args.join(" "))) {
           return {
             exitCode: 0,
-            stdout: "Hermes gateway is running\n",
+            stdout: "{\"status\":\"connected\"}\n",
             stderr: "",
           };
         }
@@ -1057,7 +1057,7 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.match(remoteSetupCommand, /WHATSAPP_ALLOWED_USERS=.*393406844897/);
     assert.ok(backgroundCalls.some((call) => call.args.slice(0, 5).join(" ") === "machine restart machine123 -a test-app"));
     assert.ok(backgroundCalls.some((call) => call.args.slice(0, 4).join(" ") === "machine list -a test-app"));
-    assert.ok(backgroundCalls.some((call) => /gateway.*status/.test(call.args.join(" "))));
+    assert.ok(backgroundCalls.some((call) => /127\.0\.0\.1:3000\/health/.test(call.args.join(" "))));
     assert.match(io.outText, /Scan the QR code with WhatsApp on your phone/);
     assert.match(io.outText, /▄▄▄▄ QR FRAME 1 ▄▄▄▄\r▄▄▄▄ QR FRAME 2 ▄▄▄▄\r/);
     assert.doesNotMatch(io.outText, /▄▄▄▄ QR FRAME 1 ▄▄▄▄\n▄▄▄▄ QR FRAME 2 ▄▄▄▄\n/);
@@ -1153,14 +1153,14 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.match(io.errText, /could not determine which Fly machine to restart/i);
   });
 
-  it("warns clearly when WhatsApp pairing succeeds but the gateway never becomes healthy after restart", async () => {
+  it("warns clearly when WhatsApp pairing succeeds but the WhatsApp bridge never reconnects after restart", async () => {
     const prompts = makePromptPort(["y"], { interactive: true });
     const io = makeIO();
     const backgroundCalls: Array<{ command: string; args: string[] }> = [];
     const runner: ForegroundProcessRunner = {
       run: async (command, args) => {
         backgroundCalls.push({ command, args });
-        if (args[0] === "ssh" && args[1] === "console" && !/gateway.*status/.test(args.join(" "))) {
+        if (args[0] === "ssh" && args[1] === "console" && !/127\.0\.0\.1:3000\/health/.test(args.join(" ")) && !/bridge\.log/.test(args.join(" "))) {
           return {
             exitCode: 0,
             stdout: "empty_session\n",
@@ -1177,10 +1177,17 @@ describe("FlyDeployWizard.postDeployActions", () => {
         if (args[0] === "machine" && args[1] === "restart") {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
-        if (args[0] === "ssh" && args[1] === "console" && /gateway.*status/.test(args.join(" "))) {
+        if (args[0] === "ssh" && args[1] === "console" && /127\.0\.0\.1:3000\/health/.test(args.join(" "))) {
           return {
             exitCode: 1,
-            stdout: "Hermes gateway is not running\n",
+            stdout: "{\"status\":\"connecting\"}\n",
+            stderr: "",
+          };
+        }
+        if (args[0] === "ssh" && args[1] === "console" && /bridge\.log/.test(args.join(" "))) {
+          return {
+            exitCode: 0,
+            stdout: "[whatsapp] ⚠ WhatsApp not connected after 30s\n",
             stderr: "",
           };
         }
@@ -1204,8 +1211,10 @@ describe("FlyDeployWizard.postDeployActions", () => {
     }, io.stdout, io.stderr);
 
     assert.deepEqual(result, {});
-    assert.ok(backgroundCalls.some((call) => /gateway.*status/.test(call.args.join(" "))));
-    assert.match(io.errText, /gateway status did not report a healthy Hermes gateway after WhatsApp pairing/i);
+    assert.ok(backgroundCalls.some((call) => /127\.0\.0\.1:3000\/health/.test(call.args.join(" "))));
+    assert.ok(backgroundCalls.some((call) => /bridge\.log/.test(call.args.join(" "))));
+    assert.match(io.errText, /whatsapp bridge did not report a connected session after pairing/i);
+    assert.match(io.errText, /not connected after 30s/i);
     assert.doesNotMatch(io.outText, /WhatsApp setup completed on the deployed agent/);
   });
 });
