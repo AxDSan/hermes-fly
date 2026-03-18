@@ -51,7 +51,7 @@ describe("TemplateWriter", () => {
       assert.doesNotMatch(flyToml, /^\[http_service\]$/m);
       assert.doesNotMatch(flyToml, /internal_port = 8080/);
 
-      assert.match(entrypoint, /exec \/opt\/hermes\/hermes-agent\/venv\/bin\/hermes gateway run/);
+      assert.match(entrypoint, /exec \/opt\/hermes\/hermes-agent\/venv\/bin\/hermes gateway run --replace/);
       assert.match(entrypoint, /\/root\/\.claude\/\.credentials\.json/);
       assert.match(entrypoint, /claudeAiOauth/);
       assert.match(entrypoint, /GLM_API_KEY/);

@@ -32,6 +32,7 @@ import {
   type ZaiModelOption,
 } from "./zai-api-key.js";
 import { MessagingPolicy, type MessagingPolicyMode } from "../../../messaging/domain/messaging-policy.js";
+import { VmSizingPolicy, type VmSizingReason } from "../../domain/vm-sizing-policy.js";
 import {
   TELEGRAM_BOTFATHER_DELETEBOT_URL,
   TELEGRAM_BOTFATHER_NEWBOT_URL,
@@ -467,12 +468,19 @@ export class FlyDeployWizard implements DeployWizardPort {
       whatsappMode: env.WHATSAPP_MODE ?? env.HERMES_FLY_WHATSAPP_MODE,
       whatsappAllowedUsers: env.WHATSAPP_ALLOWED_USERS ?? env.HERMES_FLY_WHATSAPP_ALLOWED_USERS,
     }, appName);
+    const vmSizingDecision = VmSizingPolicy.resolve({
+      currentVmSize: vmSize,
+      messagingPlatforms: messagingSetup.platforms,
+    });
+    if (vmSizingDecision.adjusted) {
+      this.writeVmSizingAdjustment(vmSize, vmSizingDecision.vmSize, vmSizingDecision.reason);
+    }
     const hermesRef = this.resolveHermesAgentRef(opts.channel);
 
     const intent = DeploymentIntent.create({
       appName,
       region,
-      vmSize,
+      vmSize: vmSizingDecision.vmSize,
       provider: aiAccess.provider,
       model: aiAccess.model,
       reasoningEffort: aiAccess.reasoningEffort,
@@ -634,11 +642,20 @@ export class FlyDeployWizard implements DeployWizardPort {
 
       const state = this.readPrimaryMachineState(result.stdout);
       if (state === "started") {
+        const deployFailure = await this.readRecentDeployFailure(appName);
+        if (deployFailure) {
+          return { ok: false, error: deployFailure };
+        }
         return { ok: true };
       }
       if (state) {
         lastState = state;
       }
+    }
+
+    const deployFailure = await this.readRecentDeployFailure(appName);
+    if (deployFailure) {
+      return { ok: false, error: deployFailure };
     }
 
     return { ok: false, error: `machine not running after deploy (${lastState})` };
@@ -949,6 +966,23 @@ export class FlyDeployWizard implements DeployWizardPort {
     return value;
   }
 
+  private writeVmSizingAdjustment(previousVmSize: string, nextVmSize: string, reason?: VmSizingReason): void {
+    if (!this.prompts.isInteractive()) {
+      return;
+    }
+
+    if (reason === "messaging-gateway") {
+      this.prompts.write("\n");
+      this.prompts.write("Starter (256 MB) is not reliable once Hermes is keeping messaging gateways online.\n");
+      this.prompts.write(`Switching this deployment to ${this.describeVmSize(nextVmSize)} automatically.\n\n`);
+      return;
+    }
+
+    if (previousVmSize !== nextVmSize) {
+      this.prompts.write(`\nAdjusting server size to ${this.describeVmSize(nextVmSize)}.\n\n`);
+    }
+  }
+
   private readPrimaryMachineState(stdout: string): string | undefined {
     try {
       const parsed = JSON.parse(stdout) as Array<{ state?: unknown; State?: unknown }>;
@@ -965,6 +999,33 @@ export class FlyDeployWizard implements DeployWizardPort {
     } catch {
       return undefined;
     }
+  }
+
+  private async readRecentDeployFailure(appName: string): Promise<string | undefined> {
+    const result = await this.process.run(
+      "fly",
+      ["logs", "--app", appName],
+      { env: this.env, timeoutMs: 4_000 }
+    );
+    const combined = `${result.stdout}\n${result.stderr}`;
+    if (combined.trim().length === 0) {
+      return undefined;
+    }
+    if (this.containsOutOfMemorySignal(combined)) {
+      return "recent logs show the app was OOM-killed. Choose Standard (512 MB) or larger for Hermes deployments with messaging gateways.";
+    }
+    if (this.containsGatewayRestartLoopSignal(combined)) {
+      return "recent logs show Hermes is in a restart-loop because the gateway was already marked as running after a crash.";
+    }
+    return undefined;
+  }
+
+  private containsOutOfMemorySignal(text: string): boolean {
+    return /Out of memory: Killed process|OOM killed|Process appears to have been OOM killed/i.test(text);
+  }
+
+  private containsGatewayRestartLoopSignal(text: string): boolean {
+    return /Another gateway instance is already running|Gateway already running/i.test(text);
   }
 
   private resolveHermesAgentRef(channel: "stable" | "preview" | "edge"): string {

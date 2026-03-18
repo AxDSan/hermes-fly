@@ -241,4 +241,4 @@ with open('/root/.hermes/deploy-manifest.json', 'w') as _fh:
     json.dump(_manifest, _fh, indent=2)
 PYEOF
 # Start hermes gateway
-exec /opt/hermes/hermes-agent/venv/bin/hermes gateway run "$@"
+exec /opt/hermes/hermes-agent/venv/bin/hermes gateway run --replace "$@"

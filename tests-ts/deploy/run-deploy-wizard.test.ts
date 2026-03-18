@@ -312,6 +312,21 @@ describe("RunDeployWizardUseCase - happy path", () => {
     assert.match(io.outText, /hermes-fly doctor -a test-app/);
   });
 
+  it("prints the specific post-deploy failure reason when health checks detect instability", async () => {
+    const io = makeIO();
+    const uc = new RunDeployWizardUseCase(makePort({
+      postDeployCheck: async () => ({
+        ok: false,
+        error: "recent logs show the app was OOM-killed. Choose Standard (512 MB) or larger for Hermes deployments with messaging gateways.",
+      }),
+    }));
+
+    await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
+
+    assert.match(io.errText, /Post-deploy check failed: recent logs show the app was OOM-killed/i);
+    assert.match(io.errText, /resume -a test-app/);
+  });
+
   it("prints the Z.AI access label in the completion summary when that provider is deployed", async () => {
     const io = makeIO();
     const uc = new RunDeployWizardUseCase(makePort({
@@ -793,10 +808,24 @@ describe("FlyDeployWizard.postDeployCheck", () => {
   it("passes when fly machine list reports a started machine", async () => {
     const runner = makeProcessRunner(async (command, args) => {
       assert.equal(command, "fly");
-      assert.deepEqual(args, ["machine", "list", "-a", "test-app", "--json"]);
+      if (args[0] === "machine" && args[1] === "list") {
+        assert.deepEqual(args, ["machine", "list", "-a", "test-app", "--json"]);
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([{ id: "machine123", state: "started" }]),
+          stderr: ""
+        };
+      }
+      if (args[0] === "logs" && args[1] === "--app") {
+        return {
+          exitCode: 124,
+          stdout: "Hermes gateway booted cleanly\n",
+          stderr: ""
+        };
+      }
       return {
-        exitCode: 0,
-        stdout: JSON.stringify([{ id: "machine123", state: "started" }]),
+        exitCode: 1,
+        stdout: "",
         stderr: ""
       };
     });
@@ -823,7 +852,61 @@ describe("FlyDeployWizard.postDeployCheck", () => {
 
     assert.equal(result.ok, false);
     assert.match(result.error ?? "", /machine not running after deploy/);
-    assert.equal(calls, 3);
+    assert.equal(calls, 4);
+  });
+
+  it("fails with a sizing hint when recent logs show the app was OOM-killed", async () => {
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command === "fly" && args[0] === "machine" && args[1] === "list") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([{ id: "machine123", state: "started" }]),
+          stderr: ""
+        };
+      }
+      if (command === "fly" && args[0] === "logs" && args[1] === "--app") {
+        return {
+          exitCode: 124,
+          stdout: "[  220.859111] Out of memory: Killed process 656 (hermes)\nINFO Process appears to have been OOM killed!\n",
+          stderr: ""
+        };
+      }
+      return { exitCode: 1, stdout: "", stderr: "" };
+    });
+    const wizard = new FlyDeployWizard({}, { process: runner });
+
+    const result = await wizard.postDeployCheck("test-app");
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /OOM-killed/i);
+    assert.match(result.error ?? "", /512 MB/);
+  });
+
+  it("fails when recent logs show the gateway is crash-looping after restart", async () => {
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command === "fly" && args[0] === "machine" && args[1] === "list") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([{ id: "machine123", state: "started" }]),
+          stderr: ""
+        };
+      }
+      if (command === "fly" && args[0] === "logs" && args[1] === "--app") {
+        return {
+          exitCode: 124,
+          stdout: "Another gateway instance is already running (PID 656, HERMES_HOME=~/.hermes).\n❌ Gateway already running (PID 656).\n",
+          stderr: ""
+        };
+      }
+      return { exitCode: 1, stdout: "", stderr: "" };
+    });
+    const wizard = new FlyDeployWizard({}, { process: runner });
+
+    const result = await wizard.postDeployCheck("test-app");
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /gateway/i);
+    assert.match(result.error ?? "", /restart-loop/i);
   });
 });
 
@@ -1127,6 +1210,7 @@ describe("FlyDeployWizard.collectConfig", () => {
       "2",
       "1",
       "1",
+      "1",
       "123:abc",
       "y",
       "1",
@@ -1221,6 +1305,88 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /\[\[QR: https:\/\/t\.me\/BotFather\?text=%2Fnewbot\]\]/);
     assert.match(guidedCopy, /tap Send to submit \/newbot/);
     assert.match(guidedCopy, /Review your setup/);
+  });
+
+  it("automatically upgrades Starter to Standard when a messaging gateway is enabled", async () => {
+    const prompts = makePromptPort([
+      "my-app",
+      "2",
+      "2",
+      "1",
+      "2",
+      "1",
+      "sk-live",
+      "2",
+      "1",
+      "1",
+      "123:abc",
+      "y",
+      "1",
+      "",
+      "y",
+      "y"
+    ], { interactive: true });
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command === "fly" && args[0] === "platform" && args[1] === "regions") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([
+            { code: "iad", name: "Ashburn, Virginia (US)" },
+            { code: "fra", name: "Frankfurt, Germany" },
+            { code: "lhr", name: "London, United Kingdom" }
+          ])
+        };
+      }
+      if (command === "fly" && args[0] === "platform" && args[1] === "vm-sizes") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([
+            { name: "shared-cpu-1x", memory_mb: 256 },
+            { name: "shared-cpu-2x", memory_mb: 512 },
+            { name: "performance-1x", memory_mb: 2048 }
+          ])
+        };
+      }
+      if (command === "curl" && args.some((value) => value.includes("api.telegram.org/bot123:abc/getMe"))) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            ok: true,
+            result: {
+              id: 12345,
+              is_bot: true,
+              first_name: "Hermes Test Bot",
+              username: "test_hermes_bot"
+            }
+          })
+        };
+      }
+      if (command === "curl" && args.some((value) => value.includes("api.telegram.org/bot123:abc/getUpdates"))) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            ok: true,
+            result: [
+              {
+                update_id: 1,
+                message: {
+                  chat: { id: 12345, type: "private" },
+                  from: { id: 12345, is_bot: false }
+                }
+              }
+            ]
+          })
+        };
+      }
+      return { exitCode: 1 };
+    });
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner, qrRenderer: makeQrRenderer() });
+
+    const config = await wizard.collectConfig({ channel: "stable" });
+
+    assert.equal(config.vmSize, "shared-cpu-2x");
+    assert.match(prompts.writes.join(""), /Starter \(256 MB\) is not reliable once Hermes is keeping messaging gateways online/i);
+    assert.match(prompts.writes.join(""), /Switching this deployment to Standard \(512 MB\) automatically/i);
   });
 
   it("offers ChatGPT subscription access through OpenAI Codex and can reuse existing Hermes auth", async () => {

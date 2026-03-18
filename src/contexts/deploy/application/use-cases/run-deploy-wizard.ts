@@ -329,7 +329,7 @@ export class RunDeployWizardUseCase {
     // Phase 6: Post-deploy check
     const postResult = await this.port.postDeployCheck(config.appName);
     if (!postResult.ok) {
-      stderr.write(`[warn] Post-deploy check failed. App may still be starting up.\n`);
+      stderr.write(`[warn] Post-deploy check failed: ${postResult.error ?? "App may still be starting up."}\n`);
       stderr.write(`Tip: run 'hermes-fly resume -a ${config.appName}' to re-check.\n`);
     }
 
