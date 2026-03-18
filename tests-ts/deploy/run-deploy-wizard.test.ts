@@ -57,7 +57,7 @@ function makePort(overrides: Partial<DeployWizardPort> = {}): DeployWizardPort {
     runDeploy: async () => ({ ok: true }),
     postDeployCheck: async () => ({ ok: true }),
     saveApp: async () => {},
-    finalizeMessagingSetup: async () => {},
+    finalizeMessagingSetup: async () => ({}),
     chooseSuccessfulDeploymentAction: async () => "conclude",
     showTelegramBotDeletionGuidance: async () => {},
     ...overrides
@@ -272,6 +272,30 @@ describe("RunDeployWizardUseCase - happy path", () => {
     assert.equal(saved[0].region, "iad");
   });
 
+  it("persists WhatsApp binding only after successful pairing and keep action", async () => {
+    const saved: DeployConfig[] = [];
+    const io = makeIO();
+    const uc = new RunDeployWizardUseCase(makePort({
+      collectConfig: async () => ({
+        ...DEFAULT_CONFIG,
+        messagingPlatforms: ["whatsapp"],
+        whatsappEnabled: true,
+        whatsappMode: "self-chat",
+        whatsappAllowedUsers: "393406844897",
+        whatsappCompleteAccessDuringSetup: true,
+      }),
+      saveApp: async (config) => { saved.push(config); },
+      finalizeMessagingSetup: async () => ({ whatsappSessionConfirmed: true }),
+      chooseSuccessfulDeploymentAction: async () => "conclude",
+    }));
+
+    await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
+
+    assert.equal(saved.length, 2);
+    assert.equal(saved[0].whatsappSessionConfirmed, undefined);
+    assert.equal(saved[1].whatsappSessionConfirmed, true);
+  });
+
   it("prints a completion summary after a successful deploy", async () => {
     const io = makeIO();
     const uc = new RunDeployWizardUseCase(makePort());
@@ -362,6 +386,7 @@ describe("RunDeployWizardUseCase - happy path", () => {
     const uc = new RunDeployWizardUseCase(makePort({
       finalizeMessagingSetup: async () => {
         steps.push("finalize");
+        return {};
       },
       chooseSuccessfulDeploymentAction: async () => {
         steps.push("choose");
@@ -2218,6 +2243,9 @@ describe("FlyDeployWizard.collectConfig", () => {
         if (isFlyCommand(command) && args[0] === "apps" && args[1] === "list") {
           return { exitCode: 0, stdout: JSON.stringify([{ name: "old-whatsapp-app" }]) };
         }
+        if (isFlyCommand(command) && args[0] === "ssh" && args[1] === "console") {
+          return { exitCode: 0, stdout: "has_session\n393406844897", stderr: "" };
+        }
         if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
           return { exitCode: 0, stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } }) };
         }
@@ -2233,8 +2261,7 @@ describe("FlyDeployWizard.collectConfig", () => {
       assert.deepEqual(config.messagingPlatforms ?? [], []);
       assert.equal(config.whatsappEnabled, undefined);
       const guidedCopy = prompts.writes.join("");
-      assert.match(guidedCopy, /already configured on another Hermes deployment/i);
-      assert.match(guidedCopy, /old-whatsapp-app/);
+      assert.match(guidedCopy, /still appears tied with deployment old-whatsapp-app/i);
       assert.match(guidedCopy, /Skip WhatsApp for now/);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -2287,7 +2314,7 @@ describe("FlyDeployWizard.collectConfig", () => {
         }
         if (isFlyCommand(command) && args[0] === "ssh" && args[1] === "console") {
           probed = true;
-          return { exitCode: 0, stdout: "393406844897", stderr: "" };
+          return { exitCode: 0, stdout: "has_session\n393406844897", stderr: "" };
         }
         if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
           return { exitCode: 0, stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } }) };
@@ -2304,8 +2331,76 @@ describe("FlyDeployWizard.collectConfig", () => {
       assert.equal(probed, true);
       assert.deepEqual(config.messagingPlatforms ?? [], []);
       const guidedCopy = prompts.writes.join("");
-      assert.match(guidedCopy, /already configured on another Hermes deployment/i);
+      assert.match(guidedCopy, /still appears tied with deployment old-whatsapp-app/i);
       assert.match(guidedCopy, /Skip WhatsApp for now/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not warn when another deployment has the same WhatsApp number configured but no active session", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "whatsapp-no-session-"));
+    try {
+      await writeFile(
+        join(dir, "config.yaml"),
+        [
+          "current_app: old-whatsapp-app",
+          "apps:",
+          "  - name: old-whatsapp-app",
+          "    region: fra",
+          "    provider: zai",
+          "    platform: whatsapp",
+          "    whatsapp_mode: self-chat",
+          "    whatsapp_allowed_users: 393406844897",
+        ].join("\n") + "\n",
+        "utf8"
+      );
+
+      const prompts = makePromptPort([
+        "",
+        "",
+        "",
+        "",
+        "",
+        "1",
+        "sk-live",
+        "",
+        "",
+        "4",
+        "2",
+        "1",
+        "+39 340 6844897",
+        "y"
+      ], { interactive: true });
+      const runner = makeProcessRunner(async (command, args) => {
+        if (isFlyCommand(command) && args[0] === "platform" && args[1] === "regions") {
+          return { exitCode: 0, stdout: JSON.stringify([{ code: "iad", name: "Ashburn, Virginia (US)" }]) };
+        }
+        if (isFlyCommand(command) && args[0] === "platform" && args[1] === "vm-sizes") {
+          return { exitCode: 0, stdout: JSON.stringify([{ name: "shared-cpu-1x", memory_mb: 256 }]) };
+        }
+        if (isFlyCommand(command) && args[0] === "apps" && args[1] === "list") {
+          return { exitCode: 0, stdout: JSON.stringify([{ name: "old-whatsapp-app" }] ) };
+        }
+        if (isFlyCommand(command) && args[0] === "ssh" && args[1] === "console") {
+          return { exitCode: 0, stdout: "empty_session\n393406844897", stderr: "" };
+        }
+        if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
+          return { exitCode: 0, stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } }) };
+        }
+        if (command === "curl" && args.includes("https://openrouter.ai/api/v1/models")) {
+          return { exitCode: 0, stdout: JSON.stringify({ data: liveOpenRouterModelsFixture() }) };
+        }
+        return { exitCode: 1 };
+      });
+      const wizard = new FlyDeployWizard({ HERMES_FLY_CONFIG_DIR: dir, HOME: dir }, { prompts, process: runner });
+
+      const config = await wizard.collectConfig({ channel: "stable" });
+
+      assert.deepEqual(config.messagingPlatforms, ["whatsapp"]);
+      assert.equal(config.whatsappEnabled, true);
+      const guidedCopy = prompts.writes.join("");
+      assert.doesNotMatch(guidedCopy, /still appears tied with deployment/i);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -2632,6 +2727,7 @@ describe("FlyDeployWizard.saveApp - persistence contract", () => {
         whatsappEnabled: true,
         whatsappMode: "self-chat",
         whatsappAllowedUsers: "393406844897",
+        whatsappSessionConfirmed: true,
       });
       const content = await readFile(join(dir, "config.yaml"), "utf8");
       assert.ok(content.includes("current_app:"), `current_app: not found in:\n${content}`);
@@ -2658,6 +2754,26 @@ describe("FlyDeployWizard.saveApp - persistence contract", () => {
       const nameMatches = (content.match(/  - name: my-app/g) ?? []).length;
       assert.equal(nameMatches, 1, `expected exactly 1 name entry, got ${nameMatches} in:\n${content}`);
       assert.ok(content.includes("region: lax"), `expected region lax in:\n${content}`);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("saveApp does not persist WhatsApp ownership metadata before pairing is confirmed", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "saveapp-whatsapp-pending-"));
+    try {
+      const wizard = new FlyDeployWizard({ HERMES_FLY_CONFIG_DIR: dir, HOME: dir });
+      await wizard.saveApp({
+        ...DEFAULT_CONFIG,
+        appName: "my-app",
+        region: "iad",
+        whatsappEnabled: true,
+        whatsappMode: "self-chat",
+        whatsappAllowedUsers: "393406844897",
+      });
+      const content = await readFile(join(dir, "config.yaml"), "utf8");
+      assert.doesNotMatch(content, /whatsapp_mode:/);
+      assert.doesNotMatch(content, /whatsapp_allowed_users:/);
     } finally {
       await rm(dir, { recursive: true });
     }

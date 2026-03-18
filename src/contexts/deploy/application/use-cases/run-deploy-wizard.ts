@@ -1,4 +1,8 @@
-import type { DeployConfig, DeployWizardPort } from "../ports/deploy-wizard.port.js";
+import type {
+  DeployConfig,
+  DeployWizardPort,
+  FinalizeMessagingSetupResult,
+} from "../ports/deploy-wizard.port.js";
 import type { PostDeployCleanupPort } from "../ports/post-deploy-cleanup.port.js";
 
 const VALID_CHANNELS = new Set(["stable", "preview", "edge"]);
@@ -333,7 +337,7 @@ export class RunDeployWizardUseCase {
     await this.port.saveApp(config);
 
     writeCompletionSummary(stdout, config);
-    await this.port.finalizeMessagingSetup(config, stdout, stderr);
+    const finalizeResult: FinalizeMessagingSetupResult = await this.port.finalizeMessagingSetup(config, stdout, stderr);
 
     const action = await this.port.chooseSuccessfulDeploymentAction(config);
     if (action === "destroy") {
@@ -355,6 +359,11 @@ export class RunDeployWizardUseCase {
       if (config.botToken) {
         await this.port.showTelegramBotDeletionGuidance(config);
       }
+    } else if (finalizeResult.whatsappSessionConfirmed) {
+      await this.port.saveApp({
+        ...config,
+        whatsappSessionConfirmed: true,
+      });
     }
 
     return { kind: "ok" };

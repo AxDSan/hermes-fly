@@ -38,6 +38,11 @@ export interface DeployConfig {
   whatsappAllowedUsers?: string;
   whatsappUsePairing?: boolean;
   whatsappCompleteAccessDuringSetup?: boolean;
+  whatsappSessionConfirmed?: boolean;
+}
+
+export interface FinalizeMessagingSetupResult {
+  whatsappSessionConfirmed?: boolean;
 }
 
 export type SuccessfulDeploymentAction = "conclude" | "destroy";
@@ -53,7 +58,11 @@ export interface DeployWizardPort {
   runDeploy(buildDir: string, config: DeployConfig): Promise<{ ok: boolean; error?: string }>;
   postDeployCheck(appName: string): Promise<{ ok: boolean; error?: string }>;
   saveApp(config: DeployConfig): Promise<void>;
-  finalizeMessagingSetup(config: DeployConfig, stdout: { write: (s: string) => void }, stderr: { write: (s: string) => void }): Promise<void>;
+  finalizeMessagingSetup(
+    config: DeployConfig,
+    stdout: { write: (s: string) => void },
+    stderr: { write: (s: string) => void }
+  ): Promise<FinalizeMessagingSetupResult>;
   chooseSuccessfulDeploymentAction(config: DeployConfig): Promise<SuccessfulDeploymentAction>;
   showTelegramBotDeletionGuidance(config: DeployConfig): Promise<void>;
 }

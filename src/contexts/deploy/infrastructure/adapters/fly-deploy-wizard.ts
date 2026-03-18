@@ -339,7 +339,7 @@ export class FlyDeployWizard implements DeployWizardPort {
   private readonly defaultAppName: string;
   private readonly modelLabels = new Map<string, string>();
   private readonly modelOptionsById = new Map<string, ModelOption>();
-  private readonly whatsappAllowedUsersCache = new Map<string, string | null>();
+  private readonly whatsappBindingCache = new Map<string, { hasSession: boolean; allowedUsers: string | null }>();
   private reasoningPolicies?: Map<string, ReasoningPolicy>;
 
   constructor(env?: NodeJS.ProcessEnv, deps: FlyDeployWizardDeps = {}) {
@@ -691,7 +691,7 @@ export class FlyDeployWizard implements DeployWizardPort {
     if ((config.telegramBotUsername ?? "").trim().length > 0) {
       entryLines.push(`    telegram_bot_username: ${config.telegramBotUsername?.trim()}`);
     }
-    if (config.whatsappEnabled) {
+    if (config.whatsappEnabled && config.whatsappSessionConfirmed) {
       if ((config.whatsappMode ?? "").trim().length > 0) {
         entryLines.push(`    whatsapp_mode: ${config.whatsappMode?.trim()}`);
       }
@@ -715,9 +715,9 @@ export class FlyDeployWizard implements DeployWizardPort {
     config: DeployConfig,
     stdout: { write: (s: string) => void },
     stderr: { write: (s: string) => void }
-  ): Promise<void> {
+  ): Promise<{ whatsappSessionConfirmed?: boolean }> {
     if (!this.prompts.isInteractive()) {
-      return;
+      return {};
     }
 
     if (config.discordBotToken && config.discordUsePairing && !config.gatewayAllowAllUsers) {
@@ -763,7 +763,7 @@ export class FlyDeployWizard implements DeployWizardPort {
         if (!paired.ok) {
           stderr.write(`[warn] WhatsApp pairing did not complete cleanly: ${paired.error ?? "unknown error"}\n`);
           stderr.write(`Tip: run 'hermes-fly agent -a ${config.appName} whatsapp' to retry pairing.\n`);
-          return;
+          return {};
         }
 
         stdout.write("\nRestarting the deployed app so WhatsApp comes online...\n");
@@ -771,7 +771,7 @@ export class FlyDeployWizard implements DeployWizardPort {
         if (!restarted.ok) {
           stderr.write(`[warn] WhatsApp paired, but the deployed app did not restart cleanly: ${restarted.error ?? "unknown error"}\n`);
           stderr.write(`Tip: run 'hermes-fly status -a ${config.appName}' and 'hermes-fly logs -a ${config.appName}' before testing WhatsApp.\n`);
-          return;
+          return {};
         }
 
         stdout.write("WhatsApp setup completed on the deployed agent.\n");
@@ -781,8 +781,11 @@ export class FlyDeployWizard implements DeployWizardPort {
           stdout.write("Next step: send a test message to the WhatsApp number linked to Hermes.\n");
         }
         stdout.write("If Linked Devices still shows 'Logging in...' or 'Syncing messages...' briefly after pairing, wait a moment and then try again.\n");
+        return { whatsappSessionConfirmed: true };
       }
     }
+
+    return {};
   }
 
   async chooseSuccessfulDeploymentAction(config: DeployConfig): Promise<"conclude" | "destroy"> {
@@ -2496,10 +2499,11 @@ export class FlyDeployWizard implements DeployWizardPort {
         continue;
       }
 
-      let existingAllowedUsers = entry.whatsappAllowedUsers;
-      if (!existingAllowedUsers) {
-        existingAllowedUsers = await this.readRemoteWhatsAppAllowedUsers(entry.name);
+      const binding = await this.readRemoteWhatsAppBinding(entry.name);
+      if (!binding.hasSession) {
+        continue;
       }
+      const existingAllowedUsers = binding.allowedUsers ?? entry.whatsappAllowedUsers;
       if (!existingAllowedUsers) {
         continue;
       }
@@ -2518,12 +2522,16 @@ export class FlyDeployWizard implements DeployWizardPort {
   private async resolveWhatsAppConflict(
     conflicts: SavedDeploymentEntry[]
   ): Promise<"retry" | "skip" | "continue"> {
-    this.prompts.write("\nThis WhatsApp number is already configured on another Hermes deployment:\n");
+    if (conflicts.length === 1) {
+      this.prompts.write(`\nThis phone number still appears tied with deployment ${conflicts[0].name}:\n`);
+    } else {
+      this.prompts.write("\nThis phone number still appears tied with these deployments:\n");
+    }
     conflicts.forEach((entry) => {
       this.prompts.write(`  - ${entry.name}\n`);
     });
     this.prompts.write("\nUsing the same personal WhatsApp number in more than one Hermes deployment can make setup stall or move the linked session away from the older deployment.\n");
-    this.prompts.write("If you want this new deployment to own the number, destroy the older deployment first.\n\n");
+    this.prompts.write("If you want this new deployment to own the number, destroy or disconnect the deployment above first.\n\n");
     this.prompts.write("   1  Use a different number   Go back and enter another WhatsApp number\n");
     this.prompts.write("   2  Skip WhatsApp for now    Finish this deployment without WhatsApp\n");
     this.prompts.write("   3  Continue anyway          Not recommended\n\n");
@@ -2563,9 +2571,9 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   }
 
-  private async readRemoteWhatsAppAllowedUsers(appName: string): Promise<string | null> {
-    if (this.whatsappAllowedUsersCache.has(appName)) {
-      return this.whatsappAllowedUsersCache.get(appName) ?? null;
+  private async readRemoteWhatsAppBinding(appName: string): Promise<{ hasSession: boolean; allowedUsers: string | null }> {
+    if (this.whatsappBindingCache.has(appName)) {
+      return this.whatsappBindingCache.get(appName) ?? { hasSession: false, allowedUsers: null };
     }
 
     try {
@@ -2578,20 +2586,28 @@ export class FlyDeployWizard implements DeployWizardPort {
           "-a",
           appName,
           "-C",
-          "sh -lc 'printf %s \"${WHATSAPP_ALLOWED_USERS:-${HERMES_FLY_WHATSAPP_ALLOWED_USERS:-}}\"'"
+          "sh -lc 'users=\"${WHATSAPP_ALLOWED_USERS:-${HERMES_FLY_WHATSAPP_ALLOWED_USERS:-}}\"; if find /root/.hermes/whatsapp/session -mindepth 1 -print -quit 2>/dev/null | grep -q .; then printf \"has_session\\n%s\" \"$users\"; else printf \"empty_session\\n%s\" \"$users\"; fi'"
         ],
         { env: this.env, timeoutMs: 8_000 }
       );
       if (result.exitCode !== 0) {
-        this.whatsappAllowedUsersCache.set(appName, null);
-        return null;
+        const fallback = { hasSession: false, allowedUsers: null };
+        this.whatsappBindingCache.set(appName, fallback);
+        return fallback;
       }
-      const value = result.stdout.trim();
-      this.whatsappAllowedUsersCache.set(appName, value.length > 0 ? value : null);
-      return value.length > 0 ? value : null;
+      const lines = result.stdout.replaceAll("\r", "").split("\n");
+      const status = lines[0]?.trim() ?? "";
+      const allowedUsers = lines.slice(1).join("\n").trim();
+      const binding = {
+        hasSession: status === "has_session",
+        allowedUsers: allowedUsers.length > 0 ? allowedUsers : null,
+      };
+      this.whatsappBindingCache.set(appName, binding);
+      return binding;
     } catch {
-      this.whatsappAllowedUsersCache.set(appName, null);
-      return null;
+      const fallback = { hasSession: false, allowedUsers: null };
+      this.whatsappBindingCache.set(appName, fallback);
+      return fallback;
     }
   }
 
