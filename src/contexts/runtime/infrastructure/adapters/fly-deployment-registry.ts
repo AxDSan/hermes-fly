@@ -14,6 +14,8 @@ export interface SavedDeploymentEntry {
   provider: string | null;
   platform: string | null;
   telegramBotUsername: string | null;
+  whatsappMode: string | null;
+  whatsappAllowedUsers: string | null;
 }
 
 interface FlyDeploymentRegistryOptions {
@@ -122,14 +124,21 @@ export async function readSavedDeploymentEntry(
   appName: string,
   env: NodeJS.ProcessEnv
 ): Promise<SavedDeploymentEntry | null> {
+  const entries = await readSavedDeploymentEntries(env);
+  return entries.find((entry) => entry.name === appName) ?? null;
+}
+
+export async function readSavedDeploymentEntries(
+  env: NodeJS.ProcessEnv
+): Promise<SavedDeploymentEntry[]> {
   const configDir = resolveConfigDir(env);
   const configPath = join(configDir, "config.yaml");
   const configContent = await safeReadText(configPath);
   if (configContent === null) {
-    return null;
+    return [];
   }
 
-  return parseConfigEntries(configContent).find((entry) => entry.name === appName) ?? null;
+  return parseConfigEntries(configContent);
 }
 
 function parseConfigEntries(configContent: string): SavedDeploymentEntry[] {
@@ -146,7 +155,9 @@ function parseConfigEntries(configContent: string): SavedDeploymentEntry[] {
           region: null,
           provider: null,
           platform: null,
-          telegramBotUsername: null
+          telegramBotUsername: null,
+          whatsappMode: null,
+          whatsappAllowedUsers: null,
         };
         entries.push(current);
       } else {
@@ -180,6 +191,20 @@ function parseConfigEntries(configContent: string): SavedDeploymentEntry[] {
     if (telegramUserMatch && current !== null) {
       const username = telegramUserMatch[1].trim();
       current.telegramBotUsername = username.length > 0 ? username : null;
+      continue;
+    }
+
+    const whatsappModeMatch = line.match(/^    whatsapp_mode:[ \t]*(.*)$/);
+    if (whatsappModeMatch && current !== null) {
+      const mode = whatsappModeMatch[1].trim();
+      current.whatsappMode = mode.length > 0 ? mode : null;
+      continue;
+    }
+
+    const whatsappAllowedUsersMatch = line.match(/^    whatsapp_allowed_users:[ \t]*(.*)$/);
+    if (whatsappAllowedUsersMatch && current !== null) {
+      const users = whatsappAllowedUsersMatch[1].trim();
+      current.whatsappAllowedUsers = users.length > 0 ? users : null;
     }
   }
 

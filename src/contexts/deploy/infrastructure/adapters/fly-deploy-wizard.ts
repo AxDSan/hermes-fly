@@ -37,6 +37,10 @@ import {
   TELEGRAM_BOTFATHER_NEWBOT_URL,
   telegramBotLink
 } from "../../../messaging/infrastructure/adapters/telegram-links.js";
+import {
+  readSavedDeploymentEntries,
+  type SavedDeploymentEntry,
+} from "../../../runtime/infrastructure/adapters/fly-deployment-registry.js";
 import { resolveFlyCommand } from "../../../../adapters/fly-command.js";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
@@ -335,6 +339,7 @@ export class FlyDeployWizard implements DeployWizardPort {
   private readonly defaultAppName: string;
   private readonly modelLabels = new Map<string, string>();
   private readonly modelOptionsById = new Map<string, ModelOption>();
+  private readonly whatsappAllowedUsersCache = new Map<string, string | null>();
   private reasoningPolicies?: Map<string, ReasoningPolicy>;
 
   constructor(env?: NodeJS.ProcessEnv, deps: FlyDeployWizardDeps = {}) {
@@ -461,7 +466,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       whatsappEnabled: env.WHATSAPP_ENABLED ?? env.HERMES_FLY_WHATSAPP_PENDING,
       whatsappMode: env.WHATSAPP_MODE ?? env.HERMES_FLY_WHATSAPP_MODE,
       whatsappAllowedUsers: env.WHATSAPP_ALLOWED_USERS ?? env.HERMES_FLY_WHATSAPP_ALLOWED_USERS,
-    });
+    }, appName);
     const hermesRef = this.resolveHermesAgentRef(opts.channel);
 
     const intent = DeploymentIntent.create({
@@ -685,6 +690,14 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
     if ((config.telegramBotUsername ?? "").trim().length > 0) {
       entryLines.push(`    telegram_bot_username: ${config.telegramBotUsername?.trim()}`);
+    }
+    if (config.whatsappEnabled) {
+      if ((config.whatsappMode ?? "").trim().length > 0) {
+        entryLines.push(`    whatsapp_mode: ${config.whatsappMode?.trim()}`);
+      }
+      if ((config.whatsappAllowedUsers ?? "").trim().length > 0) {
+        entryLines.push(`    whatsapp_allowed_users: ${config.whatsappAllowedUsers?.trim()}`);
+      }
     }
     filtered.push({ name: appName, lines: entryLines });
 
@@ -2012,7 +2025,7 @@ export class FlyDeployWizard implements DeployWizardPort {
     whatsappEnabled?: string;
     whatsappMode?: string;
     whatsappAllowedUsers?: string;
-  }): Promise<MessagingSetup> {
+  }, appName: string): Promise<MessagingSetup> {
     const presetAllowAnyone = /^(1|true|yes)$/i.test((input.allowAllUsers ?? "").trim());
     const presetPlatforms: string[] = [];
     if ((input.botToken ?? "").trim().length > 0) presetPlatforms.push("telegram");
@@ -2067,9 +2080,13 @@ export class FlyDeployWizard implements DeployWizardPort {
         enabled: input.whatsappEnabled,
         mode: input.whatsappMode,
         allowedUsers: input.whatsappAllowedUsers,
-      }, { allowAnyone });
-      setup.platforms.push("whatsapp");
-      setup.allowAnyone ||= setup.whatsapp.allowAllUsers === true;
+      }, { allowAnyone, appName });
+      if (setup.whatsapp.enabled) {
+        setup.platforms.push("whatsapp");
+        setup.allowAnyone ||= setup.whatsapp.allowAllUsers === true;
+      } else {
+        delete setup.whatsapp;
+      }
     }
 
     return setup;
@@ -2358,7 +2375,7 @@ export class FlyDeployWizard implements DeployWizardPort {
     enabled?: string;
     mode?: string;
     allowedUsers?: string;
-  }, options: { allowAnyone: boolean }): Promise<WhatsAppSetup> {
+  }, options: { allowAnyone: boolean; appName: string }): Promise<WhatsAppSetup> {
     const presetEnabled = /^(1|true|yes)$/i.test((input.enabled ?? "").trim());
     const presetMode = ((input.mode ?? "").trim() || "bot") as "bot" | "self-chat";
     if (presetEnabled) {
@@ -2383,7 +2400,13 @@ export class FlyDeployWizard implements DeployWizardPort {
 
     const modeChoice = await this.chooseNumber("Choose a mode [1]: ", 2, 1);
     const mode: "bot" | "self-chat" = modeChoice === 2 ? "self-chat" : "bot";
-    const access = await this.collectWhatsAppAccessPolicy(options);
+    const access = await this.collectWhatsAppAccessPolicy({
+      ...options,
+      mode,
+    });
+    if (access.skipSetup) {
+      return { enabled: false, mode };
+    }
 
     return {
       enabled: true,
@@ -2394,8 +2417,8 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private async collectWhatsAppAccessPolicy(
-    _options: { allowAnyone: boolean }
-  ): Promise<{ allowedUsers?: string; completeAccessDuringSetup?: boolean }> {
+    options: { allowAnyone: boolean; appName: string; mode: "bot" | "self-chat" }
+  ): Promise<{ allowedUsers?: string; completeAccessDuringSetup?: boolean; skipSetup?: boolean }> {
     while (true) {
       this.prompts.write("\nWho should be able to talk to your WhatsApp setup?\n\n");
       this.prompts.write("   1  Only me          Enter your own WhatsApp number now. Hermes will use it after pairing.\n");
@@ -2407,8 +2430,19 @@ export class FlyDeployWizard implements DeployWizardPort {
         while (true) {
           const answer = (await this.prompts.ask("Your WhatsApp number: ")).trim();
           try {
+            const normalized = this.parseWhatsAppNumbers(answer).join(",");
+            const conflicts = await this.findWhatsAppConflicts(options.appName, normalized, options.mode);
+            if (conflicts.length > 0) {
+              const resolution = await this.resolveWhatsAppConflict(conflicts);
+              if (resolution === "retry") {
+                continue;
+              }
+              if (resolution === "skip") {
+                return { skipSetup: true };
+              }
+            }
             return {
-              allowedUsers: this.parseWhatsAppNumbers(answer).join(","),
+              allowedUsers: normalized,
               completeAccessDuringSetup: true,
             };
           } catch {
@@ -2423,6 +2457,141 @@ export class FlyDeployWizard implements DeployWizardPort {
       } catch {
         this.prompts.write("Enter valid WhatsApp numbers with country code. You can paste +39 340 6844897 and hermes-fly will normalize it.\n");
       }
+    }
+  }
+
+  private async findWhatsAppConflicts(
+    currentAppName: string,
+    allowedUsers: string,
+    mode: "bot" | "self-chat"
+  ): Promise<SavedDeploymentEntry[]> {
+    if (mode !== "self-chat") {
+      return [];
+    }
+
+    const candidateNumbers = new Set(
+      allowedUsers.split(",").map((value) => value.trim()).filter(Boolean)
+    );
+    if (candidateNumbers.size === 0) {
+      return [];
+    }
+
+    const entries = await readSavedDeploymentEntries(this.env);
+    const liveAppNames = await this.readLiveFlyAppNames();
+    const conflicts: SavedDeploymentEntry[] = [];
+
+    for (const entry of entries) {
+      if (entry.name === currentAppName) {
+        continue;
+      }
+      if (liveAppNames !== null && !liveAppNames.has(entry.name)) {
+        continue;
+      }
+
+      const platformTokens = (entry.platform ?? "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      if (!platformTokens.includes("whatsapp")) {
+        continue;
+      }
+
+      let existingAllowedUsers = entry.whatsappAllowedUsers;
+      if (!existingAllowedUsers) {
+        existingAllowedUsers = await this.readRemoteWhatsAppAllowedUsers(entry.name);
+      }
+      if (!existingAllowedUsers) {
+        continue;
+      }
+
+      const existingNumbers = new Set(
+        existingAllowedUsers.split(",").map((value) => value.trim()).filter(Boolean)
+      );
+      if ([...candidateNumbers].some((value) => existingNumbers.has(value))) {
+        conflicts.push({ ...entry, whatsappAllowedUsers: existingAllowedUsers });
+      }
+    }
+
+    return conflicts;
+  }
+
+  private async resolveWhatsAppConflict(
+    conflicts: SavedDeploymentEntry[]
+  ): Promise<"retry" | "skip" | "continue"> {
+    this.prompts.write("\nThis WhatsApp number is already configured on another Hermes deployment:\n");
+    conflicts.forEach((entry) => {
+      this.prompts.write(`  - ${entry.name}\n`);
+    });
+    this.prompts.write("\nUsing the same personal WhatsApp number in more than one Hermes deployment can make setup stall or move the linked session away from the older deployment.\n");
+    this.prompts.write("If you want this new deployment to own the number, destroy the older deployment first.\n\n");
+    this.prompts.write("   1  Use a different number   Go back and enter another WhatsApp number\n");
+    this.prompts.write("   2  Skip WhatsApp for now    Finish this deployment without WhatsApp\n");
+    this.prompts.write("   3  Continue anyway          Not recommended\n\n");
+
+    const choice = await this.chooseNumber("Choose an option [1]: ", 3, 1);
+    if (choice === 1) {
+      return "retry";
+    }
+    if (choice === 2) {
+      return "skip";
+    }
+    return "continue";
+  }
+
+  private async readLiveFlyAppNames(): Promise<Set<string> | null> {
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      const result = await this.process.run(
+        flyCommand,
+        ["apps", "list", "--json"],
+        { env: this.env, timeoutMs: 5_000 }
+      );
+      if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
+        return null;
+      }
+      const parsed = JSON.parse(result.stdout) as Array<Record<string, unknown>>;
+      const names = new Set<string>();
+      parsed.forEach((entry) => {
+        const name = String(entry.Name ?? entry.name ?? "").trim();
+        if (name.length > 0) {
+          names.add(name);
+        }
+      });
+      return names;
+    } catch {
+      return null;
+    }
+  }
+
+  private async readRemoteWhatsAppAllowedUsers(appName: string): Promise<string | null> {
+    if (this.whatsappAllowedUsersCache.has(appName)) {
+      return this.whatsappAllowedUsersCache.get(appName) ?? null;
+    }
+
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      const result = await this.process.run(
+        flyCommand,
+        [
+          "ssh",
+          "console",
+          "-a",
+          appName,
+          "-C",
+          "sh -lc 'printf %s \"${WHATSAPP_ALLOWED_USERS:-${HERMES_FLY_WHATSAPP_ALLOWED_USERS:-}}\"'"
+        ],
+        { env: this.env, timeoutMs: 8_000 }
+      );
+      if (result.exitCode !== 0) {
+        this.whatsappAllowedUsersCache.set(appName, null);
+        return null;
+      }
+      const value = result.stdout.trim();
+      this.whatsappAllowedUsersCache.set(appName, value.length > 0 ? value : null);
+      return value.length > 0 ? value : null;
+    } catch {
+      this.whatsappAllowedUsersCache.set(appName, null);
+      return null;
     }
   }
 
@@ -3245,6 +3414,11 @@ export class FlyDeployWizard implements DeployWizardPort {
             WHATSAPP_ENABLED: "true",
             WHATSAPP_MODE: config.whatsappMode,
             WHATSAPP_ALLOWED_USERS: config.whatsappAllowedUsers,
+          }, {
+            // The wizard already collected the allowed users locally, so
+            // answer Hermes' follow-up "Update allowed users?" prompt
+            // non-interactively and proceed straight to QR pairing.
+            stdinText: "n\n",
           })
         ],
         {
@@ -3326,6 +3500,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       /Start the gateway:/i.test(trimmed)
       || /install as a service/i.test(trimmed)
       || /Agent responses are prefixed/i.test(trimmed)
+      || /Update allowed users\?\s*\[y\/N\]/i.test(trimmed)
     ) {
       return null;
     }
@@ -3374,7 +3549,8 @@ export class FlyDeployWizard implements DeployWizardPort {
 
   private buildRemoteHermesCommand(
     hermesArgs: string[],
-    extraEnv: Record<string, string | undefined> = {}
+    extraEnv: Record<string, string | undefined> = {},
+    options: { stdinText?: string } = {}
   ): string {
     const renderedArgs = hermesArgs.map((value) => this.shellEscape(value)).join(" ");
     const renderedEnv = Object.entries(extraEnv)
@@ -3382,9 +3558,13 @@ export class FlyDeployWizard implements DeployWizardPort {
       .map(([key, value]) => `${key}=${this.shellEscape(value)}`)
       .join(" ");
     const envPrefix = renderedEnv.length > 0 ? `env ${renderedEnv} ` : "";
-    const launch = renderedArgs.length > 0
-      ? `cd ${this.shellEscape("/root/.hermes")} && exec ${envPrefix}${this.shellEscape("/opt/hermes/hermes-agent/venv/bin/hermes")} ${renderedArgs}`
-      : `cd ${this.shellEscape("/root/.hermes")} && exec ${envPrefix}${this.shellEscape("/opt/hermes/hermes-agent/venv/bin/hermes")}`;
+    const hermesExecutable = `${envPrefix}${this.shellEscape("/opt/hermes/hermes-agent/venv/bin/hermes")}`;
+    const hermesLaunch = renderedArgs.length > 0
+      ? `${hermesExecutable} ${renderedArgs}`
+      : hermesExecutable;
+    const launch = options.stdinText && options.stdinText.length > 0
+      ? `cd ${this.shellEscape("/root/.hermes")} && printf %s ${this.shellEscape(options.stdinText)} | ${hermesLaunch}`
+      : `cd ${this.shellEscape("/root/.hermes")} && exec ${hermesLaunch}`;
     return `sh -lc ${this.shellEscape(launch)}`;
   }
 
