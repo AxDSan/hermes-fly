@@ -89,6 +89,8 @@ teardown() {
   assert_output --partial "gateway-supervisor.pid"
   assert_output --partial "trap request_restart USR1"
   assert_output --partial "hermes gateway run --replace"
+  assert_output --partial "/root/.hermes/.env"
+  assert_output --partial "self-chat-identity.json"
 }
 
 @test "templates/entrypoint.sh symlinks node from /opt/hermes" {
@@ -167,6 +169,8 @@ teardown() {
   assert_success
   assert_output --partial "self-chat-identity.json"
   assert_output --partial "HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER"
+  assert_output --partial "export WHATSAPP_ENABLED=true"
+  assert_output --partial 'export WHATSAPP_MODE="${WHATSAPP_MODE:-self-chat}"'
 }
 
 @test "entrypoint.sh patches config.yaml model from LLM_MODEL" {

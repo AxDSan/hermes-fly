@@ -104,7 +104,9 @@ for key, value in mapping.items():
 PYEOF
   )"
 fi
-if [[ -z "${WHATSAPP_ALLOWED_USERS:-}" ]] && [[ -n "${HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER:-}" ]]; then
+if [[ -n "${HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER:-}" ]]; then
+  export WHATSAPP_ENABLED=true
+  export WHATSAPP_MODE="${WHATSAPP_MODE:-self-chat}"
   export WHATSAPP_ALLOWED_USERS="${HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER}"
 fi
 # Bridge Fly secrets into /root/.hermes/.env on every boot (not just first deploy)

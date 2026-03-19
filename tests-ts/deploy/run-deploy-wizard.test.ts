@@ -1090,6 +1090,98 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.ok(!prompts.asked.some((message) => message.includes("WhatsApp pairing code")));
   });
 
+  it("falls back to a full machine restart when the gateway-only WhatsApp restart does not bring the bridge back", async () => {
+    const prompts = makePromptPort(["y"], { interactive: true });
+    const io = makeIO();
+    const backgroundCalls: Array<{ command: string; args: string[] }> = [];
+    let supervisorStartedAt = 100;
+    let machineRestarted = false;
+    const runner: ForegroundProcessRunner = {
+      run: async (command, args) => {
+        backgroundCalls.push({ command, args });
+        if (args[0] === "ssh" && args[1] === "console" && /gateway-supervisor\.pid/.test(args.join(" ")) && /kill -USR1/.test(args.join(" "))) {
+          supervisorStartedAt += 1;
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "ssh" && args[1] === "console" && /gateway-supervisor\.pid/.test(args.join(" "))) {
+          return { exitCode: 0, stdout: `available\n${supervisorStartedAt}\n`, stderr: "" };
+        }
+        if (args[0] === "machine" && args[1] === "list") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify([{ id: "machine123", state: "started", region: "fra" }]),
+            stderr: "",
+          };
+        }
+        if (args[0] === "machine" && args[1] === "restart") {
+          machineRestarted = true;
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "secrets" && args[1] === "set") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "ssh" && args[1] === "console" && /127\.0\.0\.1:3000\/health/.test(args.join(" "))) {
+          if (!machineRestarted) {
+            return {
+              exitCode: 7,
+              stdout: "",
+              stderr: "Error: ssh shell: Process exited with status 7",
+            };
+          }
+          return {
+            exitCode: 0,
+            stdout: "{\"status\":\"connected\",\"selfJid\":\"447871172820@s.whatsapp.net\",\"selfNumber\":\"447871172820\",\"selfLid\":\"242137421639836@lid\"}\n",
+            stderr: "",
+          };
+        }
+        if (args[0] === "ssh" && args[1] === "console" && /PairingStore/.test(args.join(" "))) {
+          return {
+            exitCode: 0,
+            stdout: "{\"447871172820@s.whatsapp.net\":true,\"447871172820\":true,\"242137421639836@lid\":true}\n",
+            stderr: "",
+          };
+        }
+        if (args[0] === "logs") {
+          return {
+            exitCode: 0,
+            stdout: "2026-03-18T16:55:00Z app[test] [info] [whatsapp] Sending response (42 chars) to 242137421639836@lid\n",
+            stderr: "",
+          };
+        }
+        if (args[0] === "ssh" && args[1] === "console") {
+          return {
+            exitCode: 0,
+            stdout: "empty_session\n",
+            stderr: "",
+          };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      runStreaming: async (_command, _args, options) => {
+        options?.onStdoutChunk?.("⚕ WhatsApp Setup\n");
+        options?.onStdoutChunk?.("📱 Scan this QR code with WhatsApp on your phone:\n");
+        options?.onStdoutChunk?.("Waiting for scan...\n");
+        options?.onStdoutChunk?.("✅ Pairing complete. Credentials saved.\n");
+        return { exitCode: 0 };
+      },
+      runForeground: async () => ({ exitCode: 0 }),
+    };
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner, sleep: async () => {} });
+
+    const result = await wizard.finalizeMessagingSetup({
+      ...DEFAULT_CONFIG,
+      appName: "test-app",
+      whatsappEnabled: true,
+      whatsappMode: "self-chat",
+      whatsappCompleteAccessDuringSetup: true,
+    }, io.stdout, io.stderr);
+
+    assert.deepEqual(result, { whatsappSessionConfirmed: true });
+    assert.ok(backgroundCalls.some((call) => call.args.slice(0, 2).join(" ") === "machine restart"));
+    assert.ok(backgroundCalls.filter((call) => /kill -USR1/.test(call.args.join(" "))).length >= 2);
+    assert.doesNotMatch(io.errText, /did not report a connected session after pairing/i);
+  });
+
   it("fails before opening the remote wizard when stale WhatsApp session data already exists", async () => {
     const prompts = makePromptPort(["y"], { interactive: true });
     const io = makeIO();

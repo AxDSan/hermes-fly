@@ -115,6 +115,12 @@ type ProviderOption = {
   description: string;
 };
 
+type AppRestartResult = {
+  ok: boolean;
+  error?: string;
+  strategy?: "process" | "machine";
+};
+
 type ReasoningPolicy = {
   allowedEfforts: string[];
   defaultEffort: string;
@@ -855,14 +861,7 @@ export class FlyDeployWizard implements DeployWizardPort {
         }
 
         stdout.write("\nRestarting the Hermes gateway so WhatsApp comes online...\n");
-        const restarted = await this.restartAppAfterWhatsAppPairing(config.appName);
-        if (!restarted.ok) {
-          stderr.write(`[warn] WhatsApp paired, but the deployed app did not restart cleanly: ${restarted.error ?? "unknown error"}\n`);
-          stderr.write(`Tip: run 'hermes-fly status -a ${config.appName}' and 'hermes-fly logs -a ${config.appName}' before testing WhatsApp.\n`);
-          return {};
-        }
-
-        const bridgeReady = await this.waitForWhatsAppBridgeConnectedAfterPairing(config.appName, {
+        const bridgeReady = await this.restartWhatsAppAndWaitForBridge(config.appName, {
           requireSelfNumber: config.whatsappMode === "self-chat",
         });
         if (!bridgeReady.ok) {
@@ -3934,23 +3933,67 @@ export class FlyDeployWizard implements DeployWizardPort {
     return line;
   }
 
-  private async restartAppAfterWhatsAppPairing(appName: string): Promise<{ ok: boolean; error?: string }> {
+  private async restartAppAfterWhatsAppPairing(appName: string): Promise<AppRestartResult> {
     try {
       const processRestart = await this.requestGatewayProcessRestart(appName);
       if (processRestart.ok) {
-        return { ok: true };
+        return { ok: true, strategy: "process" };
       }
       if (!processRestart.unavailable) {
-        return { ok: false, error: processRestart.error };
+        return { ok: false, error: processRestart.error, strategy: "process" };
       }
-      return await this.restartPrimaryAppMachine(
+      const machineRestart = await this.restartPrimaryAppMachine(
         appName,
         "could not determine which Fly machine to restart after WhatsApp pairing",
         "machine not running after WhatsApp restart"
       );
+      return {
+        ...machineRestart,
+        strategy: machineRestart.ok ? "machine" : undefined,
+      };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  private async restartWhatsAppAndWaitForBridge(
+    appName: string,
+    options?: { requireSelfNumber?: boolean }
+  ): Promise<{ ok: boolean; error?: string; health?: WhatsAppBridgeHealth }> {
+    const restarted = await this.restartAppAfterWhatsAppPairing(appName);
+    if (!restarted.ok) {
+      return {
+        ok: false,
+        error: `the deployed app did not restart cleanly: ${restarted.error ?? "unknown error"}`,
+      };
+    }
+
+    const bridgeReady = await this.waitForWhatsAppBridgeConnectedAfterPairing(appName, options);
+    if (bridgeReady.ok || restarted.strategy !== "process") {
+      return bridgeReady;
+    }
+
+    const fallbackRestart = await this.restartPrimaryAppMachine(
+      appName,
+      "could not determine which Fly machine to restart after the Hermes gateway restart left WhatsApp offline",
+      "machine not running after the WhatsApp fallback restart"
+    );
+    if (!fallbackRestart.ok) {
+      return {
+        ok: false,
+        error: `the Hermes gateway restart did not bring WhatsApp back, and the fallback machine restart also failed: ${fallbackRestart.error ?? bridgeReady.error ?? "unknown error"}`,
+      };
+    }
+
+    const fallbackBridgeReady = await this.waitForWhatsAppBridgeConnectedAfterPairing(appName, options);
+    if (!fallbackBridgeReady.ok) {
+      return {
+        ok: false,
+        error: `the Hermes gateway restart did not bring WhatsApp back, and the fallback machine restart still left WhatsApp unavailable: ${fallbackBridgeReady.error ?? bridgeReady.error ?? "unknown error"}`,
+      };
+    }
+
+    return fallbackBridgeReady;
   }
 
   private async readGatewaySupervisorState(
@@ -4370,15 +4413,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       return { ok: true, health };
     }
 
-    const restarted = await this.restartAppAfterWhatsAppPairing(config.appName);
-    if (!restarted.ok) {
-      return {
-        ok: false,
-        error: `the deployed app did not restart cleanly after hermes-fly adopted the paired WhatsApp number: ${restarted.error ?? "unknown error"}`,
-      };
-    }
-
-    const bridgeReady = await this.waitForWhatsAppBridgeConnectedAfterPairing(config.appName, {
+    const bridgeReady = await this.restartWhatsAppAndWaitForBridge(config.appName, {
       requireSelfNumber: true,
     });
     if (!bridgeReady.ok) {
