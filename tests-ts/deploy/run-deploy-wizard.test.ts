@@ -992,9 +992,17 @@ describe("FlyDeployWizard.postDeployActions", () => {
     const io = makeIO();
     const streamingCalls: Array<{ command: string; args: string[] }> = [];
     const backgroundCalls: Array<{ command: string; args: string[] }> = [];
+    let supervisorStartedAt = 100;
     const runner: ForegroundProcessRunner = {
       run: async (command, args) => {
         backgroundCalls.push({ command, args });
+        if (args[0] === "ssh" && args[1] === "console" && /gateway-supervisor\.pid/.test(args.join(" ")) && /kill -USR1/.test(args.join(" "))) {
+          supervisorStartedAt += 1;
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "ssh" && args[1] === "console" && /gateway-supervisor\.pid/.test(args.join(" "))) {
+          return { exitCode: 0, stdout: `available\n${supervisorStartedAt}\n`, stderr: "" };
+        }
         if (args[0] === "ssh" && args[1] === "console" && /127\.0\.0\.1:3000\/health/.test(args.join(" "))) {
           return {
             exitCode: 0,
@@ -1060,14 +1068,15 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.match(remoteSetupCommand, /WHATSAPP_MODE=.*self-chat/);
     assert.doesNotMatch(remoteSetupCommand, /WHATSAPP_ALLOWED_USERS=/);
     assert.ok(backgroundCalls.some((call) => call.args.slice(0, 5).join(" ") === "secrets set --app test-app --stage"));
-    assert.ok(backgroundCalls.some((call) => call.args.slice(0, 5).join(" ") === "machine restart machine123 -a test-app"));
+    assert.ok(backgroundCalls.filter((call) => /kill -USR1/.test(call.args.join(" "))).length >= 2);
+    assert.ok(!backgroundCalls.some((call) => call.args.slice(0, 2).join(" ") === "machine restart"));
     assert.ok(backgroundCalls.some((call) => call.args.slice(0, 4).join(" ") === "machine list -a test-app"));
     assert.ok(backgroundCalls.some((call) => /127\.0\.0\.1:3000\/health/.test(call.args.join(" "))));
     assert.ok(backgroundCalls.some((call) => call.args[0] === "logs" && call.args.includes("--no-tail")));
     assert.match(io.outText, /Scan the QR code with WhatsApp on your phone/);
     assert.match(io.outText, /▄▄▄▄ QR FRAME 1 ▄▄▄▄\r▄▄▄▄ QR FRAME 2 ▄▄▄▄\r/);
     assert.doesNotMatch(io.outText, /▄▄▄▄ QR FRAME 1 ▄▄▄▄\n▄▄▄▄ QR FRAME 2 ▄▄▄▄\n/);
-    assert.match(io.outText, /Restarting the deployed app so WhatsApp comes online/);
+    assert.match(io.outText, /Restarting the Hermes gateway so WhatsApp comes online/);
     assert.match(io.outText, /Detecting the paired WhatsApp account and adopting it for self-chat/i);
     assert.match(io.outText, /send a short message to Message yourself now/i);
     assert.match(io.outText, /Self-chat test confirmed/i);
@@ -1444,6 +1453,7 @@ describe("FlyDeployWizard.postDeployActions", () => {
     const prompts = makePromptPort(["y"], { interactive: true });
     const io = makeIO();
     const backgroundCalls: Array<{ command: string; args: string[] }> = [];
+    let supervisorStartedAt = 100;
     const config: DeployConfig = {
       ...DEFAULT_CONFIG,
       appName: "test-app",
@@ -1454,6 +1464,13 @@ describe("FlyDeployWizard.postDeployActions", () => {
     const runner: ForegroundProcessRunner = {
       run: async (command, args) => {
         backgroundCalls.push({ command, args });
+        if (args[0] === "ssh" && args[1] === "console" && /gateway-supervisor\.pid/.test(args.join(" ")) && /kill -USR1/.test(args.join(" "))) {
+          supervisorStartedAt += 1;
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "ssh" && args[1] === "console" && /gateway-supervisor\.pid/.test(args.join(" "))) {
+          return { exitCode: 0, stdout: `available\n${supervisorStartedAt}\n`, stderr: "" };
+        }
         if (args[0] === "ssh" && args[1] === "console" && !/127\.0\.0\.1:3000\/health/.test(args.join(" ")) && !/bridge\.log/.test(args.join(" "))) {
           return {
             exitCode: 0,
@@ -1481,6 +1498,13 @@ describe("FlyDeployWizard.postDeployActions", () => {
             stderr: "",
           };
         }
+        if (args[0] === "ssh" && args[1] === "console" && /PairingStore/.test(args.join(" "))) {
+          return {
+            exitCode: 0,
+            stdout: "{\"447871172820@s.whatsapp.net\":true,\"447871172820\":true}\n",
+            stderr: "",
+          };
+        }
         if (args[0] === "logs") {
           return {
             exitCode: 0,
@@ -1502,10 +1526,18 @@ describe("FlyDeployWizard.postDeployActions", () => {
 
     assert.deepEqual(result, { whatsappSessionConfirmed: true });
     assert.equal(config.whatsappAllowedUsers, "447871172820");
+    assert.ok(backgroundCalls.filter((call) => /kill -USR1/.test(call.args.join(" "))).length >= 2);
+    assert.ok(!backgroundCalls.some((call) => call.args.slice(0, 2).join(" ") === "machine restart"));
     const stagedSetCall = backgroundCalls.find((call) => call.args[0] === "secrets" && call.args[1] === "set");
     assert.ok(stagedSetCall);
     assert.ok(stagedSetCall?.args.includes("--stage"));
     assert.ok(stagedSetCall?.args.includes("HERMES_FLY_WHATSAPP_ALLOWED_USERS=447871172820"));
+    const persistedStateCall = backgroundCalls.find((call) =>
+      call.args[0] === "ssh"
+      && call.args[1] === "console"
+      && call.args.some((value) => value.includes("self-chat-identity.json"))
+    );
+    assert.ok(persistedStateCall, "expected a remote self-chat identity persistence command");
     assert.match(io.outText, /Detecting the paired WhatsApp account and adopting it for self-chat/i);
     assert.match(io.outText, /Send a short message to Message yourself now/i);
     assert.doesNotMatch(io.errText, /you configured WhatsApp self-chat/i);
@@ -1770,9 +1802,17 @@ describe("FlyDeployWizard.postDeployActions", () => {
     const prompts = makePromptPort(["y"], { interactive: true });
     const io = makeIO();
     const backgroundCalls: Array<{ command: string; args: string[] }> = [];
+    let supervisorStartedAt = 100;
     const runner: ForegroundProcessRunner = {
       run: async (command, args) => {
         backgroundCalls.push({ command, args });
+        if (args[0] === "ssh" && args[1] === "console" && /gateway-supervisor\.pid/.test(args.join(" ")) && /kill -USR1/.test(args.join(" "))) {
+          supervisorStartedAt += 1;
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "ssh" && args[1] === "console" && /gateway-supervisor\.pid/.test(args.join(" "))) {
+          return { exitCode: 0, stdout: `available\n${supervisorStartedAt}\n`, stderr: "" };
+        }
         if (args[0] === "ssh" && args[1] === "console" && !/127\.0\.0\.1:3000\/health/.test(args.join(" ")) && !/bridge\.log/.test(args.join(" ")) && !/tail -n 80/.test(args.join(" "))) {
           return {
             exitCode: 0,
@@ -1794,6 +1834,13 @@ describe("FlyDeployWizard.postDeployActions", () => {
           return {
             exitCode: 0,
             stdout: "{\"status\":\"connected\",\"selfJid\":\"447871172820@s.whatsapp.net\",\"selfNumber\":\"447871172820\",\"selfLid\":\"242137421639836@lid\"}\n",
+            stderr: "",
+          };
+        }
+        if (args[0] === "ssh" && args[1] === "console" && /PairingStore/.test(args.join(" "))) {
+          return {
+            exitCode: 0,
+            stdout: "{\"447871172820@s.whatsapp.net\":true,\"447871172820\":true,\"242137421639836@lid\":true}\n",
             stderr: "",
           };
         }
@@ -1834,6 +1881,12 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.match(joined, /447871172820@s\.whatsapp\.net/);
     assert.match(joined, /447871172820/);
     assert.match(joined, /242137421639836@lid/);
+    const verifyCall = backgroundCalls.find((call) =>
+      call.args[0] === "ssh"
+      && call.args[1] === "console"
+      && call.args.some((value) => value.includes("PairingStore"))
+    );
+    assert.ok(verifyCall, "expected a PairingStore approval verification command");
     assert.ok(!prompts.asked.some((message) => message.includes("Press Enter after sending your self-chat test message")));
   });
 

@@ -63,6 +63,10 @@ const CHATGPT_SECURITY_SETTINGS_URL = "https://chatgpt.com/#settings/Security";
 const DISCORD_DEVELOPER_PORTAL_URL = "https://discord.com/developers/applications";
 const SLACK_APPS_URL = "https://api.slack.com/apps";
 const WHATSAPP_SELF_CHAT_DETECTED_ACCESS_LABEL = "Only me (detected after pairing)";
+const WHATSAPP_SELF_CHAT_IDENTITY_PATH = "/root/.hermes/whatsapp/self-chat-identity.json";
+const WHATSAPP_APPROVED_USERS_PATH = "/root/.hermes/pairing/whatsapp-approved.json";
+const GATEWAY_SUPERVISOR_PID_PATH = "/root/.hermes/runtime/gateway-supervisor.pid";
+const GATEWAY_STARTED_AT_PATH = "/root/.hermes/runtime/gateway-started-at";
 
 type RegionOption = {
   code: string;
@@ -850,7 +854,7 @@ export class FlyDeployWizard implements DeployWizardPort {
           return {};
         }
 
-        stdout.write("\nRestarting the deployed app so WhatsApp comes online...\n");
+        stdout.write("\nRestarting the Hermes gateway so WhatsApp comes online...\n");
         const restarted = await this.restartAppAfterWhatsAppPairing(config.appName);
         if (!restarted.ok) {
           stderr.write(`[warn] WhatsApp paired, but the deployed app did not restart cleanly: ${restarted.error ?? "unknown error"}\n`);
@@ -879,6 +883,12 @@ export class FlyDeployWizard implements DeployWizardPort {
           if (!approvalSeeded.ok) {
             stderr.write(`[warn] WhatsApp paired, but ${approvalSeeded.error ?? "hermes-fly could not auto-approve the paired WhatsApp self-chat identity"}\n`);
             stderr.write(`Tip: run 'hermes-fly logs -a ${config.appName}' and then approve the WhatsApp pairing code manually if Hermes asks for one.\n`);
+            return {};
+          }
+          const approvalVerified = await this.verifyWhatsAppSelfChatApproval(config.appName, adoptedIdentity.health ?? bridgeReady.health);
+          if (!approvalVerified.ok) {
+            stderr.write(`[warn] WhatsApp paired, but ${approvalVerified.error ?? "Hermes did not accept the auto-approved WhatsApp self-chat identity yet"}\n`);
+            stderr.write(`Tip: run 'hermes-fly logs -a ${config.appName}' and then approve the WhatsApp pairing code manually if Hermes still asks for one.\n`);
             return {};
           }
           stdout.write("Send a short message to Message yourself now so hermes-fly can verify the deployed agent sees it.\n");
@@ -2861,18 +2871,24 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     try {
-      const flyCommand = await resolveFlyCommand(this.env);
-      const result = await this.process.run(
-        flyCommand,
+      const result = await this.runRemoteShell(
+        appName,
         [
-          "ssh",
-          "console",
-          "-a",
-          appName,
-          "-C",
-          "sh -lc 'users=\"${WHATSAPP_ALLOWED_USERS:-${HERMES_FLY_WHATSAPP_ALLOWED_USERS:-}}\"; if find /root/.hermes/whatsapp/session -mindepth 1 -print -quit 2>/dev/null | grep -q .; then printf \"has_session\\n%s\" \"$users\"; else printf \"empty_session\\n%s\" \"$users\"; fi'"
-        ],
-        { env: this.env, timeoutMs: 8_000 }
+          "users=\"${WHATSAPP_ALLOWED_USERS:-${HERMES_FLY_WHATSAPP_ALLOWED_USERS:-}}\"",
+          `state_file=${this.shellEscape(WHATSAPP_SELF_CHAT_IDENTITY_PATH)}`,
+          "if [ -f \"$state_file\" ]; then",
+          "  state_users=\"$(python3 - <<'PYEOF'\nimport json\nfrom pathlib import Path\nstate_path = Path('"
+            + WHATSAPP_SELF_CHAT_IDENTITY_PATH
+            + "')\ntry:\n    state = json.loads(state_path.read_text(encoding='utf-8'))\nexcept Exception:\n    raise SystemExit(0)\nprint(str(state.get('self_number', '')).strip())\nPYEOF\n  )\"",
+          "  if [ -n \"$state_users\" ]; then users=\"$state_users\"; fi",
+          "fi",
+          "if find /root/.hermes/whatsapp/session -mindepth 1 -print -quit 2>/dev/null | grep -q .; then",
+          "  printf 'has_session\\n%s' \"$users\"",
+          "else",
+          "  printf 'empty_session\\n%s' \"$users\"",
+          "fi",
+        ].join("\n"),
+        { timeoutMs: 8_000 }
       );
       if (result.exitCode !== 0) {
         const fallback = { hasSession: false, allowedUsers: null };
@@ -3620,6 +3636,24 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   }
 
+  private async runRemoteShell(
+    appName: string,
+    shellCommand: string,
+    options: { timeoutMs?: number } = {}
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    const flyCommand = await resolveFlyCommand(this.env);
+    const result = await this.process.run(
+      flyCommand,
+      ["ssh", "console", "-a", appName, "-C", `sh -lc ${this.shellEscape(shellCommand)}`],
+      { env: this.env, timeoutMs: options.timeoutMs }
+    );
+    return {
+      exitCode: result.exitCode,
+      stdout: result.stdout || "",
+      stderr: result.stderr || "",
+    };
+  }
+
   private async runRemoteHermesCommand(appName: string, hermesArgs: string[]): Promise<{ ok: boolean; error?: string }> {
     try {
       const result = await this.process.run(
@@ -3902,11 +3936,119 @@ export class FlyDeployWizard implements DeployWizardPort {
 
   private async restartAppAfterWhatsAppPairing(appName: string): Promise<{ ok: boolean; error?: string }> {
     try {
+      const processRestart = await this.requestGatewayProcessRestart(appName);
+      if (processRestart.ok) {
+        return { ok: true };
+      }
+      if (!processRestart.unavailable) {
+        return { ok: false, error: processRestart.error };
+      }
       return await this.restartPrimaryAppMachine(
         appName,
         "could not determine which Fly machine to restart after WhatsApp pairing",
         "machine not running after WhatsApp restart"
       );
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async readGatewaySupervisorState(
+    appName: string
+  ): Promise<{ available: boolean; startedAt?: string; error?: string }> {
+    try {
+      const result = await this.runRemoteShell(
+        appName,
+        [
+          `pid_file=${this.shellEscape(GATEWAY_SUPERVISOR_PID_PATH)}`,
+          `started_at_file=${this.shellEscape(GATEWAY_STARTED_AT_PATH)}`,
+          "if [ -f \"$pid_file\" ]; then",
+          "  pid=\"$(cat \"$pid_file\" 2>/dev/null || true)\"",
+          "  if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then",
+          "    printf 'available\\n'",
+          "    cat \"$started_at_file\" 2>/dev/null || true",
+          "    exit 0",
+          "  fi",
+          "fi",
+          "printf 'missing\\n'",
+        ].join("\n"),
+        { timeoutMs: 8_000 }
+      );
+      if (result.exitCode !== 0) {
+        return { available: false, error: result.stderr || result.stdout || "supervisor state check failed" };
+      }
+
+      const lines = result.stdout.replaceAll("\r", "").split("\n");
+      const status = (lines[0] ?? "").trim();
+      const startedAt = lines.slice(1).join("\n").trim();
+      return {
+        available: status === "available",
+        startedAt: startedAt.length > 0 ? startedAt : undefined,
+      };
+    } catch (error) {
+      return { available: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async waitForGatewayProcessRestart(
+    appName: string,
+    previousStartedAt?: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    let lastStartedAt = previousStartedAt ?? "";
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const state = await this.readGatewaySupervisorState(appName);
+      if (!state.available) {
+        if (attempt < 19) {
+          await this.sleep(500);
+          continue;
+        }
+        return { ok: false, error: state.error ?? "gateway supervisor did not come back after restart" };
+      }
+
+      const startedAt = (state.startedAt ?? "").trim();
+      if (startedAt.length > 0 && startedAt !== lastStartedAt) {
+        return { ok: true };
+      }
+
+      if (startedAt.length > 0) {
+        lastStartedAt = startedAt;
+      }
+      if (attempt < 19) {
+        await this.sleep(500);
+      }
+    }
+
+    return { ok: false, error: "gateway process did not report a new start time after restart" };
+  }
+
+  private async requestGatewayProcessRestart(
+    appName: string
+  ): Promise<{ ok: boolean; unavailable?: boolean; error?: string }> {
+    try {
+      const before = await this.readGatewaySupervisorState(appName);
+      if (!before.available) {
+        return { ok: false, unavailable: true, error: before.error };
+      }
+
+      const result = await this.runRemoteShell(
+        appName,
+        [
+          `pid_file=${this.shellEscape(GATEWAY_SUPERVISOR_PID_PATH)}`,
+          "if [ ! -f \"$pid_file\" ]; then exit 42; fi",
+          "pid=\"$(cat \"$pid_file\" 2>/dev/null || true)\"",
+          "if [ -z \"$pid\" ] || ! kill -0 \"$pid\" 2>/dev/null; then exit 42; fi",
+          "kill -USR1 \"$pid\"",
+        ].join("\n"),
+        { timeoutMs: 8_000 }
+      );
+      if (result.exitCode === 42) {
+        return { ok: false, unavailable: true };
+      }
+      if (result.exitCode !== 0) {
+        return { ok: false, error: result.stderr || result.stdout || "gateway supervisor restart failed" };
+      }
+
+      return await this.waitForGatewayProcessRestart(appName, before.startedAt);
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
@@ -3956,23 +4098,34 @@ export class FlyDeployWizard implements DeployWizardPort {
         };
       }
 
-      const clearSession = await this.process.run(
-        flyCommand,
+      const clearSession = await this.runRemoteShell(
+        appName,
         [
-          "ssh",
-          "console",
-          "-a",
-          appName,
-          "-C",
-          "sh -lc 'rm -rf /root/.hermes/whatsapp/session && mkdir -p /root/.hermes/whatsapp/session && chmod 700 /root/.hermes/whatsapp/session && if [ -f /root/.hermes/.env ]; then sed -i \"/^WHATSAPP_ENABLED=/d\" /root/.hermes/.env && sed -i \"/^WHATSAPP_MODE=/d\" /root/.hermes/.env && sed -i \"/^WHATSAPP_ALLOWED_USERS=/d\" /root/.hermes/.env; fi'"
-        ],
-        { env: this.env, timeoutMs: 20_000 }
+          "rm -rf /root/.hermes/whatsapp/session",
+          "mkdir -p /root/.hermes/whatsapp/session",
+          "chmod 700 /root/.hermes/whatsapp/session",
+          `rm -f ${this.shellEscape(WHATSAPP_SELF_CHAT_IDENTITY_PATH)} ${this.shellEscape(WHATSAPP_APPROVED_USERS_PATH)}`,
+          "if [ -f /root/.hermes/.env ]; then",
+          "  sed -i '/^WHATSAPP_ENABLED=/d' /root/.hermes/.env",
+          "  sed -i '/^WHATSAPP_MODE=/d' /root/.hermes/.env",
+          "  sed -i '/^WHATSAPP_ALLOWED_USERS=/d' /root/.hermes/.env",
+          "fi",
+        ].join("\n"),
+        { timeoutMs: 20_000 }
       );
       if (clearSession.exitCode !== 0) {
         return {
           ok: false,
           error: `could not clear WhatsApp session data on deployment ${appName}: ${clearSession.stderr || clearSession.stdout || "session clear failed"}`,
         };
+      }
+
+      const processRestart = await this.requestGatewayProcessRestart(appName);
+      if (processRestart.ok) {
+        return { ok: true };
+      }
+      if (!processRestart.unavailable) {
+        return { ok: false, error: processRestart.error };
       }
 
       const recycled = await this.recyclePrimaryAppMachine(
@@ -4196,20 +4349,26 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     config.whatsappAllowedUsers = pairedNumber;
-    if (previousAllowedUsers === pairedNumber && conflicts.length === 0) {
-      this.whatsappBindingCache.set(config.appName, { hasSession: true, allowedUsers: pairedNumber });
-      return { ok: true, health };
+    const persistedState = await this.persistWhatsAppSelfChatRuntimeState(config.appName, health, pairedNumber);
+    if (!persistedState.ok) {
+      return {
+        ok: false,
+        error: `hermes-fly could not persist the paired WhatsApp self-chat identity: ${persistedState.error ?? "runtime state update failed"}`,
+      };
     }
 
     const secretsResult = await this.stageWhatsAppSelfChatAllowedUsers(config.appName, pairedNumber);
     if (!secretsResult.ok) {
       return {
         ok: false,
-        error: `hermes-fly could not persist the paired WhatsApp number for self-chat: ${secretsResult.error ?? "secret update failed"}`,
+        error: `hermes-fly could not stage the paired WhatsApp number for future boots: ${secretsResult.error ?? "secret update failed"}`,
       };
     }
 
     this.whatsappBindingCache.set(config.appName, { hasSession: true, allowedUsers: pairedNumber });
+    if (previousAllowedUsers === pairedNumber && conflicts.length === 0) {
+      return { ok: true, health };
+    }
 
     const restarted = await this.restartAppAfterWhatsAppPairing(config.appName);
     if (!restarted.ok) {
@@ -4230,6 +4389,59 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     return { ok: true, health: bridgeReady.health };
+  }
+
+  private async persistWhatsAppSelfChatRuntimeState(
+    appName: string,
+    health: WhatsAppBridgeHealth | undefined,
+    allowedUsers: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const statePayload = JSON.stringify({
+      self_number: allowedUsers,
+      self_jid: (health?.selfJid ?? "").trim(),
+      self_lid: (health?.selfLid ?? "").trim(),
+      detected_at: new Date().toISOString(),
+    });
+    const envPayload = JSON.stringify({
+      WHATSAPP_ENABLED: "true",
+      WHATSAPP_MODE: "self-chat",
+      WHATSAPP_ALLOWED_USERS: allowedUsers,
+    });
+
+    try {
+      const result = await this.runRemoteShell(
+        appName,
+        [
+          "python3 - <<'PYEOF'",
+          "import json",
+          "import os",
+          "from pathlib import Path",
+          `state = ${statePayload}`,
+          `env_values = ${envPayload}`,
+          `state_path = Path(${JSON.stringify(WHATSAPP_SELF_CHAT_IDENTITY_PATH)})`,
+          "state_path.parent.mkdir(parents=True, exist_ok=True)",
+          "tmp_state_path = state_path.with_suffix(state_path.suffix + '.tmp')",
+          "tmp_state_path.write_text(json.dumps(state), encoding='utf-8')",
+          "os.chmod(tmp_state_path, 0o600)",
+          "os.replace(tmp_state_path, state_path)",
+          "env_path = Path('/root/.hermes/.env')",
+          "lines = env_path.read_text(encoding='utf-8').splitlines() if env_path.exists() else []",
+          "managed_keys = set(env_values.keys())",
+          "rendered = [line for line in lines if not any(line.startswith(f'{key}=') for key in managed_keys)]",
+          "for key, value in env_values.items():",
+          "    rendered.append(f'{key}={value}')",
+          "env_path.write_text('\\n'.join(rendered) + ('\\n' if rendered else ''), encoding='utf-8')",
+          "PYEOF",
+        ].join("\n"),
+        { timeoutMs: 15_000 }
+      );
+      if (result.exitCode !== 0) {
+        return { ok: false, error: result.stderr || result.stdout || "failed to persist WhatsApp self-chat state" };
+      }
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   private async stageWhatsAppSelfChatAllowedUsers(appName: string, allowedUsers: string): Promise<{ ok: boolean; error?: string }> {
@@ -4271,16 +4483,34 @@ export class FlyDeployWizard implements DeployWizardPort {
         ])
       )
     );
-    const escapedPayload = payload.replace(/\\/g, "\\\\").replace(/'/g, `'\\''`);
+    const payloadLiteral = JSON.stringify(payload);
 
     try {
-      const flyCommand = await resolveFlyCommand(this.env);
-      const command = [
-        "ssh", "console", "-a", appName,
-        "-C",
-        `sh -lc "mkdir -p /root/.hermes/pairing && cat <<'EOF' > /root/.hermes/pairing/whatsapp-approved.json\n${escapedPayload}\nEOF\nchmod 600 /root/.hermes/pairing/whatsapp-approved.json"`,
-      ];
-      const result = await this.process.run(flyCommand, command, { env: this.env, timeoutMs: 15_000 });
+      const result = await this.runRemoteShell(
+        appName,
+        [
+          "python3 - <<'PYEOF'",
+          "import json",
+          "import os",
+          "from pathlib import Path",
+          `payload = json.loads(${payloadLiteral})`,
+          `approved_path = Path(${JSON.stringify(WHATSAPP_APPROVED_USERS_PATH)})`,
+          "approved_path.parent.mkdir(parents=True, exist_ok=True)",
+          "existing = {}",
+          "if approved_path.exists():",
+          "    try:",
+          "        existing = json.loads(approved_path.read_text(encoding='utf-8'))",
+          "    except Exception:",
+          "        existing = {}",
+          "existing.update(payload)",
+          "tmp_path = approved_path.with_suffix('.json.tmp')",
+          "tmp_path.write_text(json.dumps(existing), encoding='utf-8')",
+          "os.chmod(tmp_path, 0o600)",
+          "os.replace(tmp_path, approved_path)",
+          "PYEOF",
+        ].join("\n"),
+        { timeoutMs: 15_000 }
+      );
       if (result.exitCode !== 0) {
         return { ok: false, error: result.stderr || result.stdout || "failed to seed WhatsApp self-chat approval" };
       }
@@ -4288,6 +4518,61 @@ export class FlyDeployWizard implements DeployWizardPort {
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  private async verifyWhatsAppSelfChatApproval(
+    appName: string,
+    health?: WhatsAppBridgeHealth
+  ): Promise<{ ok: boolean; error?: string }> {
+    const approvedIds = [
+      (health?.selfLid ?? "").trim(),
+      (health?.selfJid ?? "").trim(),
+      (health?.selfNumber ?? "").trim(),
+    ].filter((value, index, list) => value.length > 0 && list.indexOf(value) === index);
+    if (approvedIds.length === 0) {
+      return { ok: false, error: "hermes-fly could not determine any WhatsApp identities to verify for self-chat approval" };
+    }
+
+    const idsLiteral = JSON.stringify(approvedIds);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        const result = await this.runRemoteShell(
+          appName,
+          [
+            "cd /opt/hermes/hermes-agent",
+            "/opt/hermes/hermes-agent/venv/bin/python - <<'PYEOF'",
+            "import json",
+            "import sys",
+            "sys.path.insert(0, '/opt/hermes/hermes-agent')",
+            "from gateway.pairing import PairingStore",
+            `ids = ${idsLiteral}`,
+            "store = PairingStore()",
+            "result = {user_id: store.is_approved('whatsapp', user_id) for user_id in ids}",
+            "print(json.dumps(result))",
+            "if not all(result.values()):",
+            "    raise SystemExit(2)",
+            "PYEOF",
+          ].join("\n"),
+          { timeoutMs: 15_000 }
+        );
+        if (result.exitCode === 0) {
+          return { ok: true };
+        }
+        if (attempt === 4) {
+          return {
+            ok: false,
+            error: `Hermes did not recognize the auto-approved WhatsApp self-chat identities yet: ${result.stderr || result.stdout || "approval verification failed"}`,
+          };
+        }
+      } catch (error) {
+        if (attempt === 4) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      }
+      await this.sleep(500);
+    }
+
+    return { ok: false, error: "approval verification timed out" };
   }
 
   private async verifyWhatsAppSelfChatTest(appName: string): Promise<{ ok: boolean; error?: string }> {

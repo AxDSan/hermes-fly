@@ -19,6 +19,7 @@ export class TemplateWriter {
     const dockerfileTemplate = await readFile(join(templateDir, "Dockerfile.template"), "utf8");
     const flyTomlTemplate = await readFile(join(templateDir, "fly.toml.template"), "utf8");
     const entrypointTemplate = join(templateDir, "entrypoint.sh");
+    const supervisorTemplate = join(templateDir, "gateway-supervisor.sh");
     const sitecustomizeTemplate = join(templateDir, "sitecustomize.py");
     const patchBridgeTemplate = join(templateDir, "patch-whatsapp-bridge.py");
     const compatPolicy = await this.readCompatibilityPolicyVersion();
@@ -41,6 +42,7 @@ export class TemplateWriter {
     });
     await writeFile(join(buildDir, "fly.toml"), flyToml, "utf8");
     await copyFile(entrypointTemplate, join(buildDir, "entrypoint.sh"));
+    await copyFile(supervisorTemplate, join(buildDir, "gateway-supervisor.sh"));
     await copyFile(sitecustomizeTemplate, join(buildDir, "sitecustomize.py"));
     await copyFile(patchBridgeTemplate, join(buildDir, "patch-whatsapp-bridge.py"));
   }
