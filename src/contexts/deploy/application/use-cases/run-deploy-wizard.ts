@@ -247,7 +247,7 @@ export class RunDeployWizardUseCase {
   ) {}
 
   async execute(
-    opts: { autoInstall: boolean; channel: string },
+    opts: { autoInstall: boolean; channel: string; noCache?: boolean },
     stderr: { write: (s: string) => void },
     stdout: { write: (s: string) => void } = { write: () => {} }
   ): Promise<DeployWizardResult> {
@@ -292,6 +292,8 @@ export class RunDeployWizardUseCase {
     let config: DeployConfig;
     try {
       config = await this.port.collectConfig({ channel });
+      // Pass noCache option to config
+      config.noCache = opts.noCache ?? false;
     } catch (error) {
       const message = error instanceof Error ? error.message : "failed to collect deploy configuration";
       if (message === "Deployment cancelled.") {

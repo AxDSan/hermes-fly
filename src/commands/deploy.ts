@@ -13,19 +13,22 @@ export interface DeployCommandOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-function parseDeployArgs(args: string[]): { channel: string; autoInstall: boolean } {
+function parseDeployArgs(args: string[]): { channel: string; autoInstall: boolean; noCache: boolean } {
   let channel = "stable";
   let autoInstall = true;
+  let noCache = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--channel" && i + 1 < args.length) {
       channel = args[++i];
     } else if (args[i] === "--no-auto-install") {
       autoInstall = false;
+    } else if (args[i] === "--no-cache") {
+      noCache = true;
     }
   }
 
-  return { channel, autoInstall };
+  return { channel, autoInstall, noCache };
 }
 
 export async function runDeployCommand(
@@ -34,7 +37,7 @@ export async function runDeployCommand(
 ): Promise<number> {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
-  const { channel, autoInstall } = parseDeployArgs(args);
+  const { channel, autoInstall, noCache } = parseDeployArgs(args);
 
   const wizard = options.wizard ?? new FlyDeployWizard(options.env);
   const cleanup = new DestroyDeploymentAdapter(
@@ -44,7 +47,7 @@ export async function runDeployCommand(
   );
 
   const useCase = new RunDeployWizardUseCase(wizard, cleanup);
-  const result = await useCase.execute({ autoInstall, channel }, stderr, stdout);
+  const result = await useCase.execute({ autoInstall, channel, noCache }, stderr, stdout);
 
   return result.kind === "ok" ? 0 : 1;
 }
