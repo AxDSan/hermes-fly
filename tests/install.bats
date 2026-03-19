@@ -66,7 +66,80 @@ MOCK
   chmod +x "$mock_dir/npm"
 }
 
+write_noisy_mock_npm() {
+  local mock_dir="$1"
+
+  cat > "$mock_dir/npm" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${MOCK_NPM_ARGS_FILE}"
+if [[ "${1:-}" == "ci" ]]; then
+  echo "added 110 packages in 902ms"
+  mkdir -p "$PWD/node_modules/commander"
+  echo '{"name":"commander"}' > "$PWD/node_modules/commander/package.json"
+  exit 0
+fi
+if [[ "${1:-}" == "run" && "${2:-}" == "build" ]]; then
+  echo ""
+  echo "> build"
+  echo "> tsc -p tsconfig.json"
+  echo ""
+  mkdir -p "$PWD/dist"
+  echo 'console.log("hermes-fly test build")' > "$PWD/dist/cli.js"
+  echo 'console.log("installer test build")' > "$PWD/dist/install-cli.js"
+  exit 0
+fi
+if [[ "${1:-}" == "prune" && "${2:-}" == "--omit=dev" ]]; then
+  echo ""
+  echo "up to date in 319ms"
+  exit 0
+fi
+echo "unexpected npm invocation: $*" >&2
+exit 1
+MOCK
+  chmod +x "$mock_dir/npm"
+}
+
 write_mock_node() {
+  local mock_dir="$1"
+  local version="$2"
+
+  cat > "$mock_dir/node" <<MOCK
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\${MOCK_NODE_ARGS_FILE}"
+if [[ "\${1:-}" == *"/dist/install-cli.js" && "\${2:-}" == "install" ]]; then
+  if [[ -n "\${MOCK_INSTALLER_FAILURE_MESSAGE:-}" ]]; then
+    echo "\${MOCK_INSTALLER_FAILURE_MESSAGE}" >&2
+    exit 1
+  fi
+  if [[ "\${HERMES_FLY_INSTALLER_SKIP_BANNER:-0}" != "1" ]]; then
+    cat <<'OUT'
+  🪽 Hermes Fly Installer
+  I can't fix Fly.io billing, but I can fix the part between curl and deploy.
+
+OUT
+  fi
+  cat <<'OUT'
+✓ Detected: darwin/arm64
+
+Install plan
+[1/3] Preparing environment
+[2/3] Installing Hermes Fly
+[3/3] Finalizing setup
+🪽 Hermes Fly installed successfully (hermes-fly ${version})!
+OUT
+  exit 0
+fi
+if [[ "\$*" == *"--version"* ]]; then
+  echo "hermes-fly ${version}"
+  exit 0
+fi
+echo "unexpected node invocation: \$*" >&2
+exit 1
+MOCK
+  chmod +x "$mock_dir/node"
+}
+
+write_mock_legacy_banner_node() {
   local mock_dir="$1"
   local version="$2"
 
@@ -82,13 +155,15 @@ if [[ "\${1:-}" == *"/dist/install-cli.js" && "\${2:-}" == "install" ]]; then
   🪽 Hermes Fly Installer
   I can't fix Fly.io billing, but I can fix the part between curl and deploy.
 
+OUT
+  cat <<'OUT'
 ✓ Detected: darwin/arm64
 
 Install plan
 [1/3] Preparing environment
 [2/3] Installing Hermes Fly
 [3/3] Finalizing setup
-🪽 hermes-fly installed successfully (hermes-fly ${version})!
+🪽 Hermes Fly installed successfully (hermes-fly ${version})!
 OUT
   exit 0
 fi
@@ -153,6 +228,15 @@ MOCK
   run detect_arch
   assert_success
   [[ "$output" == "amd64" ]] || [[ "$output" == "arm64" ]]
+}
+
+@test "installer_no_color_requested treats empty NO_COLOR as an opt-out" {
+  run bash -c '
+    export NO_COLOR=""
+    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
+    installer_no_color_requested
+  '
+  assert_success
 }
 
 # --- verify_checksum ---
@@ -479,14 +563,14 @@ MOCK
 
 # --- main() install flow ---
 
-@test "main bootstraps the Commander installer CLI from a prepared runtime" {
+@test "main bootstraps the Commander installer CLI without leaking npm build chatter" {
   local mock_dir="${TEST_TEMP_DIR}/mock_bin"
   mkdir -p "$mock_dir"
   local node_args_file="${TEST_TEMP_DIR}/node_args"
   local npm_args_file="${TEST_TEMP_DIR}/npm_args"
   : > "$npm_args_file"
   write_mock_node "$mock_dir" "0.1.12"
-  write_mock_npm "$mock_dir"
+  write_noisy_mock_npm "$mock_dir"
 
   run bash -c '
     export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
@@ -498,7 +582,11 @@ MOCK
   assert_success
   assert_output --partial "🪽 Hermes Fly Installer"
   assert_output --partial "[1/3] Preparing environment"
-  assert_output --partial "hermes-fly installed successfully (hermes-fly 0.1.12)!"
+  assert_output --partial "Hermes Fly installed successfully (hermes-fly 0.1.12)!"
+  refute_output --partial "added 110 packages"
+  refute_output --partial "> build"
+  refute_output --partial "up to date in 319ms"
+  [[ "$(printf '%s' "$output" | grep -o "🪽 Hermes Fly Installer" | wc -l | tr -d ' ')" == "1" ]]
 
   run cat "$node_args_file"
   assert_success
@@ -569,12 +657,73 @@ MOCK
     bootstrap_installer_cli
   '
   assert_success
-  assert_output --partial "🪽 Hermes Fly Installer"
 
   run cat "$url_file"
   assert_success
   assert_output --partial "https://codeload.github.com/alexfazio/hermes-fly/tar.gz/${bootstrap_ref}"
   refute_output --partial "/main"
+}
+
+@test "main avoids a duplicate banner when the downloaded bootstrap installer still prints its own banner" {
+  local mock_dir="${TEST_TEMP_DIR}/mock_bin_standalone_banner"
+  local script_dir="${TEST_TEMP_DIR}/standalone_script_banner"
+  local script_copy="${script_dir}/install.sh"
+  local node_args_file="${TEST_TEMP_DIR}/node_args_standalone_banner"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args_standalone_banner"
+  local url_file="${TEST_TEMP_DIR}/bootstrap_urls_standalone_banner"
+  local archive_parent="${TEST_TEMP_DIR}/bootstrap_archive_parent_banner"
+  local archive_root="${archive_parent}/hermes-fly-bootstrap"
+  local archive_file="${TEST_TEMP_DIR}/bootstrap_source_banner.tar.gz"
+  local bootstrap_ref
+
+  mkdir -p "$mock_dir" "$script_dir" "$archive_root"
+  cp "${PROJECT_ROOT}/scripts/install.sh" "$script_copy"
+  chmod +x "$script_copy"
+  write_source_checkout "$archive_root"
+  bootstrap_ref="v$(sed -n 's/.*HERMES_FLY_TS_VERSION = \"\\([^\"]*\\)\".*/\\1/p' "${PROJECT_ROOT}/src/version.ts" | head -1)"
+  tar -czf "$archive_file" -C "$archive_parent" "$(basename "$archive_root")"
+
+  cat > "$mock_dir/curl" <<'MOCK'
+#!/usr/bin/env bash
+out=""
+url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+printf '%s\n' "$url" >> "${MOCK_CURL_URL_FILE}"
+if [[ "$url" == "https://codeload.github.com/alexfazio/hermes-fly/tar.gz/"* ]]; then
+  cat "${MOCK_BOOTSTRAP_ARCHIVE_FILE}" > "$out"
+  exit 0
+fi
+echo "unexpected curl url: $url" >&2
+exit 1
+MOCK
+  chmod +x "$mock_dir/curl"
+  write_mock_legacy_banner_node "$mock_dir" "0.1.12"
+  write_mock_npm "$mock_dir"
+
+  run bash -c '
+    export PATH="'"$mock_dir"':${PATH}"
+    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    export MOCK_CURL_URL_FILE="'"$url_file"'"
+    export MOCK_BOOTSTRAP_REF="'"$bootstrap_ref"'"
+    export MOCK_BOOTSTRAP_ARCHIVE_FILE="'"$archive_file"'"
+    source "'"$script_copy"'"
+    main
+  '
+  assert_success
+  assert_output --partial "🪽 Hermes Fly Installer"
+  [[ "$(printf '%s' "$output" | grep -o "🪽 Hermes Fly Installer" | wc -l | tr -d ' ')" == "1" ]]
 }
 
 @test "main falls back to the legacy installer flow when Commander bootstrap fails" {

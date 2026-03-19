@@ -126,15 +126,19 @@ export function buildInstallerProgram(runInstall: InstallCommandHandler = async 
   return program;
 }
 
-export async function runInstaller(argv: string[]): Promise<void> {
-  const program = buildInstallerProgram();
-
-  if (argv.length <= 2) {
-    await program.parseAsync(["install"], { from: "user" });
-    return;
+function normalizeInstallerUserArgs(argv: string[]): string[] {
+  const userArgs = argv.slice(2);
+  if (userArgs.length === 0) {
+    return ["install"];
   }
+  if (userArgs[0]?.startsWith("-")) {
+    return ["install", ...userArgs];
+  }
+  return userArgs;
+}
 
-  await program.parseAsync(argv);
+export async function runInstaller(argv: string[], program: Command = buildInstallerProgram()): Promise<void> {
+  await program.parseAsync(normalizeInstallerUserArgs(argv), { from: "user" });
 }
 
 export function isInstallerEntrypoint(importMetaUrl: string, argv1?: string): boolean {

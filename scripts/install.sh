@@ -11,6 +11,41 @@ RELEASE_API_URL="${HERMES_FLY_RELEASE_API_URL:-https://api.github.com/repos/${RE
 SAFE_PROCESS_LOCALE="C"
 # Standalone install.sh must bootstrap the checked installer revision, not a mutable branch tip.
 DEFAULT_BOOTSTRAP_INSTALLER_REF="v0.1.95"
+INSTALLER_ANSI_RESET=$'\033[0m'
+INSTALLER_ANSI_BOLD=$'\033[1m'
+INSTALLER_ANSI_ACCENT=$'\033[38;2;255;77;77m'
+INSTALLER_ANSI_INFO=$'\033[38;2;136;146;176m'
+
+installer_no_color_requested() {
+  [[ "${NO_COLOR+x}" == "x" ]]
+}
+
+installer_supports_color() {
+  if installer_no_color_requested; then
+    return 1
+  fi
+  if [[ "${TERM:-dumb}" == "dumb" ]]; then
+    return 1
+  fi
+  if [[ ! -t 1 ]]; then
+    return 1
+  fi
+  return 0
+}
+
+installer_style() {
+  local codes="$1" text="$2"
+  if installer_supports_color; then
+    printf '%b%s%b' "$codes" "$text" "$INSTALLER_ANSI_RESET"
+  else
+    printf '%s' "$text"
+  fi
+}
+
+print_installer_banner() {
+  printf '  %s\n' "$(installer_style "${INSTALLER_ANSI_ACCENT}${INSTALLER_ANSI_BOLD}" "🪽 Hermes Fly Installer")"
+  printf '  %s\n\n' "$(installer_style "${INSTALLER_ANSI_INFO}" "I can't fix Fly.io billing, but I can fix the part between curl and deploy.")"
+}
 
 detect_platform() {
   local os
@@ -149,6 +184,23 @@ run_with_sanitized_env() {
   env -u BASH_ENV -u ENV LANG="$SAFE_PROCESS_LOCALE" LC_ALL="$SAFE_PROCESS_LOCALE" "$@"
 }
 
+run_prepare_runtime_step() {
+  local log_file="${1:-}"
+  shift
+  if [[ -n "$log_file" ]]; then
+    "$@" >>"$log_file" 2>&1
+  else
+    "$@"
+  fi
+}
+
+show_prepare_runtime_failure_log() {
+  local log_file="${1:-}"
+  if [[ -n "$log_file" && -s "$log_file" ]]; then
+    tail -n 80 "$log_file" >&2 || true
+  fi
+}
+
 release_asset_name() {
   local install_ref="$1"
   printf 'hermes-fly-%s.tar.gz\n' "$install_ref"
@@ -208,6 +260,7 @@ download_release_asset() {
 
 prepare_runtime_artifacts() {
   local src_dir="$1"
+  local prepare_log=""
 
   if [[ -f "$src_dir/dist/cli.js" && -f "$src_dir/node_modules/commander/package.json" ]]; then
     return 0
@@ -223,15 +276,24 @@ prepare_runtime_artifacts() {
 
   if [[ "${HERMES_FLY_INSTALLER_QUIET:-0}" != "1" ]]; then
     echo "Preparing hermes-fly runtime dependencies..."
+  else
+    prepare_log="$(mktemp)"
   fi
   if ! (
     cd "$src_dir"
-    run_with_sanitized_env npm ci --no-audit --no-fund
-    run_with_sanitized_env npm run build
-    run_with_sanitized_env npm prune --omit=dev --no-audit --no-fund
+    run_prepare_runtime_step "$prepare_log" run_with_sanitized_env npm ci --no-audit --no-fund
+    run_prepare_runtime_step "$prepare_log" run_with_sanitized_env npm run build
+    run_prepare_runtime_step "$prepare_log" run_with_sanitized_env npm prune --omit=dev --no-audit --no-fund
   ); then
+    show_prepare_runtime_failure_log "$prepare_log"
+    if [[ -n "$prepare_log" ]]; then
+      rm -f "$prepare_log"
+    fi
     echo "Error: Failed to prepare hermes-fly runtime artifacts" >&2
     return 1
+  fi
+  if [[ -n "$prepare_log" ]]; then
+    rm -f "$prepare_log"
   fi
 
   if [[ ! -f "$src_dir/dist/cli.js" ]]; then
@@ -453,11 +515,23 @@ stage_local_bootstrap_source() {
   cp -R "$repo_root/src" "$dest_dir/"
 }
 
+bootstrap_source_supports_skip_banner() {
+  local source_dir="$1"
+  local marker_file="$source_dir/src/contexts/installer/application/use-cases/run-install-session.ts"
+
+  if [[ ! -f "$marker_file" ]]; then
+    return 1
+  fi
+
+  grep -q 'HERMES_FLY_INSTALLER_SKIP_BANNER' "$marker_file"
+}
+
 bootstrap_installer_cli() {
   require_command node "to run hermes-fly" || return 1
   require_command npm "to prepare the installer runtime" || return 1
 
   local tmp_dir bootstrap_dir local_repo_root installer_ref
+  local use_shell_banner=0
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "${tmp_dir:-}"' RETURN
   bootstrap_dir="$tmp_dir/bootstrap"
@@ -469,9 +543,18 @@ bootstrap_installer_cli() {
     HERMES_FLY_INSTALLER_QUIET=1 download_source_tree "$installer_ref" "$bootstrap_dir" || return 1
   fi
 
+  if bootstrap_source_supports_skip_banner "$bootstrap_dir"; then
+    use_shell_banner=1
+    print_installer_banner
+  fi
+
   HERMES_FLY_INSTALLER_QUIET=1 prepare_runtime_artifacts "$bootstrap_dir" || return 1
 
-  node "$bootstrap_dir/dist/install-cli.js" install "$@"
+  if [[ "$use_shell_banner" -eq 1 ]]; then
+    HERMES_FLY_INSTALLER_SKIP_BANNER=1 node "$bootstrap_dir/dist/install-cli.js" install "$@"
+  else
+    node "$bootstrap_dir/dist/install-cli.js" install "$@"
+  fi
 }
 
 legacy_main() {

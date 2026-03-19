@@ -1,21 +1,15 @@
 import { join } from "node:path";
+import { InstallSessionUi, type InstallerUiWriteTarget } from "../install-session-ui.js";
 import type { InstallerPlan } from "../../domain/install-plan.js";
 import type { InstallerShellPort } from "../ports/installer-shell.port.js";
 
-export interface WriteTarget {
-  write(chunk: string): void;
-}
+export interface WriteTarget extends InstallerUiWriteTarget {}
 
 export interface RunInstallSessionOptions {
   shell: InstallerShellPort;
   stdout?: WriteTarget;
   stderr?: WriteTarget;
   env?: NodeJS.ProcessEnv;
-}
-
-function writeBanner(stdout: WriteTarget): void {
-  stdout.write("  🪽 Hermes Fly Installer\n");
-  stdout.write("  I can't fix Fly.io billing, but I can fix the part between curl and deploy.\n\n");
 }
 
 function renderInstallMethodLabel(method: InstallerPlan["installMethod"]): string {
@@ -46,52 +40,60 @@ export async function runInstallSession(
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const env = options.env ?? process.env;
+  const ui = new InstallSessionUi(stdout, env);
 
   try {
-    writeBanner(stdout);
-    stdout.write(`✓ Detected: ${plan.platform}/${plan.arch}\n\n`);
-    stdout.write("Install plan\n");
-    stdout.write(`OS: ${plan.platform}\n`);
-    stdout.write(`Arch: ${plan.arch}\n`);
-    stdout.write(`Install method: ${renderInstallMethodLabel(plan.installMethod)}\n`);
-    stdout.write(`Requested version: ${plan.installRef}\n`);
-    stdout.write(`Install to: ${plan.installHome}\n`);
-    stdout.write(`Symlink in: ${plan.binDir}\n\n`);
+    if (env.HERMES_FLY_INSTALLER_SKIP_BANNER !== "1") {
+      ui.banner();
+    }
+    ui.success(`Detected: ${plan.platform}/${plan.arch}`);
+    ui.blankLine();
+    ui.heading("Install plan");
+    ui.keyValue("OS", plan.platform);
+    ui.keyValue("Arch", plan.arch);
+    ui.keyValue("Install method", renderInstallMethodLabel(plan.installMethod));
+    ui.keyValue("Requested version", plan.installRef);
+    ui.keyValue("Install to", plan.installHome);
+    ui.keyValue("Symlink in", plan.binDir);
+    ui.blankLine();
 
-    stdout.write("[1/3] Preparing environment\n");
+    ui.stage(1, 3, "Preparing environment");
     const nodeVersion = await options.shell.readCommandVersion("node");
     const nodePath = await options.shell.readCommandPath("node");
     const npmVersion = await options.shell.readCommandVersion("npm");
     const npmPath = await options.shell.readCommandPath("npm");
-    stdout.write(`✓ Node.js ${nodeVersion} found\n`);
-    stdout.write(`· Active Node.js: ${nodeVersion} (${nodePath})\n`);
-    stdout.write(`· Active npm: ${npmVersion} (${npmPath})\n\n`);
+    ui.success(`Node.js ${nodeVersion} found`);
+    ui.info(`Active Node.js: ${nodeVersion} (${nodePath})`);
+    ui.info(`Active npm: ${npmVersion} (${npmPath})`);
+    ui.blankLine();
 
-    stdout.write("[2/3] Installing Hermes Fly\n");
-    stdout.write(`· Installing hermes-fly ${plan.installRef} from ${renderInstallMethodLabel(plan.installMethod)}\n`);
+    ui.stage(2, 3, "Installing Hermes Fly");
+    ui.info(`Installing Hermes Fly ${plan.installRef} from ${renderInstallMethodLabel(plan.installMethod)}`);
     const needsSudo = await options.shell.requiresSudo(plan.installHome, plan.binDir);
     if (needsSudo) {
-      stdout.write(`! Elevated permissions required for ${plan.installHome}\n`);
+      ui.warn(`Elevated permissions required for ${plan.installHome}`);
     }
     await options.shell.installFiles(plan);
-    stdout.write("✓ Hermes Fly files installed\n");
-    stdout.write("✓ hermes-fly launcher linked\n\n");
+    ui.success("Hermes Fly files installed");
+    ui.success("hermes-fly launcher linked");
+    ui.blankLine();
 
-    stdout.write("[3/3] Finalizing setup\n");
+    ui.stage(3, 3, "Finalizing setup");
     const binaryPath = join(plan.binDir, "hermes-fly");
     await options.shell.verifyInstalledVersion(binaryPath, plan.installRef);
     const installedVersion = await options.shell.readInstalledVersion(binaryPath);
 
     if (!pathContainsDir(env.PATH, plan.binDir)) {
-      stdout.write(`! PATH missing installer bin dir: ${plan.binDir}\n`);
-      stdout.write("  This can make hermes-fly show as \"command not found\" in new terminals.\n");
-      stdout.write(`  Fix (${resolveRcHint(env.SHELL)}):\n`);
-      stdout.write(`    export PATH="${plan.binDir}:$PATH"\n\n`);
+      ui.warn(`PATH missing hermes-fly bin dir: ${plan.binDir}`);
+      ui.plain("  This can make hermes-fly show as \"command not found\" in new terminals.");
+      ui.plain(`  Fix (${resolveRcHint(env.SHELL)}):`);
+      ui.plain(`    export PATH="${plan.binDir}:$PATH"`);
+      ui.blankLine();
     }
 
-    stdout.write(`🪽 hermes-fly installed successfully (${installedVersion})!\n`);
-    stdout.write("Run 'hermes-fly deploy' to get started.\n");
-    stdout.write("Installation complete. Your deploy wizard just got a little less ceremonial.\n");
+    ui.celebrate(`🪽 Hermes Fly installed successfully (${installedVersion})!`);
+    ui.plain("Run 'hermes-fly deploy' to get started.");
+    ui.muted("Installation complete. Your deploy wizard just got a little less ceremonial.");
     return 0;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);

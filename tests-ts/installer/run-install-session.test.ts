@@ -58,10 +58,93 @@ test("runInstallSession renders the redesigned installer flow and PATH guidance"
   assert.match(output, /✓ Node\.js v22\.20\.0 found/);
   assert.match(output, /· Active npm: 11\.11\.1 \(\/\.sprite\/bin\/npm\)/);
   assert.match(output, /! Elevated permissions required for \/usr\/local\/lib\/hermes-fly/);
-  assert.match(output, /! PATH missing installer bin dir: \/usr\/local\/bin/);
+  assert.match(output, /· Installing Hermes Fly v0\.1\.95 from packaged release asset/);
+  assert.match(output, /! PATH missing hermes-fly bin dir: \/usr\/local\/bin/);
   assert.match(output, /Fix \(zsh: ~\/\.zshrc, bash: ~\/\.bashrc\):/);
   assert.match(output, /export PATH="\/usr\/local\/bin:\$PATH"/);
-  assert.match(output, /🪽 hermes-fly installed successfully \(hermes-fly 0\.1\.95\)!/);
+  assert.match(output, /🪽 Hermes Fly installed successfully \(hermes-fly 0\.1\.95\)!/);
+  assert.match(output, /Installation complete\. Your deploy wizard just got a little less ceremonial\./);
+});
+
+test("runInstallSession can skip the banner when the shell bootstrap already printed it", async () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const code = await runInstallSession(createPlan(), {
+    shell: createShell({
+      requiresSudo: async () => false,
+    }),
+    stdout: { write: (chunk: string) => { stdout.push(chunk); } },
+    stderr: { write: (chunk: string) => { stderr.push(chunk); } },
+    env: {
+      PATH: "/usr/local/bin:/usr/bin:/bin",
+      SHELL: "/bin/zsh",
+      HERMES_FLY_INSTALLER_SKIP_BANNER: "1",
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.equal(stderr.join(""), "");
+
+  const output = stdout.join("");
+  assert.equal(output.includes("Hermes Fly Installer"), false);
+  assert.match(output, /✓ Detected: darwin\/arm64/);
+  assert.match(output, /🪽 Hermes Fly installed successfully \(hermes-fly 0\.1\.95\)!/);
+});
+
+test("runInstallSession adds ANSI color accents for interactive terminals", async () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const code = await runInstallSession(createPlan(), {
+    shell: createShell({
+      requiresSudo: async () => false,
+    }),
+    stdout: {
+      isTTY: true,
+      write: (chunk: string) => { stdout.push(chunk); },
+    },
+    stderr: { write: (chunk: string) => { stderr.push(chunk); } },
+    env: {
+      PATH: "/usr/local/bin:/usr/bin:/bin",
+      SHELL: "/bin/zsh",
+      TERM: "xterm-256color",
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.equal(stderr.join(""), "");
+
+  const output = stdout.join("");
+  assert.match(output, /\u001b\[38;2;255;77;77m/);
+  assert.match(output, /\u001b\[38;2;0;229;204m✓\u001b\[0m/);
+  assert.match(output, /\u001b\[38;2;90;100;128mOS:\u001b\[0m darwin/);
+});
+
+test("runInstallSession honors NO_COLOR even when it is exported as an empty string", async () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const code = await runInstallSession(createPlan(), {
+    shell: createShell({
+      requiresSudo: async () => false,
+    }),
+    stdout: {
+      isTTY: true,
+      write: (chunk: string) => { stdout.push(chunk); },
+    },
+    stderr: { write: (chunk: string) => { stderr.push(chunk); } },
+    env: {
+      PATH: "/usr/local/bin:/usr/bin:/bin",
+      SHELL: "/bin/zsh",
+      TERM: "xterm-256color",
+      NO_COLOR: "",
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.equal(stderr.join(""), "");
+
+  const output = stdout.join("");
+  assert.equal(output.includes("\u001b["), false);
+  assert.match(output, /🪽 Hermes Fly Installer/);
 });
 
 test("runInstallSession surfaces install failures without hiding the error", async () => {
