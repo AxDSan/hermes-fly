@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildInstallerProgram, runInstaller, type InstallCommandInput } from "../../src/install-cli";
+import { HERMES_FLY_TS_VERSION } from "../../src/version";
+
+const CURRENT_RELEASE_REF = `v${HERMES_FLY_TS_VERSION}`;
 
 test("installer CLI registers the internal install command", () => {
   const program = buildInstallerProgram(async () => 0);
@@ -27,7 +30,7 @@ test("installer CLI parses install arguments into an install command request", a
       "--method",
       "release_asset",
       "--ref",
-      "v0.1.96",
+      CURRENT_RELEASE_REF,
       "--install-home",
       "/usr/local/lib/hermes-fly",
       "--bin-dir",

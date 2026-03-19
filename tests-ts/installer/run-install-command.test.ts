@@ -3,6 +3,9 @@ import test from "node:test";
 import { runInstallCommand } from "../../src/install-cli.ts";
 import type { InstallerBootstrapPort } from "../../src/contexts/installer/application/ports/installer-shell.port.ts";
 import type { InstallerPlan } from "../../src/contexts/installer/domain/install-plan.ts";
+import { HERMES_FLY_TS_VERSION } from "../../src/version.ts";
+
+const CURRENT_RELEASE_REF = `v${HERMES_FLY_TS_VERSION}`;
 
 function createShell(overrides: Partial<InstallerBootstrapPort> = {}): InstallerBootstrapPort {
   return {
@@ -11,8 +14,8 @@ function createShell(overrides: Partial<InstallerBootstrapPort> = {}): Installer
     requiresSudo: async () => false,
     installFiles: async () => undefined,
     verifyInstalledVersion: async () => undefined,
-    readInstalledVersion: async () => "hermes-fly 0.1.96",
-    resolveInstallRef: async () => "v0.1.96",
+    readInstalledVersion: async () => `hermes-fly ${HERMES_FLY_TS_VERSION}`,
+    resolveInstallRef: async () => CURRENT_RELEASE_REF,
     prepareInstallSource: async () => ({
       sourceDir: "/tmp/hermes-fly",
       installMethod: "release_asset",
@@ -44,7 +47,7 @@ test("runInstallCommand resolves the install ref and builds an InstallerPlan", a
 
   assert.equal(code, 0);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]?.installRef, "v0.1.96");
+  assert.equal(calls[0]?.installRef, CURRENT_RELEASE_REF);
   assert.equal(calls[0]?.installMethod, "release_asset");
   assert.equal(calls[0]?.sourceDir, "/tmp/hermes-fly");
 });

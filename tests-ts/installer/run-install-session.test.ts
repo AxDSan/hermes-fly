@@ -3,6 +3,9 @@ import test from "node:test";
 import { InstallerPlan } from "../../src/contexts/installer/domain/install-plan.ts";
 import { runInstallSession } from "../../src/contexts/installer/application/use-cases/run-install-session.ts";
 import type { InstallerShellPort } from "../../src/contexts/installer/application/ports/installer-shell.port.ts";
+import { HERMES_FLY_TS_VERSION } from "../../src/version.ts";
+
+const CURRENT_RELEASE_REF = `v${HERMES_FLY_TS_VERSION}`;
 
 function createPlan(): InstallerPlan {
   return InstallerPlan.create({
@@ -10,7 +13,7 @@ function createPlan(): InstallerPlan {
     arch: "arm64",
     installChannel: "latest",
     installMethod: "release_asset",
-    installRef: "v0.1.96",
+    installRef: CURRENT_RELEASE_REF,
     installHome: "/usr/local/lib/hermes-fly",
     binDir: "/usr/local/bin",
     sourceDir: "/tmp/hermes-fly",
@@ -24,7 +27,7 @@ function createShell(overrides: Partial<InstallerShellPort> = {}): InstallerShel
     requiresSudo: async () => true,
     installFiles: async () => undefined,
     verifyInstalledVersion: async () => undefined,
-    readInstalledVersion: async () => "hermes-fly 0.1.96",
+    readInstalledVersion: async () => `hermes-fly ${HERMES_FLY_TS_VERSION}`,
     ...overrides,
   };
 }
@@ -51,18 +54,18 @@ test("runInstallSession renders the redesigned installer flow and PATH guidance"
   assert.match(output, /OS: darwin/);
   assert.match(output, /Arch: arm64/);
   assert.match(output, /Install method: packaged release asset/);
-  assert.match(output, /Requested version: v0\.1\.96/);
+  assert.match(output, new RegExp(`Requested version: v${HERMES_FLY_TS_VERSION.replaceAll(".", "\\.")}`));
   assert.match(output, /\[1\/3\] Preparing environment/);
   assert.match(output, /\[2\/3\] Installing Hermes Fly/);
   assert.match(output, /\[3\/3\] Finalizing setup/);
   assert.match(output, /✓ Node\.js v22\.20\.0 found/);
   assert.match(output, /· Active npm: 11\.11\.1 \(\/\.sprite\/bin\/npm\)/);
   assert.match(output, /! Elevated permissions required for \/usr\/local\/lib\/hermes-fly/);
-  assert.match(output, /· Installing Hermes Fly v0\.1\.96 from packaged release asset/);
+  assert.match(output, new RegExp(`· Installing Hermes Fly v${HERMES_FLY_TS_VERSION.replaceAll(".", "\\.")} from packaged release asset`));
   assert.match(output, /! PATH missing hermes-fly bin dir: \/usr\/local\/bin/);
   assert.match(output, /Fix \(zsh: ~\/\.zshrc, bash: ~\/\.bashrc\):/);
   assert.match(output, /export PATH="\/usr\/local\/bin:\$PATH"/);
-  assert.match(output, /🪽 Hermes Fly installed successfully \(hermes-fly 0\.1\.96\)!/);
+  assert.match(output, new RegExp(`🪽 Hermes Fly installed successfully \\(hermes-fly ${HERMES_FLY_TS_VERSION.replaceAll(".", "\\.")}\\)!`));
   assert.match(output, /Installation complete\. Your deploy wizard just got a little less ceremonial\./);
 });
 
@@ -88,7 +91,7 @@ test("runInstallSession can skip the banner when the shell bootstrap already pri
   const output = stdout.join("");
   assert.equal(output.includes("Hermes Fly Installer"), false);
   assert.match(output, /✓ Detected: darwin\/arm64/);
-  assert.match(output, /🪽 Hermes Fly installed successfully \(hermes-fly 0\.1\.96\)!/);
+  assert.match(output, new RegExp(`🪽 Hermes Fly installed successfully \\(hermes-fly ${HERMES_FLY_TS_VERSION.replaceAll(".", "\\.")}\\)!`));
 });
 
 test("runInstallSession adds ANSI color accents for interactive terminals", async () => {
