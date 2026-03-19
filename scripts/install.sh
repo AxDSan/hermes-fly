@@ -9,6 +9,8 @@ INSTALL_DIR="${HERMES_FLY_INSTALL_DIR:-/usr/local/bin}"
 export HERMES_HOME="${HERMES_FLY_HOME:-/usr/local/lib/hermes-fly}"
 RELEASE_API_URL="${HERMES_FLY_RELEASE_API_URL:-https://api.github.com/repos/${REPO}/releases/latest}"
 SAFE_PROCESS_LOCALE="C"
+# Standalone install.sh must bootstrap the checked installer revision, not a mutable branch tip.
+DEFAULT_BOOTSTRAP_INSTALLER_REF="v0.1.94"
 
 detect_platform() {
   local os
@@ -219,7 +221,9 @@ prepare_runtime_artifacts() {
     return 1
   fi
 
-  echo "Preparing hermes-fly runtime dependencies..."
+  if [[ "${HERMES_FLY_INSTALLER_QUIET:-0}" != "1" ]]; then
+    echo "Preparing hermes-fly runtime dependencies..."
+  fi
   if ! (
     cd "$src_dir"
     run_with_sanitized_env npm ci --no-audit --no-fund
@@ -245,7 +249,9 @@ prepare_runtime_artifacts() {
 download_source_tree() {
   local install_ref="$1" dest_dir="$2"
 
-  echo "Downloading hermes-fly source..."
+  if [[ "${HERMES_FLY_INSTALLER_QUIET:-0}" != "1" ]]; then
+    echo "Downloading hermes-fly source..."
+  fi
   if command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
     local archive_path extract_root source_root
     archive_path="${dest_dir}.tar.gz"
@@ -391,14 +397,103 @@ install_files() {
   echo "Symlinked $bin_dir/hermes-fly -> $dest_dir/hermes-fly"
 }
 
-main() {
+resolve_local_repo_root() {
+  local script_source="${BASH_SOURCE[0]:-}"
+  if [[ -z "$script_source" || ! -f "$script_source" ]]; then
+    return 1
+  fi
+
+  local repo_root
+  repo_root="$(cd "$(dirname "$script_source")/.." && pwd)"
+  if [[ -f "$repo_root/package.json" && -f "$repo_root/package-lock.json" && -f "$repo_root/tsconfig.json" && -d "$repo_root/src" ]]; then
+    printf '%s\n' "$repo_root"
+    return 0
+  fi
+
+  return 1
+}
+
+read_repo_version_ref() {
+  local repo_root="$1"
+  local version_file="$repo_root/src/version.ts"
+  local version
+
+  if [[ ! -f "$version_file" ]]; then
+    return 1
+  fi
+
+  version="$(sed -n 's/.*HERMES_FLY_TS_VERSION = "\([^"]*\)".*/\1/p' "$version_file" | head -1)"
+  if [[ -z "$version" ]]; then
+    return 1
+  fi
+
+  normalize_install_ref "$version"
+}
+
+resolve_bootstrap_installer_ref() {
+  local repo_root
+
+  if [[ -n "${HERMES_FLY_INSTALLER_REF:-}" ]]; then
+    normalize_install_ref "$HERMES_FLY_INSTALLER_REF"
+    return 0
+  fi
+
+  if repo_root="$(resolve_local_repo_root)" && read_repo_version_ref "$repo_root" >/dev/null 2>&1; then
+    read_repo_version_ref "$repo_root"
+    return 0
+  fi
+
+  printf '%s\n' "$DEFAULT_BOOTSTRAP_INSTALLER_REF"
+}
+
+stage_local_bootstrap_source() {
+  local repo_root="$1" dest_dir="$2"
+  mkdir -p "$dest_dir"
+  cp "$repo_root/package.json" "$repo_root/package-lock.json" "$repo_root/tsconfig.json" "$dest_dir/"
+  cp -R "$repo_root/src" "$dest_dir/"
+}
+
+bootstrap_installer_cli() {
+  require_command node "to run hermes-fly" || return 1
+  require_command npm "to prepare the installer runtime" || return 1
+
+  local tmp_dir bootstrap_dir local_repo_root installer_ref
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "${tmp_dir:-}"' RETURN
+  bootstrap_dir="$tmp_dir/bootstrap"
+
+  if local_repo_root="$(resolve_local_repo_root)"; then
+    stage_local_bootstrap_source "$local_repo_root" "$bootstrap_dir"
+  else
+    installer_ref="$(resolve_bootstrap_installer_ref)" || return 1
+    HERMES_FLY_INSTALLER_QUIET=1 download_source_tree "$installer_ref" "$bootstrap_dir" || return 1
+  fi
+
+  HERMES_FLY_INSTALLER_QUIET=1 prepare_runtime_artifacts "$bootstrap_dir" || return 1
+
+  node "$bootstrap_dir/dist/install-cli.js" install "$@"
+}
+
+legacy_main() {
   echo "Installing hermes-fly..."
 
   local platform arch install_ref install_channel source_dir asset_url
-  platform="$(detect_platform)" || exit 1
-  arch="$(detect_arch)" || exit 1
+  platform="${HERMES_FLY_PLATFORM_OVERRIDE:-}"
+  if [[ -z "$platform" ]]; then
+    platform="$(detect_platform)" || exit 1
+  fi
+
+  arch="${HERMES_FLY_ARCH_OVERRIDE:-}"
+  if [[ -z "$arch" ]]; then
+    arch="$(detect_arch)" || exit 1
+  fi
+
   install_channel="$(resolve_install_channel)" || exit 1
-  install_ref="$(resolve_install_ref "$install_channel")" || exit 1
+  if [[ -n "${HERMES_FLY_INSTALL_REF_OVERRIDE:-}" ]]; then
+    install_ref="$(normalize_install_ref "$HERMES_FLY_INSTALL_REF_OVERRIDE")" || exit 1
+  else
+    install_ref="$(resolve_install_ref "$install_channel")" || exit 1
+  fi
 
   require_command node "to run hermes-fly" || exit 1
 
@@ -412,13 +507,17 @@ main() {
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "${tmp_dir:-}"' EXIT
 
-  source_dir="$tmp_dir/hermes-fly"
-  asset_url=""
-  if asset_url="$(resolve_release_asset_url "$install_ref")"; then
-    echo "Downloading hermes-fly release asset..."
-    download_release_asset "$asset_url" "$source_dir" || exit 1
+  if [[ -n "${HERMES_FLY_INSTALL_SOURCE_DIR_OVERRIDE:-}" ]]; then
+    source_dir="${HERMES_FLY_INSTALL_SOURCE_DIR_OVERRIDE}"
   else
-    download_source_tree "$install_ref" "$source_dir" || exit 1
+    source_dir="$tmp_dir/hermes-fly"
+    asset_url=""
+    if asset_url="$(resolve_release_asset_url "$install_ref")"; then
+      echo "Downloading hermes-fly release asset..."
+      download_release_asset "$asset_url" "$source_dir" || exit 1
+    else
+      download_source_tree "$install_ref" "$source_dir" || exit 1
+    fi
   fi
 
   if [[ ! -f "$source_dir/dist/cli.js" || ! -f "$source_dir/node_modules/commander/package.json" ]]; then
@@ -436,6 +535,140 @@ main() {
   echo "hermes-fly installed successfully!"
   echo "  $version"
   echo "Run 'hermes-fly deploy' to get started."
+}
+
+assign_legacy_fallback_override() {
+  local option="$1" value="$2"
+
+  if [[ -z "$value" ]]; then
+    echo "Error: Missing value for installer option: $option" >&2
+    return 1
+  fi
+
+  case "$option" in
+    --channel | --version | --install-home | --bin-dir | --ref | --source-dir | --platform | --arch)
+      return 0
+      ;;
+    *)
+      echo "Error: Unsupported installer option for legacy fallback: $option" >&2
+      return 1
+      ;;
+  esac
+}
+
+prepare_legacy_fallback_args() {
+  local channel_override=""
+  local version_override=""
+  local install_home_override=""
+  local bin_dir_override=""
+  local ref_override=""
+  local source_dir_override=""
+  local platform_override=""
+  local arch_override=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --channel | --version | --install-home | --bin-dir | --ref | --source-dir | --platform | --arch)
+        if [[ $# -lt 2 ]]; then
+          echo "Error: Missing value for installer option: $1" >&2
+          return 1
+        fi
+        assign_legacy_fallback_override "$1" "$2" || return 1
+        case "$1" in
+          --channel) channel_override="$2" ;;
+          --version) version_override="$2" ;;
+          --install-home) install_home_override="$2" ;;
+          --bin-dir) bin_dir_override="$2" ;;
+          --ref) ref_override="$2" ;;
+          --source-dir) source_dir_override="$2" ;;
+          --platform) platform_override="$2" ;;
+          --arch) arch_override="$2" ;;
+        esac
+        shift 2
+        ;;
+      --channel=* | --version=* | --install-home=* | --bin-dir=* | --ref=* | --source-dir=* | --platform=* | --arch=*)
+        local option="${1%%=*}"
+        local value="${1#*=}"
+        assign_legacy_fallback_override "$option" "$value" || return 1
+        case "$option" in
+          --channel) channel_override="$value" ;;
+          --version) version_override="$value" ;;
+          --install-home) install_home_override="$value" ;;
+          --bin-dir) bin_dir_override="$value" ;;
+          --ref) ref_override="$value" ;;
+          --source-dir) source_dir_override="$value" ;;
+          --platform) platform_override="$value" ;;
+          --arch) arch_override="$value" ;;
+        esac
+        shift
+        ;;
+      --method)
+        echo "Error: Unsupported installer option for legacy fallback: $1" >&2
+        return 1
+        ;;
+      --*=*)
+        echo "Error: Unsupported installer option for legacy fallback: ${1%%=*}" >&2
+        return 1
+        ;;
+      -h | --help)
+        echo "Error: Unsupported installer option for legacy fallback: $1" >&2
+        return 1
+        ;;
+      --)
+        shift
+        if [[ $# -gt 0 ]]; then
+          echo "Error: Unsupported installer arguments for legacy fallback: $*" >&2
+          return 1
+        fi
+        break
+        ;;
+      -*)
+        echo "Error: Unsupported installer option for legacy fallback: $1" >&2
+        return 1
+        ;;
+      *)
+        echo "Error: Unsupported installer argument for legacy fallback: $1" >&2
+        return 1
+        ;;
+    esac
+  done
+
+  if [[ -n "$channel_override" ]]; then
+    export HERMES_FLY_CHANNEL="$channel_override"
+  fi
+  if [[ -n "$install_home_override" ]]; then
+    export HERMES_FLY_HOME="$install_home_override"
+    export HERMES_HOME="$install_home_override"
+  fi
+  if [[ -n "$bin_dir_override" ]]; then
+    export HERMES_FLY_INSTALL_DIR="$bin_dir_override"
+    INSTALL_DIR="$bin_dir_override"
+  fi
+  if [[ -n "$source_dir_override" ]]; then
+    export HERMES_FLY_INSTALL_SOURCE_DIR_OVERRIDE="$source_dir_override"
+  fi
+  if [[ -n "$platform_override" ]]; then
+    export HERMES_FLY_PLATFORM_OVERRIDE="$platform_override"
+  fi
+  if [[ -n "$arch_override" ]]; then
+    export HERMES_FLY_ARCH_OVERRIDE="$arch_override"
+  fi
+  if [[ -n "$ref_override" ]]; then
+    export HERMES_FLY_INSTALL_REF_OVERRIDE="$ref_override"
+    unset HERMES_FLY_VERSION
+  elif [[ -n "$version_override" ]]; then
+    export HERMES_FLY_VERSION="$version_override"
+    unset HERMES_FLY_INSTALL_REF_OVERRIDE
+  fi
+}
+
+main() {
+  if bootstrap_installer_cli "$@"; then
+    return 0
+  fi
+
+  prepare_legacy_fallback_args "$@" || return 1
+  legacy_main
 }
 
 # Only run main if not being sourced (for testing)

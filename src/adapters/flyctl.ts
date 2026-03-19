@@ -147,10 +147,6 @@ export class FlyctlAdapter implements FlyctlPort {
   }
 
   async getAppStatus(appName: string): Promise<AppStatusResult> {
-    if (!await this.isFlyReady()) {
-      return { ok: false, error: "Fly.io CLI not ready" };
-    }
-
     let result;
     try {
       const flyCommand = await resolveFlyCommand(this.env);
@@ -222,21 +218,22 @@ export class FlyctlAdapter implements FlyctlPort {
   }
 
   async getAppLogs(appName: string): Promise<ProcessResult> {
-    if (!await this.isFlyReady()) {
-      return { stdout: "", stderr: "Fly.io CLI not ready", exitCode: 1 };
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      return this.processRunner.run(flyCommand, ["logs", "--app", appName], { timeoutMs: 8_000 });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { stdout: "", stderr: message, exitCode: 1 };
     }
-
-    const flyCommand = await resolveFlyCommand(this.env);
-    return this.processRunner.run(flyCommand, ["logs", "--app", appName], { timeoutMs: 8_000 });
   }
 
   async streamAppLogs(appName: string, options?: ProcessRunOptions): Promise<{ exitCode: number }> {
-    if (!await this.isFlyReady()) {
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      return this.processRunner.runStreaming(flyCommand, ["logs", "--app", appName], options);
+    } catch {
       return { exitCode: 1 };
     }
-
-    const flyCommand = await resolveFlyCommand(this.env);
-    return this.processRunner.runStreaming(flyCommand, ["logs", "--app", appName], options);
   }
 
   private async getSecretNames(appName: string): Promise<string[]> {

@@ -751,7 +751,11 @@ export class FlyDeployWizard implements DeployWizardPort {
     const { join: pathJoin } = await import("node:path");
     const configDir = this.env.HERMES_FLY_CONFIG_DIR
       ?? `${this.env.HOME ?? process.env.HOME}/.hermes-fly`;
-    await mkdir(configDir, { recursive: true });
+    try {
+      await mkdir(configDir, { recursive: true });
+    } catch {
+      return;
+    }
     const configPath = pathJoin(configDir, "config.yaml");
 
     let existing = "";
@@ -793,7 +797,11 @@ export class FlyDeployWizard implements DeployWizardPort {
       updated.push(line);
     }
 
-    await writeFile(configPath, updated.join("\n"), "utf8");
+    try {
+      await writeFile(configPath, updated.join("\n"), "utf8");
+    } catch {
+      // Updating the local deployment cache is best-effort during takeover cleanup.
+    }
   }
 
   async finalizeMessagingSetup(

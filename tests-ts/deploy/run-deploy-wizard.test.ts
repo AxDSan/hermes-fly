@@ -3321,13 +3321,13 @@ describe("FlyDeployWizard.collectConfig", () => {
       "sk-live",
       "2",
       "1",
+      "",
       "1",
       "1",
       "123:abc",
       "y",
       "1",
       "",
-      "y",
       "y"
     ], { interactive: true });
     const runner = makeProcessRunner(async (command, args) => {

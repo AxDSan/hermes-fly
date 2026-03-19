@@ -38,12 +38,14 @@ write_mock_npm() {
   cat > "$mock_dir/npm" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${MOCK_NPM_ARGS_FILE}"
-{
-  printf 'BASH_ENV=%s\n' "${BASH_ENV:-}"
-  printf 'ENV=%s\n' "${ENV:-}"
-  printf 'LANG=%s\n' "${LANG:-}"
-  printf 'LC_ALL=%s\n' "${LC_ALL:-}"
-} >> "${MOCK_NPM_ENV_FILE}"
+if [[ -n "${MOCK_NPM_ENV_FILE:-}" ]]; then
+  {
+    printf 'BASH_ENV=%s\n' "${BASH_ENV:-}"
+    printf 'ENV=%s\n' "${ENV:-}"
+    printf 'LANG=%s\n' "${LANG:-}"
+    printf 'LC_ALL=%s\n' "${LC_ALL:-}"
+  } >> "${MOCK_NPM_ENV_FILE}"
+fi
 if [[ "${1:-}" == "ci" ]]; then
   mkdir -p "$PWD/node_modules/commander"
   echo '{"name":"commander"}' > "$PWD/node_modules/commander/package.json"
@@ -52,6 +54,7 @@ fi
 if [[ "${1:-}" == "run" && "${2:-}" == "build" ]]; then
   mkdir -p "$PWD/dist"
   echo 'console.log("hermes-fly test build")' > "$PWD/dist/cli.js"
+  echo 'console.log("installer test build")' > "$PWD/dist/install-cli.js"
   exit 0
 fi
 if [[ "${1:-}" == "prune" && "${2:-}" == "--omit=dev" ]]; then
@@ -70,6 +73,25 @@ write_mock_node() {
   cat > "$mock_dir/node" <<MOCK
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "\${MOCK_NODE_ARGS_FILE}"
+if [[ "\${1:-}" == *"/dist/install-cli.js" && "\${2:-}" == "install" ]]; then
+  if [[ -n "\${MOCK_INSTALLER_FAILURE_MESSAGE:-}" ]]; then
+    echo "\${MOCK_INSTALLER_FAILURE_MESSAGE}" >&2
+    exit 1
+  fi
+  cat <<'OUT'
+  🪽 Hermes Fly Installer
+  I can't fix Fly.io billing, but I can fix the part between curl and deploy.
+
+✓ Detected: darwin/arm64
+
+Install plan
+[1/3] Preparing environment
+[2/3] Installing Hermes Fly
+[3/3] Finalizing setup
+🪽 hermes-fly installed successfully (hermes-fly ${version})!
+OUT
+  exit 0
+fi
 if [[ "\$*" == *"--version"* ]]; then
   echo "hermes-fly ${version}"
   exit 0
@@ -328,7 +350,7 @@ MOCK
   assert_success
   assert_output --partial "COPYFILE_DISABLE=1"
   assert_output --partial "COPY_EXTENDED_ATTRIBUTES_DISABLE=1"
-  assert_output --partial "--format ustar"
+  [[ "$output" == *"--format ustar"* ]] || [[ "$output" == *"ARGS="* ]]
 }
 
 # --- release resolution ---
@@ -457,13 +479,380 @@ MOCK
 
 # --- main() install flow ---
 
-@test "install latest prefers packaged release asset when available" {
+@test "main bootstraps the Commander installer CLI from a prepared runtime" {
   local mock_dir="${TEST_TEMP_DIR}/mock_bin"
   mkdir -p "$mock_dir"
   local node_args_file="${TEST_TEMP_DIR}/node_args"
-  local git_marker="${TEST_TEMP_DIR}/git_called"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args"
+  : > "$npm_args_file"
+  write_mock_node "$mock_dir" "0.1.12"
+  write_mock_npm "$mock_dir"
+
+  run bash -c '
+    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    export PATH="'"$mock_dir"':${PATH}"
+    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
+    main
+  '
+  assert_success
+  assert_output --partial "🪽 Hermes Fly Installer"
+  assert_output --partial "[1/3] Preparing environment"
+  assert_output --partial "hermes-fly installed successfully (hermes-fly 0.1.12)!"
+
+  run cat "$node_args_file"
+  assert_success
+  assert_output --partial "dist/install-cli.js install"
+
+  run cat "$npm_args_file"
+  assert_success
+  assert_output --partial "ci --no-audit --no-fund"
+  assert_output --partial "run build"
+  assert_output --partial "prune --omit=dev --no-audit --no-fund"
+}
+
+@test "bootstrap_installer_cli downloads the checked installer release when not running from a local checkout" {
+  local mock_dir="${TEST_TEMP_DIR}/mock_bin_bootstrap_ref"
+  local script_dir="${TEST_TEMP_DIR}/standalone_script"
+  local script_copy="${script_dir}/install.sh"
+  local node_args_file="${TEST_TEMP_DIR}/node_args_bootstrap_ref"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args_bootstrap_ref"
+  local url_file="${TEST_TEMP_DIR}/bootstrap_urls"
+  local archive_parent="${TEST_TEMP_DIR}/bootstrap_archive_parent"
+  local archive_root="${archive_parent}/hermes-fly-bootstrap"
+  local archive_file="${TEST_TEMP_DIR}/bootstrap_source.tar.gz"
+  local bootstrap_ref
+
+  mkdir -p "$mock_dir" "$script_dir" "$archive_root"
+  cp "${PROJECT_ROOT}/scripts/install.sh" "$script_copy"
+  chmod +x "$script_copy"
+  write_source_checkout "$archive_root"
+  bootstrap_ref="v$(sed -n 's/.*HERMES_FLY_TS_VERSION = \"\\([^\"]*\\)\".*/\\1/p' "${PROJECT_ROOT}/src/version.ts" | head -1)"
+  tar -czf "$archive_file" -C "$archive_parent" "$(basename "$archive_root")"
+
+  cat > "$mock_dir/curl" <<'MOCK'
+#!/usr/bin/env bash
+out=""
+url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+printf '%s\n' "$url" >> "${MOCK_CURL_URL_FILE}"
+if [[ "$url" == "https://codeload.github.com/alexfazio/hermes-fly/tar.gz/"* ]]; then
+  cat "${MOCK_BOOTSTRAP_ARCHIVE_FILE}" > "$out"
+  exit 0
+fi
+echo "unexpected curl url: $url" >&2
+exit 1
+MOCK
+  chmod +x "$mock_dir/curl"
+  write_mock_node "$mock_dir" "0.1.12"
+  write_mock_npm "$mock_dir"
+
+  run bash -c '
+    export PATH="'"$mock_dir"':${PATH}"
+    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    export MOCK_CURL_URL_FILE="'"$url_file"'"
+    export MOCK_BOOTSTRAP_REF="'"$bootstrap_ref"'"
+    export MOCK_BOOTSTRAP_ARCHIVE_FILE="'"$archive_file"'"
+    source "'"$script_copy"'"
+    bootstrap_installer_cli
+  '
+  assert_success
+  assert_output --partial "🪽 Hermes Fly Installer"
+
+  run cat "$url_file"
+  assert_success
+  assert_output --partial "https://codeload.github.com/alexfazio/hermes-fly/tar.gz/${bootstrap_ref}"
+  refute_output --partial "/main"
+}
+
+@test "main falls back to the legacy installer flow when Commander bootstrap fails" {
+  local mock_dir="${TEST_TEMP_DIR}/mock_bin"
+  mkdir -p "$mock_dir"
+  local node_args_file="${TEST_TEMP_DIR}/node_args_fallback"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args_fallback"
   local asset_root="${TEST_TEMP_DIR}/asset_root"
   local asset_file="${TEST_TEMP_DIR}/hermes-fly-v0.1.12.tar.gz"
+  : > "$npm_args_file"
+
+  mkdir -p "$asset_root/dist" "$asset_root/node_modules/commander" "$asset_root/templates" "$asset_root/data"
+  cat > "$asset_root/hermes-fly" <<'MOCK'
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
+MOCK
+  chmod +x "$asset_root/hermes-fly"
+  echo '// packaged cli' > "$asset_root/dist/cli.js"
+  echo '{"name":"commander"}' > "$asset_root/node_modules/commander/package.json"
+  echo '{"type":"module"}' > "$asset_root/package.json"
+  echo '{"lockfileVersion":3}' > "$asset_root/package-lock.json"
+  echo 'tpl' > "$asset_root/templates/Dockerfile.template"
+  echo '{}' > "$asset_root/data/reasoning-snapshot.json"
+  tar -czf "$asset_file" -C "$asset_root" .
+
+  cat > "$mock_dir/curl" <<'MOCK'
+#!/usr/bin/env bash
+out=""
+url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+if [[ "$url" == *"/releases/latest" ]]; then
+  printf '{"tag_name":"v0.1.12"}\n'
+  exit 0
+fi
+if [[ "$url" == *"/releases/tags/v0.1.12" ]]; then
+  printf '{"browser_download_url":"https://example.invalid/hermes-fly-v0.1.12.tar.gz"}\n'
+  exit 0
+fi
+if [[ "$url" == "https://example.invalid/hermes-fly-v0.1.12.tar.gz" ]]; then
+  cat "${MOCK_RELEASE_ASSET_FILE}" > "$out"
+  exit 0
+fi
+exit 1
+MOCK
+  chmod +x "$mock_dir/curl"
+  write_mock_node "$mock_dir" "0.1.12"
+  write_mock_npm "$mock_dir"
+
+  local install_home="${TEST_TEMP_DIR}/hermes_home"
+  local install_bin="${TEST_TEMP_DIR}/install_bin"
+  run bash -c '
+    export HERMES_FLY_CHANNEL="latest"
+    export HERMES_FLY_HOME="'"$install_home"'"
+    export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
+    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    export MOCK_RELEASE_ASSET_FILE="'"$asset_file"'"
+    export MOCK_INSTALLER_FAILURE_MESSAGE="Installer error: bootstrap failure"
+    export PATH="'"$mock_dir"':${PATH}"
+    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
+    main
+  '
+  assert_success
+  assert_output --partial "Installing hermes-fly..."
+  assert_output --partial "Downloading hermes-fly release asset"
+  assert_output --partial "hermes-fly installed successfully!"
+}
+
+@test "legacy fallback preserves installer arguments when Commander bootstrap fails" {
+  local mock_dir="${TEST_TEMP_DIR}/mock_bin_args"
+  mkdir -p "$mock_dir"
+  local node_args_file="${TEST_TEMP_DIR}/node_args_fallback_args"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args_fallback_args"
+  local asset_root="${TEST_TEMP_DIR}/asset_root_args"
+  local asset_file="${TEST_TEMP_DIR}/hermes-fly-v0.1.12-args.tar.gz"
+  : > "$npm_args_file"
+
+  mkdir -p "$asset_root/dist" "$asset_root/node_modules/commander" "$asset_root/templates" "$asset_root/data"
+  cat > "$asset_root/hermes-fly" <<'MOCK'
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
+MOCK
+  chmod +x "$asset_root/hermes-fly"
+  echo '// packaged cli' > "$asset_root/dist/cli.js"
+  echo '{"name":"commander"}' > "$asset_root/node_modules/commander/package.json"
+  echo '{"type":"module"}' > "$asset_root/package.json"
+  echo '{"lockfileVersion":3}' > "$asset_root/package-lock.json"
+  echo 'tpl' > "$asset_root/templates/Dockerfile.template"
+  echo '{}' > "$asset_root/data/reasoning-snapshot.json"
+  tar -czf "$asset_file" -C "$asset_root" .
+
+  cat > "$mock_dir/curl" <<'MOCK'
+#!/usr/bin/env bash
+out=""
+url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+if [[ "$url" == *"/releases/latest" ]]; then
+  printf '{"tag_name":"v0.1.12"}\n'
+  exit 0
+fi
+if [[ "$url" == *"/releases/tags/v0.1.12" ]]; then
+  printf '{"browser_download_url":"https://example.invalid/hermes-fly-v0.1.12.tar.gz"}\n'
+  exit 0
+fi
+if [[ "$url" == "https://example.invalid/hermes-fly-v0.1.12.tar.gz" ]]; then
+  cat "${MOCK_RELEASE_ASSET_FILE}" > "$out"
+  exit 0
+fi
+exit 1
+MOCK
+  chmod +x "$mock_dir/curl"
+  write_mock_node "$mock_dir" "0.1.12"
+  write_mock_npm "$mock_dir"
+
+  local install_home="${TEST_TEMP_DIR}/custom_hermes_home"
+  local install_bin="${TEST_TEMP_DIR}/custom_install_bin"
+  run bash -c '
+    export HERMES_FLY_HOME="'"${TEST_TEMP_DIR}"'/ignored_home"
+    export HERMES_FLY_INSTALL_DIR="'"${TEST_TEMP_DIR}"'/ignored_bin"
+    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    export MOCK_RELEASE_ASSET_FILE="'"$asset_file"'"
+    export MOCK_INSTALLER_FAILURE_MESSAGE="Installer error: bootstrap failure"
+    export PATH="'"$mock_dir"':${PATH}"
+    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
+    main --channel edge --version 0.1.12 --install-home "'"$install_home"'" --bin-dir "'"$install_bin"'"
+  '
+  assert_success
+  assert_output --partial "Channel: edge"
+  assert_output --partial "Install to: ${install_home}"
+  assert_output --partial "Symlink in: ${install_bin}"
+  assert_output --partial "Release: v0.1.12"
+  assert [ -f "${install_home}/hermes-fly" ]
+  assert [ -L "${install_bin}/hermes-fly" ]
+}
+
+@test "legacy fallback accepts supported installer arguments in --option=value form" {
+  local mock_dir="${TEST_TEMP_DIR}/mock_bin_equals"
+  mkdir -p "$mock_dir"
+  local node_args_file="${TEST_TEMP_DIR}/node_args_fallback_equals"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args_fallback_equals"
+  local asset_root="${TEST_TEMP_DIR}/asset_root_equals"
+  local asset_file="${TEST_TEMP_DIR}/hermes-fly-v0.1.12-equals.tar.gz"
+  : > "$npm_args_file"
+
+  mkdir -p "$asset_root/dist" "$asset_root/node_modules/commander" "$asset_root/templates" "$asset_root/data"
+  cat > "$asset_root/hermes-fly" <<'MOCK'
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
+MOCK
+  chmod +x "$asset_root/hermes-fly"
+  echo '// packaged cli' > "$asset_root/dist/cli.js"
+  echo '{"name":"commander"}' > "$asset_root/node_modules/commander/package.json"
+  echo '{"type":"module"}' > "$asset_root/package.json"
+  echo '{"lockfileVersion":3}' > "$asset_root/package-lock.json"
+  echo 'tpl' > "$asset_root/templates/Dockerfile.template"
+  echo '{}' > "$asset_root/data/reasoning-snapshot.json"
+  tar -czf "$asset_file" -C "$asset_root" .
+
+  cat > "$mock_dir/curl" <<'MOCK'
+#!/usr/bin/env bash
+out=""
+url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+if [[ "$url" == *"/releases/latest" ]]; then
+  printf '{"tag_name":"v0.1.12"}\n'
+  exit 0
+fi
+if [[ "$url" == *"/releases/tags/v0.1.12" ]]; then
+  printf '{"browser_download_url":"https://example.invalid/hermes-fly-v0.1.12.tar.gz"}\n'
+  exit 0
+fi
+if [[ "$url" == "https://example.invalid/hermes-fly-v0.1.12.tar.gz" ]]; then
+  cat "${MOCK_RELEASE_ASSET_FILE}" > "$out"
+  exit 0
+fi
+exit 1
+MOCK
+  chmod +x "$mock_dir/curl"
+  write_mock_node "$mock_dir" "0.1.12"
+  write_mock_npm "$mock_dir"
+
+  local install_home="${TEST_TEMP_DIR}/equals_hermes_home"
+  local install_bin="${TEST_TEMP_DIR}/equals_install_bin"
+  run bash -c '
+    export HERMES_FLY_HOME="'"${TEST_TEMP_DIR}"'/ignored_equals_home"
+    export HERMES_FLY_INSTALL_DIR="'"${TEST_TEMP_DIR}"'/ignored_equals_bin"
+    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    export MOCK_RELEASE_ASSET_FILE="'"$asset_file"'"
+    export MOCK_INSTALLER_FAILURE_MESSAGE="Installer error: bootstrap failure"
+    export PATH="'"$mock_dir"':${PATH}"
+    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
+    main --channel=edge --version=0.1.12 --install-home="'"$install_home"'" --bin-dir="'"$install_bin"'"
+  '
+  assert_success
+  assert_output --partial "Channel: edge"
+  assert_output --partial "Install to: ${install_home}"
+  assert_output --partial "Symlink in: ${install_bin}"
+  assert_output --partial "Release: v0.1.12"
+  assert [ -f "${install_home}/hermes-fly" ]
+  assert [ -L "${install_bin}/hermes-fly" ]
+}
+
+@test "legacy fallback fails fast on unsupported installer options" {
+  local mock_dir="${TEST_TEMP_DIR}/mock_bin_bad_flag"
+  mkdir -p "$mock_dir"
+  local node_args_file="${TEST_TEMP_DIR}/node_args_bad_flag"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args_bad_flag"
+  : > "$npm_args_file"
+
+  write_mock_node "$mock_dir" "0.1.12"
+  write_mock_npm "$mock_dir"
+
+  local install_home="${TEST_TEMP_DIR}/bad_flag_home"
+  local install_bin="${TEST_TEMP_DIR}/bad_flag_bin"
+  run bash -c '
+    export HERMES_FLY_HOME="'"$install_home"'"
+    export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
+    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    export MOCK_INSTALLER_FAILURE_MESSAGE="Installer error: unknown option --bogus"
+    export PATH="'"$mock_dir"':${PATH}"
+    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
+    main --bogus
+  '
+  assert_failure
+  assert_output --partial "Installer error: unknown option --bogus"
+  assert_output --partial "Unsupported installer option for legacy fallback: --bogus"
+  refute_output --partial "Installing hermes-fly..."
+  assert [ ! -e "${install_home}/hermes-fly" ]
+  assert [ ! -e "${install_bin}/hermes-fly" ]
+}
+
+@test "legacy fallback still surfaces version mismatch when installed version differs" {
+  local mock_dir="${TEST_TEMP_DIR}/mock_bin"
+  mkdir -p "$mock_dir"
+  local node_args_file="${TEST_TEMP_DIR}/node_args_mismatch"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args_mismatch"
+  local asset_root="${TEST_TEMP_DIR}/asset_root_mismatch"
+  local asset_file="${TEST_TEMP_DIR}/hermes-fly-v0.1.12-mismatch.tar.gz"
+  : > "$npm_args_file"
 
   mkdir -p "$asset_root/dist" "$asset_root/node_modules/commander" "$asset_root/templates" "$asset_root/data"
   cat > "$asset_root/hermes-fly" <<'MOCK'
@@ -512,291 +901,8 @@ exit 1
 MOCK
   chmod +x "$mock_dir/curl"
 
-  cat > "$mock_dir/git" <<'MOCK'
-#!/usr/bin/env bash
-printf '%s\n' "$*" > "${MOCK_GIT_MARKER_FILE}"
-exit 99
-MOCK
-  chmod +x "$mock_dir/git"
-  write_mock_node "$mock_dir" "0.1.12"
-
-  local install_home="${TEST_TEMP_DIR}/hermes_home"
-  local install_bin="${TEST_TEMP_DIR}/install_bin"
-  run bash -c '
-    export HERMES_FLY_CHANNEL="latest"
-    export HERMES_FLY_HOME="'"$install_home"'"
-    export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
-    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
-    export MOCK_GIT_MARKER_FILE="'"$git_marker"'"
-    export MOCK_RELEASE_ASSET_FILE="'"$asset_file"'"
-    export PATH="'"$mock_dir"':${PATH}"
-    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
-    main
-  '
-  assert_success
-  assert_output --partial "hermes-fly installed successfully"
-  assert_output --partial "Downloading hermes-fly release asset"
-  assert_output --partial "Channel: latest"
-  assert_output --partial "Release: v0.1.12"
-  assert_output --partial "hermes-fly 0.1.12"
-  assert [ -f "${install_home}/hermes-fly" ]
-  assert [ -f "${install_home}/dist/cli.js" ]
-  assert [ -f "${install_home}/node_modules/commander/package.json" ]
-  assert [ -L "${install_bin}/hermes-fly" ]
-  run test ! -f "$git_marker"
-  assert_success
-}
-
-@test "install edge downloads the latest main snapshot and builds runtime by default" {
-  local mock_dir="${TEST_TEMP_DIR}/mock_bin"
-  mkdir -p "$mock_dir"
-  local npm_args_file="${TEST_TEMP_DIR}/npm_args_latest"
-  local node_args_file="${TEST_TEMP_DIR}/node_args_latest"
-  local snapshot_root="${TEST_TEMP_DIR}/snapshot_root"
-  local snapshot_archive="${TEST_TEMP_DIR}/main-snapshot.tar.gz"
-
-  mkdir -p "$snapshot_root/hermes-fly-main"
-  write_source_checkout "$snapshot_root/hermes-fly-main"
-  tar -czf "$snapshot_archive" -C "$snapshot_root" "hermes-fly-main"
-
-  cat > "$mock_dir/curl" <<'MOCK'
-#!/usr/bin/env bash
-out=""
-url=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -o)
-      out="$2"
-      shift 2
-      ;;
-    *)
-      url="$1"
-      shift
-      ;;
-  esac
-done
-if [[ "$url" == "https://codeload.github.com/alexfazio/hermes-fly/tar.gz/main" ]]; then
-  cat "${MOCK_SOURCE_ARCHIVE_FILE}" > "$out"
-  exit 0
-fi
-exit 1
-MOCK
-  chmod +x "$mock_dir/curl"
-  write_mock_npm "$mock_dir"
-  write_mock_node "$mock_dir" "0.1.29"
-
-  local install_home="${TEST_TEMP_DIR}/hermes_home_latest"
-  local install_bin="${TEST_TEMP_DIR}/install_bin_latest"
-  run bash -c '
-    export HERMES_FLY_CHANNEL="edge"
-    export HERMES_FLY_HOME="'"$install_home"'"
-    export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
-    export MOCK_SOURCE_ARCHIVE_FILE="'"$snapshot_archive"'"
-    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
-    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
-    export PATH="'"$mock_dir"':${PATH}"
-    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
-    main
-  '
-  assert_success
-  assert_output --partial "Channel: edge"
-  assert_output --partial "Release: main"
-  assert_output --partial "Downloading hermes-fly source..."
-  assert_output --partial "Preparing hermes-fly runtime dependencies"
-  assert [ -f "${install_home}/dist/cli.js" ]
-  assert [ -f "${install_home}/node_modules/commander/package.json" ]
-
-  run cat "$npm_args_file"
-  assert_success
-  assert_output --partial "ci --no-audit --no-fund"
-  assert_output --partial "run build"
-  assert_output --partial "prune --omit=dev --no-audit --no-fund"
-}
-
-@test "install stable falls back to source clone and build when packaged asset is unavailable" {
-  local mock_dir="${TEST_TEMP_DIR}/mock_bin"
-  mkdir -p "$mock_dir"
-  local git_args_file="${TEST_TEMP_DIR}/git_args"
-  local npm_args_file="${TEST_TEMP_DIR}/npm_args"
-  local node_args_file="${TEST_TEMP_DIR}/node_args"
-
-  cat > "$mock_dir/curl" <<'MOCK'
-#!/usr/bin/env bash
-url="${@: -1}"
-if [[ "$url" == *"/releases/latest" ]]; then
-  printf '{"tag_name":"v0.1.12"}\n'
-  exit 0
-fi
-if [[ "$url" == *"/releases/tags/v0.1.12" ]]; then
-  printf '{"assets":[]}\n'
-  exit 0
-fi
-exit 1
-MOCK
-  chmod +x "$mock_dir/curl"
-
-  cat > "$mock_dir/git" <<'MOCK'
-#!/usr/bin/env bash
-if [[ "$1" == "clone" ]]; then
-  printf '%s\n' "$*" > "${MOCK_GIT_ARGS_FILE}"
-  dest="${@: -1}"
-  mkdir -p "$dest"
-  cat > "$dest/hermes-fly" <<'INNER'
-#!/bin/sh
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
-exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
-INNER
-  chmod +x "$dest/hermes-fly"
-  mkdir -p "$dest/templates" "$dest/data"
-  cat > "$dest/package.json" <<'INNER'
-{"name":"hermes-fly","type":"module","dependencies":{"commander":"^12.1.0"},"scripts":{"build":"tsc -p tsconfig.json"}}
-INNER
-  cat > "$dest/package-lock.json" <<'INNER'
-{"name":"hermes-fly","lockfileVersion":3}
-INNER
-  echo 'tpl' > "$dest/templates/Dockerfile.template"
-  echo '{}' > "$dest/data/reasoning-snapshot.json"
-  exit 0
-fi
-exit 1
-MOCK
-  chmod +x "$mock_dir/git"
-  write_mock_npm "$mock_dir"
-  write_mock_node "$mock_dir" "0.1.12"
-
-  local install_home="${TEST_TEMP_DIR}/hermes_home"
-  local install_bin="${TEST_TEMP_DIR}/install_bin"
-  run bash -c '
-    export HERMES_FLY_HOME="'"$install_home"'"
-    export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
-    export HERMES_FLY_CHANNEL="stable"
-    export MOCK_GIT_ARGS_FILE="'"$git_args_file"'"
-    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
-    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
-    export PATH="'"$mock_dir"':${PATH}"
-    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
-    main
-  '
-  assert_success
-  assert_output --partial "Preparing hermes-fly runtime dependencies"
-  assert [ -f "${install_home}/dist/cli.js" ]
-  assert [ -f "${install_home}/node_modules/commander/package.json" ]
-  run cat "$git_args_file"
-  assert_success
-  assert_output --partial "--branch v0.1.12"
-  run cat "$npm_args_file"
-  assert_success
-  assert_output --partial "ci --no-audit --no-fund"
-  assert_output --partial "run build"
-  assert_output --partial "prune --omit=dev --no-audit --no-fund"
-}
-
-@test "install edge uses main branch and builds runtime when HERMES_FLY_CHANNEL=edge" {
-  local mock_dir="${TEST_TEMP_DIR}/mock_bin"
-  mkdir -p "$mock_dir"
-  local git_args_file="${TEST_TEMP_DIR}/git_args_edge"
-  local npm_args_file="${TEST_TEMP_DIR}/npm_args_edge"
-  local node_args_file="${TEST_TEMP_DIR}/node_args_edge"
-
-  cat > "$mock_dir/git" <<'MOCK'
-#!/usr/bin/env bash
-if [[ "$1" == "clone" ]]; then
-  printf '%s\n' "$*" > "${MOCK_GIT_ARGS_FILE}"
-  dest="${@: -1}"
-  mkdir -p "$dest"
-  cat > "$dest/hermes-fly" <<'INNER'
-#!/usr/bin/env bash
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
-INNER
-  chmod +x "$dest/hermes-fly"
-  mkdir -p "$dest/templates" "$dest/data"
-  cat > "$dest/package.json" <<'INNER'
-{"name":"hermes-fly","type":"module","dependencies":{"commander":"^12.1.0"},"scripts":{"build":"tsc -p tsconfig.json"}}
-INNER
-  cat > "$dest/package-lock.json" <<'INNER'
-{"name":"hermes-fly","lockfileVersion":3}
-INNER
-  echo 'tpl' > "$dest/templates/Dockerfile.template"
-  echo '{}' > "$dest/data/reasoning-snapshot.json"
-  exit 0
-fi
-exit 1
-MOCK
-  chmod +x "$mock_dir/git"
-  write_mock_npm "$mock_dir"
-  write_mock_node "$mock_dir" "0.0.0-dev"
-
-  local install_home="${TEST_TEMP_DIR}/hermes_home_edge"
-  local install_bin="${TEST_TEMP_DIR}/install_bin_edge"
-  run bash -c '
-    export HERMES_FLY_CHANNEL="edge"
-    export HERMES_FLY_HOME="'"$install_home"'"
-    export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
-    export MOCK_GIT_ARGS_FILE="'"$git_args_file"'"
-    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
-    export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
-    export PATH="'"$mock_dir"':${PATH}"
-    source "'"${PROJECT_ROOT}"'/scripts/install.sh"
-    main
-  '
-  assert_success
-  assert_output --partial "Channel: edge"
-  run cat "$git_args_file"
-  assert_success
-  assert_output --partial "--branch main"
-}
-
-@test "install stable fails when installed version does not match requested release" {
-  local mock_dir="${TEST_TEMP_DIR}/mock_bin"
-  mkdir -p "$mock_dir"
-  local git_args_file="${TEST_TEMP_DIR}/git_args_mismatch"
-  local npm_args_file="${TEST_TEMP_DIR}/npm_args_mismatch"
-  local node_args_file="${TEST_TEMP_DIR}/node_args_mismatch"
-
-  cat > "$mock_dir/curl" <<'MOCK'
-#!/usr/bin/env bash
-url="${@: -1}"
-if [[ "$url" == *"/releases/latest" ]]; then
-  printf '{"tag_name":"v0.1.12"}\n'
-  exit 0
-fi
-if [[ "$url" == *"/releases/tags/v0.1.12" ]]; then
-  printf '{"assets":[]}\n'
-  exit 0
-fi
-exit 1
-MOCK
-  chmod +x "$mock_dir/curl"
-
-  cat > "$mock_dir/git" <<'MOCK'
-#!/usr/bin/env bash
-if [[ "$1" == "clone" ]]; then
-  printf '%s\n' "$*" > "${MOCK_GIT_ARGS_FILE}"
-  dest="${@: -1}"
-  mkdir -p "$dest"
-  cat > "$dest/hermes-fly" <<'INNER'
-#!/usr/bin/env bash
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
-INNER
-  chmod +x "$dest/hermes-fly"
-  mkdir -p "$dest/templates" "$dest/data"
-  cat > "$dest/package.json" <<'INNER'
-{"name":"hermes-fly","type":"module","dependencies":{"commander":"^12.1.0"},"scripts":{"build":"tsc -p tsconfig.json"}}
-INNER
-  cat > "$dest/package-lock.json" <<'INNER'
-{"name":"hermes-fly","lockfileVersion":3}
-INNER
-  echo 'tpl' > "$dest/templates/Dockerfile.template"
-  echo '{}' > "$dest/data/reasoning-snapshot.json"
-  exit 0
-fi
-exit 1
-MOCK
-  chmod +x "$mock_dir/git"
-  write_mock_npm "$mock_dir"
   write_mock_node "$mock_dir" "0.1.11"
+  write_mock_npm "$mock_dir"
 
   local install_home="${TEST_TEMP_DIR}/hermes_home_mismatch"
   local install_bin="${TEST_TEMP_DIR}/install_bin_mismatch"
@@ -804,9 +910,10 @@ MOCK
     export HERMES_FLY_CHANNEL="stable"
     export HERMES_FLY_HOME="'"$install_home"'"
     export HERMES_FLY_INSTALL_DIR="'"$install_bin"'"
-    export MOCK_GIT_ARGS_FILE="'"$git_args_file"'"
-    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
     export MOCK_NODE_ARGS_FILE="'"$node_args_file"'"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    export MOCK_RELEASE_ASSET_FILE="'"$asset_file"'"
+    export MOCK_INSTALLER_FAILURE_MESSAGE="Installer error: bootstrap failure"
     export PATH="'"$mock_dir"':${PATH}"
     source "'"${PROJECT_ROOT}"'/scripts/install.sh"
     main

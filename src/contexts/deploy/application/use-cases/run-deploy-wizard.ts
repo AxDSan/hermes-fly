@@ -341,7 +341,7 @@ export class RunDeployWizardUseCase {
     await this.port.saveApp(config);
 
     writeCompletionSummary(stdout, config);
-    const finalizeResult: FinalizeMessagingSetupResult = await this.port.finalizeMessagingSetup(config, stdout, stderr);
+    const finalizeResult = (await this.port.finalizeMessagingSetup(config, stdout, stderr) ?? {}) as FinalizeMessagingSetupResult;
 
     const action = await this.port.chooseSuccessfulDeploymentAction(config);
     if (action === "destroy") {
