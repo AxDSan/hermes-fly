@@ -2263,7 +2263,6 @@ describe("FlyDeployWizard.collectConfig", () => {
       "1",
       "1",
       "1",
-      "1",
       "123:abc",
       "y",
       "1",
