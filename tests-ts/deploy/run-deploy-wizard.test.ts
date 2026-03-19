@@ -1499,6 +1499,76 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.ok(!prompts.asked.some((message) => message.includes("Press Enter after sending your self-chat test message")));
   });
 
+  it("waits for the paired WhatsApp number to appear after restart before prompting for the self-chat test", async () => {
+    const prompts = makePromptPort(["y", ""], { interactive: true });
+    const io = makeIO();
+    let healthReads = 0;
+    const runner: ForegroundProcessRunner = {
+      run: async (_command, args) => {
+        if (args[0] === "ssh" && args[1] === "console" && !/127\.0\.0\.1:3000\/health/.test(args.join(" ")) && !/bridge\.log/.test(args.join(" ")) && !/tail -n 80/.test(args.join(" "))) {
+          return {
+            exitCode: 0,
+            stdout: "empty_session\n",
+            stderr: "",
+          };
+        }
+        if (args[0] === "machine" && args[1] === "list") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify([{ id: "machine123", state: "started", region: "fra" }]),
+            stderr: "",
+          };
+        }
+        if (args[0] === "machine" && args[1] === "restart") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "ssh" && args[1] === "console" && /127\.0\.0\.1:3000\/health/.test(args.join(" "))) {
+          healthReads += 1;
+          if (healthReads < 3) {
+            return {
+              exitCode: 0,
+              stdout: "{\"status\":\"connected\",\"selfJid\":\"\",\"selfNumber\":\"\"}\n",
+              stderr: "",
+            };
+          }
+          return {
+            exitCode: 0,
+            stdout: "{\"status\":\"connected\",\"selfJid\":\"447871172820@s.whatsapp.net\",\"selfNumber\":\"447871172820\"}\n",
+            stderr: "",
+          };
+        }
+        if (args[0] === "logs") {
+          return {
+            exitCode: 0,
+            stdout: "2026-03-18T16:55:00Z app[test] [info] [whatsapp] Sending response (42 chars) to 447871172820@s.whatsapp.net\n",
+            stderr: "",
+          };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      runStreaming: async (_command, _args, options) => {
+        options?.onStdoutChunk?.("✅ Pairing complete. Credentials saved.\n");
+        return { exitCode: 0 };
+      },
+      runForeground: async () => ({ exitCode: 0 }),
+    };
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner, sleep: async () => {} });
+
+    const result = await wizard.finalizeMessagingSetup({
+      ...DEFAULT_CONFIG,
+      appName: "test-app",
+      whatsappEnabled: true,
+      whatsappMode: "self-chat",
+      whatsappAllowedUsers: "447871172820",
+      whatsappCompleteAccessDuringSetup: true,
+    }, io.stdout, io.stderr);
+
+    assert.deepEqual(result, { whatsappSessionConfirmed: true });
+    assert.equal(healthReads, 3);
+    assert.doesNotMatch(io.errText, /could not determine the phone number of the paired WhatsApp account/i);
+    assert.match(io.outText, /Send a short message to Message yourself now/i);
+  });
+
   it("disconnects older WhatsApp self-chat deployments before pairing a takeover app", async () => {
     const dir = await mkdtemp(join(tmpdir(), "whatsapp-takeover-finalize-"));
     try {

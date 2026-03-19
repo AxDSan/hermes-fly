@@ -856,7 +856,9 @@ export class FlyDeployWizard implements DeployWizardPort {
           return {};
         }
 
-        const bridgeReady = await this.waitForWhatsAppBridgeConnectedAfterPairing(config.appName);
+        const bridgeReady = await this.waitForWhatsAppBridgeConnectedAfterPairing(config.appName, {
+          requireSelfNumber: config.whatsappMode === "self-chat",
+        });
         if (!bridgeReady.ok) {
           stderr.write(`[warn] WhatsApp paired, but ${bridgeReady.error ?? "the WhatsApp bridge did not come online cleanly"}\n`);
           stderr.write(`Tip: run 'hermes-fly doctor -a ${config.appName}' and 'hermes-fly logs -a ${config.appName}' before testing WhatsApp.\n`);
@@ -4062,13 +4064,22 @@ export class FlyDeployWizard implements DeployWizardPort {
     return { ok: false, error: `${notRunningPrefix} (${lastState})` };
   }
 
-  private async waitForWhatsAppBridgeConnectedAfterPairing(appName: string): Promise<{ ok: boolean; error?: string; health?: WhatsAppBridgeHealth }> {
+  private async waitForWhatsAppBridgeConnectedAfterPairing(
+    appName: string,
+    options?: { requireSelfNumber?: boolean }
+  ): Promise<{ ok: boolean; error?: string; health?: WhatsAppBridgeHealth }> {
     try {
       let lastOutput = "";
+      let lastHealth: WhatsAppBridgeHealth | undefined;
+      const requireSelfNumber = options?.requireSelfNumber === true;
 
       for (let attempt = 0; attempt < 20; attempt += 1) {
         const result = await this.readWhatsAppBridgeHealth(appName);
-        if (result.health?.status === "connected") {
+        lastHealth = result.health;
+        if (
+          result.health?.status === "connected"
+          && (!requireSelfNumber || ((result.health.selfNumber ?? "").trim().length > 0))
+        ) {
           return { ok: true, health: result.health };
         }
 
@@ -4082,7 +4093,9 @@ export class FlyDeployWizard implements DeployWizardPort {
       const suffix = lastOutput.length > 0 ? `: ${lastOutput}` : "";
       return {
         ok: false,
-        error: `the WhatsApp bridge did not report a connected session after pairing${suffix}${logTail ? `\nRecent bridge log:\n${logTail}` : ""}`,
+        error: requireSelfNumber && lastHealth?.status === "connected"
+          ? `the WhatsApp bridge connected after pairing, but it never reported the paired WhatsApp phone number${suffix}${logTail ? `\nRecent bridge log:\n${logTail}` : ""}`
+          : `the WhatsApp bridge did not report a connected session after pairing${suffix}${logTail ? `\nRecent bridge log:\n${logTail}` : ""}`,
       };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };

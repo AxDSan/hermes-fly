@@ -24,12 +24,16 @@ describe("patch-whatsapp-bridge.py", () => {
 
       assert.notEqual(after, before);
       assert.match(after, /function getSelfNumber/);
+      assert.match(after, /function unwrapMessageContent/);
+      assert.match(after, /function rememberMessageId/);
       assert.match(after, /function logBridgeDiagnostic/);
       assert.match(after, /logBridgeDiagnostic\('connection\.open'/);
       assert.match(after, /selfNumber: getSelfNumber\(\)/);
+      assert.match(after, /WHATSAPP_MODE === 'self-chat' && type === 'append'/);
       assert.match(after, /messages\.upsert\.accepted/);
       assert.match(after, /messages\.upsert\.queued/);
       assert.match(after, /messages\.poll\.drained/);
+      assert.match(after, /reason: 'duplicate-message-id'/);
       assert.match(after, /reason: 'missing-message-payload'/);
 
       await execFileAsync("python3", [scriptPath, bridgePath]);

@@ -14,6 +14,10 @@ def replace_once(source_text: str, old: str, new: str, label: str, marker: str) 
 
 
 HELPER_BLOCK = """let connectionState = 'disconnected';
+const recentMessageIds = new Set();
+const recentMessageIdOrder = [];
+const MAX_RECENT_MESSAGE_IDS = 512;
+const APPEND_RECENT_WINDOW_MS = 2 * 60 * 1000;
 
 function getSelfJid() {
   return (sock?.user?.id || '').replace(/:.*@/, '@');
@@ -21,6 +25,63 @@ function getSelfJid() {
 
 function getSelfNumber() {
   return getSelfJid().replace(/@.*/, '');
+}
+
+function unwrapMessageContent(message) {
+  let current = message;
+  while (current && typeof current === 'object') {
+    if (current.ephemeralMessage?.message) {
+      current = current.ephemeralMessage.message;
+      continue;
+    }
+    if (current.viewOnceMessage?.message) {
+      current = current.viewOnceMessage.message;
+      continue;
+    }
+    if (current.viewOnceMessageV2?.message) {
+      current = current.viewOnceMessageV2.message;
+      continue;
+    }
+    if (current.viewOnceMessageV2Extension?.message) {
+      current = current.viewOnceMessageV2Extension.message;
+      continue;
+    }
+    if (current.documentWithCaptionMessage?.message) {
+      current = current.documentWithCaptionMessage.message;
+      continue;
+    }
+    if (current.editedMessage?.message) {
+      current = current.editedMessage.message;
+      continue;
+    }
+    break;
+  }
+  return current;
+}
+
+function getMessageTimestampMs(msg) {
+  const raw = msg?.messageTimestamp;
+  if (typeof raw === 'number') return raw * 1000;
+  if (typeof raw === 'bigint') return Number(raw) * 1000;
+  if (typeof raw === 'string' && /^[0-9]+$/.test(raw)) return Number(raw) * 1000;
+  if (raw && typeof raw.toNumber === 'function') return raw.toNumber() * 1000;
+  return 0;
+}
+
+function rememberMessageId(messageId) {
+  if (!messageId) {
+    return true;
+  }
+  if (recentMessageIds.has(messageId)) {
+    return false;
+  }
+  recentMessageIds.add(messageId);
+  recentMessageIdOrder.push(messageId);
+  if (recentMessageIdOrder.length > MAX_RECENT_MESSAGE_IDS) {
+    const evicted = recentMessageIdOrder.shift();
+    if (evicted) recentMessageIds.delete(evicted);
+  }
+  return true;
 }
 
 function logBridgeDiagnostic(event, payload = {}) {
@@ -36,6 +97,7 @@ function summarizeUpsertMessage(msg, batchType) {
   const key = msg?.key || {};
   const chatId = key.remoteJid || '';
   const senderId = key.participant || chatId;
+  const content = unwrapMessageContent(msg?.message);
   return {
     batchType,
     messageId: key.id || '',
@@ -44,7 +106,7 @@ function summarizeUpsertMessage(msg, batchType) {
     fromMe: Boolean(key.fromMe),
     hasMessage: Boolean(msg?.message),
     messageStubType: msg?.messageStubType ?? null,
-    messageTypes: msg?.message ? Object.keys(msg.message) : [],
+    messageTypes: content ? Object.keys(content) : [],
   };
 }
 """
@@ -103,7 +165,8 @@ def patch_bridge(source_text: str) -> str:
     source_text = replace_once(
         source_text,
         "    if (type !== 'notify') return;\n",
-        """    if (type !== 'notify') {
+        """    const allowAppendBatch = WHATSAPP_MODE === 'self-chat' && type === 'append';
+    if (type !== 'notify' && !allowAppendBatch) {
       logBridgeDiagnostic('messages.upsert.skipped', {
         reason: 'non-notify-batch',
         batchType: type,
@@ -137,6 +200,28 @@ def patch_bridge(source_text: str) -> str:
 """,
         "missing message payload",
         "reason: 'missing-message-payload'",
+    )
+    source_text = replace_once(
+        source_text,
+        "      const chatId = msg.key.remoteJid;\n",
+        """      const content = unwrapMessageContent(msg.message);
+      const timestampMs = getMessageTimestampMs(msg);
+      if (type === 'append' && timestampMs > 0) {
+        const ageMs = Date.now() - timestampMs;
+        if (ageMs > APPEND_RECENT_WINDOW_MS) {
+          logBridgeDiagnostic('messages.upsert.skipped', {
+            ...summary,
+            reason: 'append-too-old',
+            ageMs,
+          });
+          continue;
+        }
+      }
+
+      const chatId = msg.key.remoteJid;
+""",
+        "content unwrap and append gate",
+        "reason: 'append-too-old'",
     )
     source_text = replace_once(
         source_text,
@@ -207,6 +292,53 @@ def patch_bridge(source_text: str) -> str:
     )
     source_text = replace_once(
         source_text,
+        """      if (msg.message.conversation) {
+        body = msg.message.conversation;
+      } else if (msg.message.extendedTextMessage?.text) {
+        body = msg.message.extendedTextMessage.text;
+      } else if (msg.message.imageMessage) {
+        body = msg.message.imageMessage.caption || '';
+        hasMedia = true;
+        mediaType = 'image';
+      } else if (msg.message.videoMessage) {
+        body = msg.message.videoMessage.caption || '';
+        hasMedia = true;
+        mediaType = 'video';
+      } else if (msg.message.audioMessage || msg.message.pttMessage) {
+        hasMedia = true;
+        mediaType = msg.message.pttMessage ? 'ptt' : 'audio';
+      } else if (msg.message.documentMessage) {
+        body = msg.message.documentMessage.caption || msg.message.documentMessage.fileName || '';
+        hasMedia = true;
+        mediaType = 'document';
+      }
+""",
+        """      if (content?.conversation) {
+        body = content.conversation;
+      } else if (content?.extendedTextMessage?.text) {
+        body = content.extendedTextMessage.text;
+      } else if (content?.imageMessage) {
+        body = content.imageMessage.caption || '';
+        hasMedia = true;
+        mediaType = 'image';
+      } else if (content?.videoMessage) {
+        body = content.videoMessage.caption || '';
+        hasMedia = true;
+        mediaType = 'video';
+      } else if (content?.audioMessage || content?.pttMessage) {
+        hasMedia = true;
+        mediaType = content.pttMessage ? 'ptt' : 'audio';
+      } else if (content?.documentMessage) {
+        body = content.documentMessage.caption || content.documentMessage.fileName || '';
+        hasMedia = true;
+        mediaType = 'document';
+      }
+""",
+        "unwrapped content extraction",
+        "content?.conversation",
+    )
+    source_text = replace_once(
+        source_text,
         "      if (!body && !hasMedia) continue;\n",
         """      if (!body && !hasMedia) {
         logBridgeDiagnostic('messages.upsert.skipped', {
@@ -220,6 +352,22 @@ def patch_bridge(source_text: str) -> str:
 """,
         "empty body skip",
         "reason: 'empty-body-no-media'",
+    )
+    source_text = replace_once(
+        source_text,
+        "      const event = {\n",
+        """      if (!rememberMessageId(msg.key.id)) {
+        logBridgeDiagnostic('messages.upsert.skipped', {
+          ...summary,
+          reason: 'duplicate-message-id',
+        });
+        continue;
+      }
+
+      const event = {
+""",
+        "duplicate message guard",
+        "reason: 'duplicate-message-id'",
     )
     source_text = replace_once(
         source_text,
