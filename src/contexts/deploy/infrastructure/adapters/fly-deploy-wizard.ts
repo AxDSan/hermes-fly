@@ -612,9 +612,13 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   async runDeploy(buildDir: string, config: DeployConfig): Promise<{ ok: boolean; error?: string }> {
+    const deployArgs = ["deploy", "--app", config.appName, "--config", "fly.toml", "--dockerfile", "Dockerfile", "--wait-timeout", "5m0s"];
+    if (config.noCache) {
+      deployArgs.push("--no-cache");
+    }
     const result = await this.process.runForeground(
       "fly",
-      ["deploy", "--app", config.appName, "--config", "fly.toml", "--dockerfile", "Dockerfile", "--wait-timeout", "5m0s"],
+      deployArgs,
       { env: this.env, cwd: buildDir }
     );
     if (result.exitCode !== 0) {

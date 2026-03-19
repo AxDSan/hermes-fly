@@ -31,10 +31,12 @@ export function buildProgram(): Command {
     .description("Deployment Wizard — deploys Hermes Agent to Fly.io")
     .option("--channel <channel>", "Deploy channel: stable, preview, or edge", "stable")
     .option("--no-auto-install", "Skip automatic installation of missing prerequisites")
+    .option("--no-cache", "Build Docker image without cache (fresh build)")
     .action(async (opts) => {
       const args: string[] = [];
       if (opts.channel && opts.channel !== "stable") args.push("--channel", opts.channel);
       if (!opts.autoInstall) args.push("--no-auto-install");
+      if (opts.noCache) args.push("--no-cache");
       process.exitCode = await runDeployCommand(args);
     });
 

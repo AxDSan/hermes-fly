@@ -15,6 +15,7 @@ export interface DeployConfig {
   sttModel?: string;
   channel: "stable" | "preview" | "edge";
   hermesRef: string;
+  noCache?: boolean;
   botToken: string;
   telegramBotUsername?: string;
   telegramBotName?: string;
