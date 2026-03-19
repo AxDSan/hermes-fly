@@ -15,8 +15,13 @@ import { runExecCommand } from "./commands/exec.js";
 import { runAgentCommand } from "./commands/agent.js";
 import { HERMES_FLY_TS_VERSION } from "./version.js";
 
-export function buildProgram(): Command {
+type CliHandlers = {
+  runDeployCommand?: typeof runDeployCommand;
+};
+
+export function buildProgram(handlers: CliHandlers = {}): Command {
   const versionLine = `hermes-fly ${HERMES_FLY_TS_VERSION}`;
+  const deployRunner = handlers.runDeployCommand ?? runDeployCommand;
   const program = new Command()
     .name("hermes-fly")
     .description("Hermes Fly CLI")
@@ -32,10 +37,10 @@ export function buildProgram(): Command {
     .option("--channel <channel>", "Deploy channel: stable, preview, or edge", "stable")
     .option("--no-auto-install", "Skip automatic installation of missing prerequisites")
     .action(async (opts) => {
-      const args: string[] = [];
-      if (opts.channel && opts.channel !== "stable") args.push("--channel", opts.channel);
-      if (!opts.autoInstall) args.push("--no-auto-install");
-      process.exitCode = await runDeployCommand(args);
+      process.exitCode = await deployRunner({
+        channel: opts.channel,
+        autoInstall: opts.autoInstall,
+      });
     });
 
   program

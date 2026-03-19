@@ -2,6 +2,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { ProcessRunner } from "../../../../adapters/process.js";
+import {
+  renderAdaptiveDeployCopyableSection,
+  renderAdaptiveDeployPanel,
+} from "../../application/presentation/deploy-screen.js";
 import type { DeployPromptPort } from "./deploy-prompts.js";
 
 const DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com";
@@ -87,6 +91,7 @@ export class NousPortalAuthAdapter {
     const requestedInferenceBaseUrl = this.inferenceBaseUrl();
     const clientId = DEFAULT_NOUS_CLIENT_ID;
     const scope = DEFAULT_NOUS_SCOPE;
+    const width = prompts.columns();
 
     const deviceCodeResponse = await this.requestDeviceCode(portalBaseUrl, clientId, scope);
     const deviceCode = String(deviceCodeResponse.device_code ?? "").trim();
@@ -104,13 +109,22 @@ export class NousPortalAuthAdapter {
       throw new Error("Nous Portal device login did not return a verification URL.");
     }
 
-    prompts.write("Hermes can use your Nous Portal subscription.\n");
-    prompts.write("No separate API key is required for this path.\n\n");
-    prompts.write("To continue, follow these steps:\n\n");
-    prompts.write("  1. Open this URL in your browser:\n");
-    prompts.write(`     ${verificationUrl}\n\n`);
-    prompts.write("  2. If prompted, enter this one-time code:\n");
-    prompts.write(`     ${userCode}\n\n`);
+    prompts.write(renderAdaptiveDeployPanel({
+      title: "Nous Portal sign-in",
+      lines: [
+        "Hermes can use your Nous Portal subscription.",
+        "No separate API key is required for this path.",
+        "",
+        "Open the verification URL in your browser and, if prompted, enter the one-time code below.",
+      ],
+      width,
+    }));
+    prompts.write(renderAdaptiveDeployCopyableSection({
+      title: "Nous Portal sign-in",
+      question: "Use these values exactly:",
+      lines: [verificationUrl, userCode],
+      width,
+    }));
     prompts.write("Waiting for sign-in...\n");
 
     const tokenResponse = await this.pollForToken(

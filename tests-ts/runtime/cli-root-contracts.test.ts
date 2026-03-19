@@ -143,4 +143,23 @@ describe("CLI root contracts - stub commands sentinel", () => {
     const cmd = program.commands.find((c) => c.name() === "destroy");
     assert.ok(cmd !== undefined, "destroy command not registered");
   });
+
+  it("maps Commander deploy options into the typed deploy command input", async () => {
+    const calls: Array<{ channel: string; autoInstall: boolean }> = [];
+    const program = buildProgram({
+      runDeployCommand: async (input) => {
+        calls.push(input);
+        return 0;
+      }
+    });
+
+    await program.parseAsync([
+      "deploy",
+      "--channel",
+      "preview",
+      "--no-auto-install",
+    ], { from: "user" });
+
+    assert.deepEqual(calls, [{ channel: "preview", autoInstall: false }]);
+  });
 });

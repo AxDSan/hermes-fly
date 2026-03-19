@@ -1,4 +1,12 @@
 import type { DeployConfig, DeployWizardPort } from "../../application/ports/deploy-wizard.port.js";
+import {
+  renderAdaptiveDeployChoiceSection,
+  renderAdaptiveDeployCopyableSection,
+  renderAdaptiveDeployHero,
+  renderAdaptiveDeployKeyValuePanel,
+  renderAdaptiveDeployPanel,
+  renderDeployChoiceOptions,
+} from "../../application/presentation/deploy-screen.js";
 import { FlyDeployRunner } from "./fly-deploy-runner.js";
 import { TemplateWriter } from "./template-writer.js";
 import { NodeProcessRunner, type ForegroundProcessRunner } from "../../../../adapters/process.js";
@@ -43,6 +51,7 @@ import {
   type SavedDeploymentEntry,
 } from "../../../runtime/infrastructure/adapters/fly-deployment-registry.js";
 import { resolveFlyCommand } from "../../../../adapters/fly-command.js";
+import { HERMES_FLY_TS_VERSION } from "../../../../version.js";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
@@ -377,6 +386,66 @@ export class FlyDeployWizard implements DeployWizardPort {
     this.rememberModelOptions(STATIC_MODEL_OPTIONS);
   }
 
+  private promptWidth(): number | undefined {
+    return this.prompts.columns();
+  }
+
+  private writeHero(): void {
+    this.prompts.write(renderAdaptiveDeployHero({
+      version: HERMES_FLY_TS_VERSION,
+      title: "Hermes Fly deploy",
+      eyebrow: "Starting deploy",
+      subtitle: "I'll walk you through the deployment setup step by step. Press Enter to accept a suggested option whenever one is shown.",
+      width: this.promptWidth(),
+    }));
+  }
+
+  private writePanel(title: string, lines: string[]): void {
+    this.prompts.write(renderAdaptiveDeployPanel({
+      title,
+      lines,
+      width: this.promptWidth(),
+    }));
+  }
+
+  private writeChoiceSection(
+    title: string,
+    question: string,
+    options: string[],
+    details: string[] = []
+  ): void {
+    this.prompts.write(renderAdaptiveDeployChoiceSection({
+      title,
+      question,
+      details,
+      options,
+      width: this.promptWidth(),
+    }));
+  }
+
+  private writeKeyValuePanel(title: string, entries: Array<[string, string]>): void {
+    this.prompts.write(renderAdaptiveDeployKeyValuePanel({
+      title,
+      entries,
+      width: this.promptWidth(),
+    }));
+  }
+
+  private writeCopyableSection(
+    title: string,
+    question: string,
+    lines: string[],
+    details: string[] = []
+  ): void {
+    this.prompts.write(renderAdaptiveDeployCopyableSection({
+      title,
+      question,
+      details,
+      lines,
+      width: this.promptWidth(),
+    }));
+  }
+
   async checkPlatform(): Promise<{ ok: boolean; error?: string }> {
     const platform = (this.env?.HERMES_FLY_PLATFORM ?? process.platform) as string;
     if (platform === "darwin" || platform === "linux") {
@@ -451,9 +520,7 @@ export class FlyDeployWizard implements DeployWizardPort {
   async collectConfig(opts: { channel: "stable" | "preview" | "edge" }): Promise<DeployConfig> {
     const env = this.env;
     if (this.prompts.isInteractive()) {
-      this.prompts.write("\nHermes Agent Guided Setup\n");
-      this.prompts.write("I'll walk you through the deployment setup step by step.\n");
-      this.prompts.write("You can press Enter to accept a suggested option whenever one is shown.\n\n");
+      this.writeHero();
     }
 
     const orgSlug = await this.collectOrgSlug(env.HERMES_FLY_ORG ?? env.DEPLOY_ORG ?? env.FLY_ORG);
@@ -928,13 +995,22 @@ export class FlyDeployWizard implements DeployWizardPort {
       return "conclude";
     }
 
-    this.prompts.write("\nWhat would you like to do next?\n\n");
-    this.prompts.write("   1  Conclude and keep it  Finish here and leave the new deployment running.\n");
-    if (config.botToken) {
-      this.prompts.write("   2  Destroy it now        Remove the Fly deployment now and hand off Telegram bot deletion to BotFather.\n\n");
-    } else {
-      this.prompts.write("   2  Destroy it now        Remove the Fly deployment and attached Fly resources now.\n\n");
-    }
+    this.writeChoiceSection(
+      "Deployment ready",
+      "What would you like to do next?",
+      renderDeployChoiceOptions([
+        {
+          label: "Conclude and keep it",
+          description: "Finish here and leave the new deployment running.",
+        },
+        {
+          label: "Destroy it now",
+          description: config.botToken
+            ? "Remove the Fly deployment now and hand off Telegram bot deletion to BotFather."
+            : "Remove the Fly deployment and attached Fly resources now.",
+        },
+      ], 1)
+    );
 
     const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
     if (choice === 1) {
@@ -955,27 +1031,28 @@ export class FlyDeployWizard implements DeployWizardPort {
       return;
     }
 
-    this.prompts.write("\nTelegram bot cleanup\n");
-    this.prompts.write("Telegram does not document any Bot API method that permanently deletes a bot.\n");
-    this.prompts.write("The Fly deployment has been destroyed.\n");
-    if (config.telegramBotUsername) {
-      this.prompts.write(`To finish deleting @${config.telegramBotUsername}, open BotFather with /deletebot prefilled:\n`);
-    } else {
-      this.prompts.write("To finish deleting the Telegram bot itself, open BotFather with /deletebot prefilled:\n");
-    }
-    this.prompts.write(`${TELEGRAM_BOTFATHER_DELETEBOT_URL}\n`);
-    this.prompts.write("Scan this QR code with your phone to open BotFather with /deletebot ready to send:\n\n");
+    this.writePanel("Telegram bot cleanup", [
+      "Telegram does not document any Bot API method that permanently deletes a bot.",
+      "The Fly deployment has been destroyed.",
+      config.telegramBotUsername
+        ? `To finish deleting @${config.telegramBotUsername}, open BotFather with /deletebot prefilled:`
+        : "To finish deleting the Telegram bot itself, open BotFather with /deletebot prefilled:",
+      TELEGRAM_BOTFATHER_DELETEBOT_URL,
+      "Scan this QR code with your phone to open BotFather with /deletebot ready to send:",
+    ]);
     try {
       const qr = await this.qrRenderer.render(TELEGRAM_BOTFATHER_DELETEBOT_URL);
       this.prompts.write(`${qr}\n`);
     } catch {
       this.prompts.write("(QR code unavailable in this terminal. Use the direct link above.)\n\n");
     }
-    this.prompts.write("If Telegram opens the chat without sending anything, tap Send to submit /deletebot.\n");
-    if (config.telegramBotUsername) {
-      this.prompts.write(`When BotFather asks which bot to delete, choose @${config.telegramBotUsername}.\n`);
-    }
-    this.prompts.write("Guide: https://core.telegram.org/bots#6-botfather\n");
+    this.writePanel("Telegram bot cleanup follow-up", [
+      "If Telegram opens the chat without sending anything, tap Send to submit /deletebot.",
+      ...(config.telegramBotUsername
+        ? [`When BotFather asks which bot to delete, choose @${config.telegramBotUsername}.`]
+        : []),
+      "Guide: https://core.telegram.org/bots#6-botfather",
+    ]);
   }
 
   private async collectAppName(envValue: string | undefined): Promise<string> {
@@ -989,10 +1066,13 @@ export class FlyDeployWizard implements DeployWizardPort {
       return suggestedAppName;
     }
 
-    this.prompts.write("Each deployment needs a unique name on Fly.io.\n");
-    this.prompts.write("This name is only for the server setup. People chatting with your agent will not see it.\n\n");
-    this.prompts.write(`Suggested: ${suggestedAppName}\n`);
-    this.prompts.write("Press Enter to use it, or type your own.\n\n");
+    this.writePanel("Deployment name", [
+      "Each deployment needs a unique name on Fly.io.",
+      "This name is only for the server setup. People chatting with your agent will not see it.",
+      "",
+      `Suggested: ${suggestedAppName}`,
+      "Press Enter to use it, or type your own.",
+    ]);
 
     while (true) {
       const answer = await this.prompts.ask(`Deployment name [${suggestedAppName}]: `);
@@ -1194,7 +1274,9 @@ export class FlyDeployWizard implements DeployWizardPort {
 
     if (orgs.length === 1) {
       if (this.prompts.isInteractive()) {
-        this.prompts.write(`Fly.io organization: ${orgs[0].name} (${orgs[0].slug})\n\n`);
+        this.writePanel("Fly organization", [
+          `Fly.io organization: ${orgs[0].name} (${orgs[0].slug})`,
+        ]);
       }
       return orgs[0].slug;
     }
@@ -1205,13 +1287,12 @@ export class FlyDeployWizard implements DeployWizardPort {
       );
     }
 
-    this.prompts.write("Which Fly.io organization should own this deployment?\n");
-    this.prompts.write("If you only use Fly personally, the Personal organization is usually the right choice.\n\n");
-    this.prompts.write("  #  Organization                Slug\n");
-    orgs.forEach((org, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${org.name.padEnd(26, " ")} ${org.slug}\n`);
-    });
-    this.prompts.write("\n");
+    this.writeChoiceSection(
+      "Fly organization",
+      "Which Fly.io organization should own this deployment?",
+      orgs.map((org, index) => `${String(index + 1).padStart(2, " ")}  ${org.name.padEnd(26, " ")} ${org.slug}`),
+      ["If you only use Fly personally, the Personal organization is usually the right choice."]
+    );
 
     const defaultIndex = Math.max(0, orgs.findIndex((org) => org.type?.toUpperCase() === "PERSONAL"));
     const selected = orgs[await this.chooseNumber(`Choose an organization [${defaultIndex + 1}]: `, orgs.length, defaultIndex + 1) - 1];
@@ -1232,23 +1313,21 @@ export class FlyDeployWizard implements DeployWizardPort {
       .map((area) => ({ area, options: regions.filter((region) => region.area === area) }))
       .filter((row) => row.options.length > 0);
 
-    this.prompts.write("Where are you (or most of your users) located?\n");
-    this.prompts.write("Choosing a closer server usually means faster responses.\n\n");
-    this.prompts.write("  #  Area            Locations\n");
-    areaRows.forEach((row, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${row.area.padEnd(15, " ")} ${String(row.options.length).padStart(2, " ")}\n`);
-    });
-    this.prompts.write("\n");
+    this.writeChoiceSection(
+      "Region",
+      "Where are you (or most of your users) located?",
+      areaRows.map((row, index) => `${String(index + 1).padStart(2, " ")}  ${row.area.padEnd(15, " ")} ${String(row.options.length).padStart(2, " ")} locations`),
+      ["Choosing a closer server usually means faster responses."]
+    );
 
     const defaultAreaIndex = Math.max(0, areaRows.findIndex((row) => row.options.some((option) => option.code === DEFAULT_REGION)));
     const selectedArea = areaRows[await this.chooseNumber(`Choose an area [${defaultAreaIndex + 1}]: `, areaRows.length, defaultAreaIndex + 1) - 1];
 
-    this.prompts.write(`\n${selectedArea.area} locations:\n\n`);
-    this.prompts.write("  #  Location                          Code\n");
-    selectedArea.options.forEach((region, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${region.name.padEnd(32, " ")} ${region.code}\n`);
-    });
-    this.prompts.write("\n");
+    this.writeChoiceSection(
+      `${selectedArea.area} locations`,
+      `${selectedArea.area} locations:`,
+      selectedArea.options.map((region, index) => `${String(index + 1).padStart(2, " ")}  ${region.name.padEnd(32, " ")} ${region.code}`)
+    );
 
     const defaultLocationIndex = Math.max(0, selectedArea.options.findIndex((region) => region.code === DEFAULT_REGION));
     const selectedLocation = selectedArea.options[await this.chooseNumber(`Choose a location [${defaultLocationIndex + 1}]: `, selectedArea.options.length, defaultLocationIndex + 1) - 1];
@@ -1309,12 +1388,12 @@ export class FlyDeployWizard implements DeployWizardPort {
     const options = await this.fetchVmOptions();
     const defaultIndex = Math.max(0, options.findIndex((option) => option.value === DEFAULT_VM_SIZE));
 
-    this.prompts.write("How powerful should your agent's server be?\n\n");
-    this.prompts.write("  #  Tier       Specs           Est. cost  Best for\n");
-    options.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.tier.padEnd(10, " ")} ${option.ramLabel.padEnd(14, " ")} ${option.costLabel.padEnd(10, " ")} ${option.bestFor}\n`);
-    });
-    this.prompts.write("\nPrices are estimates. Check current rates: https://fly.io/calculator\n\n");
+    this.writeChoiceSection(
+      "Server size",
+      "How powerful should your agent's server be?",
+      options.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${option.tier.padEnd(10, " ")} ${option.ramLabel.padEnd(14, " ")} ${option.costLabel.padEnd(10, " ")} ${option.bestFor}`),
+      ["Prices are estimates. Check current rates: https://fly.io/calculator"]
+    );
 
     const selected = options[await this.chooseNumber(`Choose a tier [${defaultIndex + 1}]: `, options.length, defaultIndex + 1) - 1];
     return selected.value;
@@ -1331,13 +1410,15 @@ export class FlyDeployWizard implements DeployWizardPort {
 
     const defaultIndex = Math.max(0, STATIC_VOLUME_OPTIONS.findIndex((option) => option.value === DEFAULT_VOLUME_SIZE));
 
-    this.prompts.write("How much storage should your agent have?\n");
-    this.prompts.write("This is where your agent saves conversations, memories, and files.\n\n");
-    this.prompts.write("  #  Size   Est. cost   Best for\n");
-    STATIC_VOLUME_OPTIONS.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${String(option.value).padStart(2, " ")} GB  ${option.costLabel.padEnd(10, " ")} ${option.bestFor}\n`);
-    });
-    this.prompts.write("\nPrices are estimates. Check current rates: https://fly.io/calculator\n\n");
+    this.writeChoiceSection(
+      "Storage",
+      "How much storage should your agent have?",
+      STATIC_VOLUME_OPTIONS.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${String(option.value).padStart(2, " ")} GB  ${option.costLabel.padEnd(10, " ")} ${option.bestFor}`),
+      [
+        "This is where your agent saves conversations, memories, and files.",
+        "Prices are estimates. Check current rates: https://fly.io/calculator",
+      ]
+    );
 
     const selected = STATIC_VOLUME_OPTIONS[await this.chooseNumber(`Choose a size [${defaultIndex + 1}]: `, STATIC_VOLUME_OPTIONS.length, defaultIndex + 1) - 1];
     return selected.value;
@@ -1423,13 +1504,35 @@ export class FlyDeployWizard implements DeployWizardPort {
       return this.collectOpenRouterAccess(input.model, input.reasoningEffort, input.sttProvider, input.sttModel);
     }
 
-    this.prompts.write("How should Hermes access AI models?\n");
-    this.prompts.write("You can use your own OpenRouter API key, sign in with your ChatGPT subscription through OpenAI Codex, use your Nous Portal subscription, sign in with Anthropic OAuth, or use your Z.AI GLM API key.\n\n");
-    this.prompts.write("   1  OpenRouter API key         Bring your own API key and choose from OpenRouter's model catalog\n");
-    this.prompts.write("   2  ChatGPT subscription       Sign in with ChatGPT / OpenAI through OpenAI Codex\n\n");
-    this.prompts.write("   3  Nous Portal subscription   Sign in with your Nous Portal account and use Portal models\n\n");
-    this.prompts.write("   4  Anthropic subscription    Sign in with Claude / Anthropic through OAuth\n\n");
-    this.prompts.write("   5  Z.AI GLM API key          Use your Z.AI key and detect the matching GLM endpoint, including Coding Plan\n\n");
+    this.writeChoiceSection(
+      "AI access",
+      "How should Hermes access AI models?",
+      renderDeployChoiceOptions([
+        {
+          label: "OpenRouter API key",
+          description: "Bring your own API key and choose from OpenRouter's model catalog",
+        },
+        {
+          label: "ChatGPT subscription",
+          description: "Sign in with ChatGPT / OpenAI through OpenAI Codex",
+        },
+        {
+          label: "Nous Portal subscription",
+          description: "Sign in with your Nous Portal account and use Portal models",
+        },
+        {
+          label: "Anthropic subscription",
+          description: "Sign in with Claude / Anthropic through OAuth",
+        },
+        {
+          label: "Z.AI GLM API key",
+          description: "Use your Z.AI key and detect the matching GLM endpoint, including Coding Plan",
+        },
+      ], 1),
+      [
+        "You can use your own OpenRouter API key, sign in with your ChatGPT subscription through OpenAI Codex, use your Nous Portal subscription, sign in with Anthropic OAuth, or use your Z.AI GLM API key.",
+      ]
+    );
 
     const selection = await this.chooseNumber("Choose an option [1]: ", 5, 1);
     if (selection === 2) {
@@ -1623,9 +1726,15 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     if (stored.source === "hermes") {
-      this.prompts.write("I found an existing Hermes OpenAI Codex login on this machine.\n\n");
-      this.prompts.write("   1  Reuse it        Use the saved ChatGPT subscription login for this deployment\n");
-      this.prompts.write("   2  Sign in again   Start a fresh OpenAI Codex login now\n\n");
+      this.writeChoiceSection(
+        "OpenAI Codex login",
+        "Reuse the saved login or start a fresh sign-in?",
+        renderDeployChoiceOptions([
+          { label: "Reuse it", description: "Use the saved ChatGPT subscription login for this deployment" },
+          { label: "Sign in again", description: "Start a fresh OpenAI Codex login now" },
+        ], 1),
+        ["I found an existing Hermes OpenAI Codex login on this machine."]
+      );
       const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
       if (choice === 1) {
         return stored;
@@ -1633,10 +1742,18 @@ export class FlyDeployWizard implements DeployWizardPort {
       return this.runCodexDeviceCodeLoginWithRetry();
     }
 
-    this.prompts.write("I found an existing Codex login on this machine.\n");
-    this.prompts.write("Hermes can import it into its own auth store for this deployment.\n\n");
-    this.prompts.write("   1  Import and use it   Reuse the saved Codex login\n");
-    this.prompts.write("   2  Sign in again       Start a fresh OpenAI Codex login now\n\n");
+    this.writeChoiceSection(
+      "OpenAI Codex login",
+      "Import the saved login or start a fresh sign-in?",
+      renderDeployChoiceOptions([
+        { label: "Import and use it", description: "Reuse the saved Codex login" },
+        { label: "Sign in again", description: "Start a fresh OpenAI Codex login now" },
+      ], 1),
+      [
+        "I found an existing Codex login on this machine.",
+        "Hermes can import it into its own auth store for this deployment.",
+      ]
+    );
     const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
     if (choice === 1) {
       return stored;
@@ -1662,9 +1779,15 @@ export class FlyDeployWizard implements DeployWizardPort {
       return this.runNousDeviceCodeLoginWithRetry();
     }
 
-    this.prompts.write("I found an existing Hermes Nous Portal login on this machine.\n\n");
-    this.prompts.write("   1  Reuse it        Use the saved Nous Portal login for this deployment\n");
-    this.prompts.write("   2  Sign in again   Start a fresh Nous Portal login now\n\n");
+    this.writeChoiceSection(
+      "Nous Portal login",
+      "Reuse the saved login or start a fresh sign-in?",
+      renderDeployChoiceOptions([
+        { label: "Reuse it", description: "Use the saved Nous Portal login for this deployment" },
+        { label: "Sign in again", description: "Start a fresh Nous Portal login now" },
+      ], 1),
+      ["I found an existing Hermes Nous Portal login on this machine."]
+    );
     const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
     if (choice === 1) {
       return stored;
@@ -1691,9 +1814,15 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     if (stored.source === "hermes") {
-      this.prompts.write("I found an existing Hermes Anthropic OAuth login on this machine.\n\n");
-      this.prompts.write("   1  Reuse it        Use the saved Anthropic OAuth login for this deployment\n");
-      this.prompts.write("   2  Sign in again   Start a fresh Anthropic OAuth login now\n\n");
+      this.writeChoiceSection(
+        "Anthropic login",
+        "Reuse the saved login or start a fresh sign-in?",
+        renderDeployChoiceOptions([
+          { label: "Reuse it", description: "Use the saved Anthropic OAuth login for this deployment" },
+          { label: "Sign in again", description: "Start a fresh Anthropic OAuth login now" },
+        ], 1),
+        ["I found an existing Hermes Anthropic OAuth login on this machine."]
+      );
       const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
       if (choice === 1) {
         return stored;
@@ -1701,10 +1830,18 @@ export class FlyDeployWizard implements DeployWizardPort {
       return this.runAnthropicOauthLoginWithRetry();
     }
 
-    this.prompts.write("I found existing Claude Code credentials on this machine.\n");
-    this.prompts.write("Hermes can reuse them for this deployment without asking for an API key.\n\n");
-    this.prompts.write("   1  Reuse them      Import the saved Claude Code login\n");
-    this.prompts.write("   2  Sign in again   Start a fresh Anthropic OAuth login now\n\n");
+    this.writeChoiceSection(
+      "Anthropic login",
+      "Reuse the saved login or start a fresh sign-in?",
+      renderDeployChoiceOptions([
+        { label: "Reuse them", description: "Import the saved Claude Code login" },
+        { label: "Sign in again", description: "Start a fresh Anthropic OAuth login now" },
+      ], 1),
+      [
+        "I found existing Claude Code credentials on this machine.",
+        "Hermes can reuse them for this deployment without asking for an API key.",
+      ]
+    );
     const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
     if (choice === 1) {
       return stored;
@@ -1714,18 +1851,29 @@ export class FlyDeployWizard implements DeployWizardPort {
 
   private async runCodexDeviceCodeLoginWithRetry(): Promise<ResolvedCodexAuth> {
     while (true) {
-      this.prompts.write("If device-code sign-in has trouble in a remote or headless terminal, open:\n");
-      this.prompts.write(`${CHATGPT_SECURITY_SETTINGS_URL}\n`);
-      this.prompts.write("Then enable \"Enable device code authorization for Codex\" under Secure sign in with ChatGPT.\n\n");
+      this.writeCopyableSection(
+        "OpenAI Codex sign-in help",
+        "If device-code sign-in has trouble in a remote or headless terminal, open:",
+        [CHATGPT_SECURITY_SETTINGS_URL],
+        ['Then enable "Enable device code authorization for Codex" under Secure sign in with ChatGPT.']
+      );
 
       try {
         return await this.codexAuth.runDeviceCodeLogin(this.prompts);
       } catch (error) {
         const message = error instanceof Error ? error.message : "OpenAI Codex sign-in failed.";
-        this.prompts.write(`${message}\n`);
-        this.prompts.write("If you're using ChatGPT OAuth here, check the ChatGPT security settings link above and retry.\n\n");
-        this.prompts.write("   1  Retry sign-in   Start the OpenAI Codex device-code flow again\n");
-        this.prompts.write("   2  Cancel setup    Stop this deployment wizard\n\n");
+        this.writeChoiceSection(
+          "OpenAI Codex sign-in failed",
+          "What should Hermes do next?",
+          renderDeployChoiceOptions([
+            { label: "Retry sign-in", description: "Start the OpenAI Codex device-code flow again" },
+            { label: "Cancel setup", description: "Stop this deployment wizard" },
+          ], 1),
+          [
+            message,
+            "If you're using ChatGPT OAuth here, check the ChatGPT security settings link above and retry.",
+          ]
+        );
 
         const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
         if (choice === 2) {
@@ -1741,9 +1889,15 @@ export class FlyDeployWizard implements DeployWizardPort {
         return await this.nousAuth.runDeviceCodeLogin(this.prompts);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Nous Portal sign-in failed.";
-        this.prompts.write(`${message}\n\n`);
-        this.prompts.write("   1  Retry sign-in   Start the Nous Portal device-code flow again\n");
-        this.prompts.write("   2  Cancel setup    Stop this deployment wizard\n\n");
+        this.writeChoiceSection(
+          "Nous Portal sign-in failed",
+          "What should Hermes do next?",
+          renderDeployChoiceOptions([
+            { label: "Retry sign-in", description: "Start the Nous Portal device-code flow again" },
+            { label: "Cancel setup", description: "Stop this deployment wizard" },
+          ], 1),
+          [message]
+        );
 
         const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
         if (choice === 2) {
@@ -1759,9 +1913,15 @@ export class FlyDeployWizard implements DeployWizardPort {
         return await this.anthropicAuth.runOauthLogin(this.prompts);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Anthropic OAuth sign-in failed.";
-        this.prompts.write(`${message}\n\n`);
-        this.prompts.write("   1  Retry sign-in   Start the Anthropic OAuth flow again\n");
-        this.prompts.write("   2  Cancel setup    Stop this deployment wizard\n\n");
+        this.writeChoiceSection(
+          "Anthropic sign-in failed",
+          "What should Hermes do next?",
+          renderDeployChoiceOptions([
+            { label: "Retry sign-in", description: "Start the Anthropic OAuth flow again" },
+            { label: "Cancel setup", description: "Stop this deployment wizard" },
+          ], 1),
+          [message]
+        );
 
         const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
         if (choice === 2) {
@@ -1781,12 +1941,14 @@ export class FlyDeployWizard implements DeployWizardPort {
       return models[0]?.value ?? "gpt-5.3-codex";
     }
 
-    this.prompts.write("Which OpenAI Codex model should your agent use?\n\n");
-    models.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}\n`);
-    });
+    const optionLines = models.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}`);
     const manualIndex = models.length + 1;
-    this.prompts.write(`  ${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually\n\n`);
+    optionLines.push(`${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually`);
+    this.writeChoiceSection(
+      "OpenAI Codex model",
+      "Which OpenAI Codex model should your agent use?",
+      optionLines
+    );
 
     const selectedIndex = await this.chooseNumber("Choose a model [1]: ", manualIndex, 1);
     if (selectedIndex === manualIndex) {
@@ -1828,12 +1990,14 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    this.prompts.write("Which Nous Portal model should your agent use?\n\n");
-    models.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}\n`);
-    });
+    const optionLines = models.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}`);
     const manualIndex = models.length + 1;
-    this.prompts.write(`  ${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually\n\n`);
+    optionLines.push(`${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually`);
+    this.writeChoiceSection(
+      "Nous Portal model",
+      "Which Nous Portal model should your agent use?",
+      optionLines
+    );
 
     const selectedIndex = await this.chooseNumber("Choose a model [1]: ", manualIndex, 1);
     if (selectedIndex === manualIndex) {
@@ -1859,12 +2023,14 @@ export class FlyDeployWizard implements DeployWizardPort {
       return models[0]?.value ?? "claude-sonnet-4-6";
     }
 
-    this.prompts.write("Which Anthropic model should your agent use?\n\n");
-    models.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}\n`);
-    });
+    const optionLines = models.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}`);
     const manualIndex = models.length + 1;
-    this.prompts.write(`  ${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually\n\n`);
+    optionLines.push(`${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually`);
+    this.writeChoiceSection(
+      "Anthropic model",
+      "Which Anthropic model should your agent use?",
+      optionLines
+    );
 
     const selectedIndex = await this.chooseNumber("Choose a model [1]: ", manualIndex, 1);
     if (selectedIndex === manualIndex) {
@@ -1891,14 +2057,16 @@ export class FlyDeployWizard implements DeployWizardPort {
       return endpoint.defaultModel || models[0]?.value || "glm-4.7";
     }
 
-    this.prompts.write("Which Z.AI GLM model should your agent use?\n\n");
-    models.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}\n`);
-    });
+    const optionLines = models.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}`);
     const manualIndex = models.length + 1;
-    this.prompts.write(`  ${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually\n\n`);
+    optionLines.push(`${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually`);
 
     const defaultIndex = Math.max(0, models.findIndex((option) => option.value === endpoint.defaultModel)) + 1;
+    this.writeChoiceSection(
+      "Z.AI GLM model",
+      "Which Z.AI GLM model should your agent use?",
+      optionLines
+    );
     const selectedIndex = await this.chooseNumber(`Choose a model [${defaultIndex}]: `, manualIndex, defaultIndex);
     if (selectedIndex === manualIndex) {
       this.prompts.write("GLM model IDs look like glm-4.7 or glm-5.\n\n");
@@ -2087,8 +2255,10 @@ export class FlyDeployWizard implements DeployWizardPort {
       throw new Error(`${envKey} is required in non-interactive mode. Run from a terminal to use the guided wizard or export ${envKey} first.`);
     }
 
-    this.prompts.write(`Get your OpenRouter API key at: ${OPENROUTER_KEY_URL}\n`);
-    this.prompts.write("This key lets your deployed agent call the AI model you choose.\n\n");
+    this.writePanel("OpenRouter API key", [
+      `Get your OpenRouter API key at: ${OPENROUTER_KEY_URL}`,
+      "This key lets your deployed agent call the AI model you choose.",
+    ]);
     while (true) {
       const answer = await this.prompts.askSecret("OpenRouter API key (required): ");
       const apiKey = answer.trim();
@@ -2129,8 +2299,10 @@ export class FlyDeployWizard implements DeployWizardPort {
       throw new Error("GLM_API_KEY is required in non-interactive mode. Run from a terminal to use the guided wizard or export GLM_API_KEY first.");
     }
 
-    this.prompts.write("Get your Z.AI API key through your GLM plan.\n");
-    this.prompts.write("Hermes will detect the matching Z.AI GLM endpoint for this key, including Coding Plan endpoints.\n\n");
+    this.writePanel("Z.AI GLM API key", [
+      "Get your Z.AI API key through your GLM plan.",
+      "Hermes will detect the matching Z.AI GLM endpoint for this key, including Coding Plan endpoints.",
+    ]);
     while (true) {
       const answer = await this.prompts.askSecret("Z.AI GLM API key (required): ");
       const apiKey = answer.trim();
@@ -2240,12 +2412,12 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     const defaultIndex = Math.max(0, support.allowedEfforts.findIndex((effort) => effort === support.defaultEffort));
-    this.prompts.write("How much extra reasoning effort should Hermes use with this model?\n");
-    this.prompts.write("Higher effort can help on harder tasks, but it may respond slower and cost more.\n\n");
-    support.allowedEfforts.forEach((effort, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${this.describeReasoningEffort(effort)}\n`);
-    });
-    this.prompts.write("\n");
+    this.writeChoiceSection(
+      "Reasoning",
+      "How much extra reasoning effort should Hermes use with this model?",
+      support.allowedEfforts.map((effort, index) => `${String(index + 1).padStart(2, " ")}  ${this.describeReasoningEffort(effort)}`),
+      ["Higher effort can help on harder tasks, but it may respond slower and cost more."]
+    );
 
     const selectedIndex = await this.chooseNumber(
       `Choose a reasoning level [${defaultIndex + 1}]: `,
@@ -2259,24 +2431,26 @@ export class FlyDeployWizard implements DeployWizardPort {
     const providers = this.buildProviderOptions(catalog);
     const defaultIndex = Math.max(0, providers.findIndex((provider) => provider.key === "anthropic"));
 
-    this.prompts.write("Which AI provider do you want to use through OpenRouter?\n");
-    this.prompts.write("You'll pick a specific model from that provider next.\n\n");
-    providers.forEach((provider, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${provider.label.padEnd(12, " ")} ${provider.description}\n`);
-    });
-    this.prompts.write("\n");
+    this.writeChoiceSection(
+      "OpenRouter provider",
+      "Which AI provider do you want to use through OpenRouter?",
+      providers.map((provider, index) => `${String(index + 1).padStart(2, " ")}  ${provider.label.padEnd(12, " ")} ${provider.description}`),
+      ["You'll pick a specific model from that provider next."]
+    );
 
     const selectedIndex = await this.chooseNumber(`Choose a provider [${defaultIndex + 1}]: `, providers.length, defaultIndex + 1);
     return providers[selectedIndex - 1];
   }
 
   private async collectProviderModelChoice(provider: ProviderOption, models: ModelOption[]): Promise<string> {
-    this.prompts.write(`Which ${provider.label} model should your agent use?\n\n`);
-    models.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}\n`);
-    });
+    const optionLines = models.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}`);
     const manualIndex = models.length + 1;
-    this.prompts.write(`  ${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually\n\n`);
+    optionLines.push(`${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually`);
+    this.writeChoiceSection(
+      `${provider.label} model`,
+      `Which ${provider.label} model should your agent use?`,
+      optionLines
+    );
 
     const selectedIndex = await this.chooseNumber(`Choose a model [1]: `, manualIndex, 1);
     if (selectedIndex === manualIndex) {
@@ -2375,13 +2549,18 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private async collectMessagingPlatformsChoice(): Promise<string[]> {
-    this.prompts.write("Which messaging platforms do you want to connect now?\n");
-    this.prompts.write("You can connect more than one. Enter numbers separated by commas.\n\n");
-    this.prompts.write("   1  Telegram   Chat with your agent in Telegram\n");
-    this.prompts.write("   2  Discord    Chat with your agent in Discord\n");
-    this.prompts.write("   3  Slack      Chat with your agent in Slack\n");
-    this.prompts.write("   4  WhatsApp   Chat with your agent in WhatsApp\n");
-    this.prompts.write("   5  Skip for now\n\n");
+    this.writeChoiceSection(
+      "Messaging",
+      "Which messaging platforms do you want to connect now?",
+      renderDeployChoiceOptions([
+        { label: "Telegram", description: "Chat with your agent in Telegram" },
+        { label: "Discord", description: "Chat with your agent in Discord" },
+        { label: "Slack", description: "Chat with your agent in Slack" },
+        { label: "WhatsApp", description: "Chat with your agent in WhatsApp" },
+        { label: "Skip for now" },
+      ], 5),
+      ["You can connect more than one. Enter numbers separated by commas."]
+    );
 
     while (true) {
       const answer = (await this.prompts.ask("Choose platform numbers [5]: ")).trim();
@@ -2440,19 +2619,26 @@ export class FlyDeployWizard implements DeployWizardPort {
       return { botToken: "" };
     }
 
-    this.prompts.write("Do you want to connect Telegram now?\n");
-    this.prompts.write("You can skip this and set it up later if you prefer.\n\n");
-    this.prompts.write("   1  Telegram now   Chat with your agent in Telegram\n");
-    this.prompts.write("   2  Skip for now   Finish deployment first\n\n");
+    this.writeChoiceSection(
+      "Telegram",
+      "Do you want to connect Telegram now?",
+      renderDeployChoiceOptions([
+        { label: "Telegram now", description: "Chat with your agent in Telegram" },
+        { label: "Skip for now", description: "Finish deployment first" },
+      ], 2),
+      ["You can skip this and set it up later if you prefer."]
+    );
 
     const choice = await this.chooseNumber("Choose an option [2]: ", 2, 2);
     if (choice === 2) {
       return { botToken: "" };
     }
 
-    this.prompts.write("Create your Telegram bot with BotFather, then paste the bot token here.\n");
-    this.prompts.write(`Open BotFather directly with /newbot prefilled: ${TELEGRAM_BOTFATHER_NEWBOT_URL}\n`);
-    this.prompts.write("Scan this QR code with your phone to open BotFather with /newbot ready to send:\n\n");
+    this.writePanel("Telegram setup", [
+      "Create your Telegram bot with BotFather, then paste the bot token here.",
+      `Open BotFather directly with /newbot prefilled: ${TELEGRAM_BOTFATHER_NEWBOT_URL}`,
+      "Scan this QR code with your phone to open BotFather with /newbot ready to send:",
+    ]);
     try {
       const qr = await this.qrRenderer.render(TELEGRAM_BOTFATHER_NEWBOT_URL);
       this.prompts.write(`${qr}\n`);
@@ -2524,12 +2710,19 @@ export class FlyDeployWizard implements DeployWizardPort {
       return { botToken: "" };
     }
 
-    this.prompts.write("\nConnect Discord\n");
-    this.prompts.write("Hermes needs your own Discord bot token.\n");
-    this.prompts.write("If you already have a Discord bot token, you can paste it now.\n");
-    this.prompts.write("If not, hermes-fly can walk you through creating one in the Discord Developer Portal.\n\n");
-    this.prompts.write("   1  I already have a bot token  Paste it now\n");
-    this.prompts.write("   2  Help me create one          Open the Developer Portal and walk me through it\n\n");
+    this.writeChoiceSection(
+      "Discord",
+      "Connect Discord",
+      renderDeployChoiceOptions([
+        { label: "I already have a bot token", description: "Paste it now" },
+        { label: "Help me create one", description: "Open the Developer Portal and walk me through it" },
+      ], 2),
+      [
+        "Hermes needs your own Discord bot token.",
+        "If you already have a Discord bot token, you can paste it now.",
+        "If not, hermes-fly can walk you through creating one in the Discord Developer Portal.",
+      ]
+    );
 
     const setupPath = await this.chooseNumber("Choose an option [2]: ", 2, 2);
     if (setupPath === 2) {
@@ -2599,10 +2792,11 @@ export class FlyDeployWizard implements DeployWizardPort {
       return { botToken: "", appToken: "" };
     }
 
-    this.prompts.write("\nConnect Slack\n");
-    this.prompts.write("Open your Slack app and copy both the bot token and the app token.\n");
-    this.prompts.write("Hermes uses Socket Mode for Slack, so the app token is required.\n");
-    this.prompts.write(`Slack Apps: ${SLACK_APPS_URL}\n\n`);
+    this.writePanel("Slack", [
+      "Open your Slack app and copy both the bot token and the app token.",
+      "Hermes uses Socket Mode for Slack, so the app token is required.",
+      `Slack Apps: ${SLACK_APPS_URL}`,
+    ]);
 
     while (true) {
       const botToken = (await this.prompts.askSecret("Slack bot token (required): ")).trim();
@@ -2668,17 +2862,30 @@ export class FlyDeployWizard implements DeployWizardPort {
       return { enabled: false, mode: "bot" };
     }
 
-    this.prompts.write("\nConnect WhatsApp\n");
-    this.prompts.write("WhatsApp has two setup styles.\n");
-    this.prompts.write("Bot mode gives Hermes its own WhatsApp number, so other people can message that number like a normal contact.\n");
-    this.prompts.write("Self-chat uses your own WhatsApp account only in the built-in 'Message yourself' chat.\n");
-    this.prompts.write("Hermes will reply there as you, and it will not message your other contacts.\n\n");
-    this.prompts.write("If you are just testing for yourself, pick Self-chat.\n");
-    this.prompts.write("If you want other people to talk to Hermes, pick Bot mode.\n");
-    this.prompts.write("For Bot mode, a dedicated WhatsApp number is the recommended setup.\n");
-    this.prompts.write("Hermes will finish WhatsApp pairing after deploy by opening the remote WhatsApp setup flow in this terminal.\n\n");
-    this.prompts.write("   1  Bot mode      Recommended when other people should message Hermes through its own number\n");
-    this.prompts.write("   2  Self-chat     Recommended for safe personal testing in your own Message yourself chat\n\n");
+    this.writeChoiceSection(
+      "WhatsApp",
+      "Connect WhatsApp",
+      renderDeployChoiceOptions([
+        {
+          label: "Bot mode",
+          description: "Recommended when other people should message Hermes through its own number",
+        },
+        {
+          label: "Self-chat",
+          description: "Recommended for safe personal testing in your own Message yourself chat",
+        },
+      ], 1),
+      [
+        "WhatsApp has two setup styles.",
+        "Bot mode gives Hermes its own WhatsApp number, so other people can message that number like a normal contact.",
+        "Self-chat uses your own WhatsApp account only in the built-in 'Message yourself' chat.",
+        "Hermes will reply there as you, and it will not message your other contacts.",
+        "If you are just testing for yourself, pick Self-chat.",
+        "If you want other people to talk to Hermes, pick Bot mode.",
+        "For Bot mode, a dedicated WhatsApp number is the recommended setup.",
+        "Hermes will finish WhatsApp pairing after deploy by opening the remote WhatsApp setup flow in this terminal.",
+      ]
+    );
 
     const modeChoice = await this.chooseNumber("Choose a mode [1]: ", 2, 1);
     const mode: "bot" | "self-chat" = modeChoice === 2 ? "self-chat" : "bot";
@@ -2707,9 +2914,11 @@ export class FlyDeployWizard implements DeployWizardPort {
     skipSetup?: boolean;
     takeoverAppNames?: string[];
   }> {
-    this.prompts.write("\nSelf-chat only works in your own built-in Message yourself chat.\n");
-    this.prompts.write("hermes-fly will detect the linked WhatsApp account from the QR pairing step and use that as the self-chat identity.\n");
-    this.prompts.write("You do not need to enter your phone number here.\n");
+    this.writePanel("WhatsApp self-chat", [
+      "Self-chat only works in your own built-in Message yourself chat.",
+      "hermes-fly will detect the linked WhatsApp account from the QR pairing step and use that as the self-chat identity.",
+      "You do not need to enter your phone number here.",
+    ]);
     return {
       completeAccessDuringSetup: true,
     };
@@ -2719,13 +2928,21 @@ export class FlyDeployWizard implements DeployWizardPort {
     options: { allowAnyone: boolean; appName: string; mode: "bot" | "self-chat" }
   ): Promise<{ allowedUsers?: string; completeAccessDuringSetup?: boolean; skipSetup?: boolean; takeoverAppNames?: string[] }> {
     while (true) {
-      this.prompts.write("\nWho should be able to talk to your WhatsApp setup?\n\n");
-      this.prompts.write("   1  Only me          Enter your own WhatsApp number now. Hermes will use it after pairing.\n");
-      this.prompts.write("   2  Specific people  Enter the phone numbers that should be allowed.\n\n");
+      this.writeChoiceSection(
+        "WhatsApp access",
+        "Who should be able to talk to your WhatsApp setup?",
+        renderDeployChoiceOptions([
+          { label: "Only me", description: "Enter your own WhatsApp number now. Hermes will use it after pairing." },
+          { label: "Specific people", description: "Enter the phone numbers that should be allowed." },
+        ], 1),
+      );
 
       const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
       if (choice === 1) {
-        this.prompts.write("Enter your own WhatsApp number now. You can paste it with +, spaces, or dashes — hermes-fly will normalize it.\n");
+        this.writePanel("WhatsApp number", [
+          "Enter your own WhatsApp number now.",
+          "You can paste it with +, spaces, or dashes - hermes-fly will normalize it.",
+        ]);
         while (true) {
           const answer = (await this.prompts.ask("Your WhatsApp number: ")).trim();
           try {
@@ -2823,19 +3040,23 @@ export class FlyDeployWizard implements DeployWizardPort {
   private async resolveWhatsAppConflict(
     conflicts: SavedDeploymentEntry[]
   ): Promise<{ action: "retry" | "skip" | "takeover"; appNames: string[] }> {
-    if (conflicts.length === 1) {
-      this.prompts.write(`\nThis phone number still appears tied with deployment ${conflicts[0].name}:\n`);
-    } else {
-      this.prompts.write("\nThis phone number still appears tied with these deployments:\n");
-    }
-    conflicts.forEach((entry) => {
-      this.prompts.write(`  - ${entry.name}\n`);
-    });
-    this.prompts.write("\nUsing the same personal WhatsApp number in more than one Hermes deployment can make setup stall or move the linked session away from the older deployment.\n");
-    this.prompts.write("If you want this new deployment to own the number, hermes-fly can disconnect WhatsApp from the deployment above before pairing.\n\n");
-    this.prompts.write("   1  Use a different number   Go back and enter another WhatsApp number\n");
-    this.prompts.write("   2  Skip WhatsApp for now    Finish this deployment without WhatsApp\n");
-    this.prompts.write("   3  Take over this number    Disconnect WhatsApp from the deployment above, then pair here\n\n");
+    this.writeChoiceSection(
+      "WhatsApp number conflict",
+      conflicts.length === 1
+        ? `This phone number still appears tied with deployment ${conflicts[0]?.name}:`
+        : "This phone number still appears tied with these deployments:",
+      renderDeployChoiceOptions([
+        { label: "Use a different number", description: "Go back and enter another WhatsApp number" },
+        { label: "Skip WhatsApp for now", description: "Finish this deployment without WhatsApp" },
+        { label: "Take over this number", description: "Disconnect WhatsApp from the deployment above, then pair here" },
+      ], 1),
+      [
+        ...conflicts.map((entry) => `- ${entry.name}`),
+        "",
+        "Using the same personal WhatsApp number in more than one Hermes deployment can make setup stall or move the linked session away from the older deployment.",
+        "If you want this new deployment to own the number, hermes-fly can disconnect WhatsApp from the deployment above before pairing.",
+      ]
+    );
 
     const choice = await this.chooseNumber("Choose an option [1]: ", 3, 1);
     if (choice === 1) {
@@ -2933,15 +3154,19 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   ): Promise<{ allowedUsers?: string; usePairing?: boolean; allowAllUsers?: boolean }> {
     while (true) {
-      this.prompts.write(`\nWho should be able to talk to your ${platformLabel} bot?\n\n`);
-      this.prompts.write("   1  Only me          Just you. Hermes will use DM pairing after deploy.\n");
-      this.prompts.write("   2  Specific people  You and other approved users.\n");
       const canOfferAnyone = options.allowAnyone && input.allowOpen;
+      const choiceOptions = [
+        { label: "Only me", description: "Just you. Hermes will use DM pairing after deploy." },
+        { label: "Specific people", description: "You and other approved users." },
+      ];
       if (canOfferAnyone) {
-        this.prompts.write("   3  Anyone           No restrictions. Not recommended for most setups.\n\n");
-      } else {
-        this.prompts.write("\n");
+        choiceOptions.push({ label: "Anyone", description: "No restrictions. Not recommended for most setups." });
       }
+      this.writeChoiceSection(
+        `${platformLabel} access`,
+        `Who should be able to talk to your ${platformLabel} bot?`,
+        renderDeployChoiceOptions(choiceOptions, 1),
+      );
 
       const choice = await this.chooseNumber("Choose an option [1]: ", canOfferAnyone ? 3 : 2, 1);
       if (choice === 1) {
@@ -2964,43 +3189,47 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private async guideDiscordBotCreation(): Promise<void> {
-    this.prompts.write("Discord Developer Portal\n");
-    this.prompts.write(`${DISCORD_DEVELOPER_PORTAL_URL}\n\n`);
-    this.prompts.write("Do these steps in order:\n");
-    this.prompts.write("  1. Click New Application\n");
-    this.prompts.write("  2. Give it a name you will recognize\n");
-    this.prompts.write("  3. Open Bot in the left sidebar\n");
-    this.prompts.write("  4. Click Add Bot\n");
-    this.prompts.write("  5. Click Reset Token, then Copy\n\n");
+    this.writePanel("Discord Developer Portal", [
+      DISCORD_DEVELOPER_PORTAL_URL,
+      "Do these steps in order:",
+      "1. Click New Application",
+      "2. Give it a name you will recognize",
+      "3. Open Bot in the left sidebar",
+      "4. Click Add Bot",
+      "5. Click Reset Token, then Copy",
+    ]);
     await this.tryOpenBrowser(DISCORD_DEVELOPER_PORTAL_URL);
     await this.prompts.pause("Press Enter after you have copied the Discord bot token. ");
   }
 
   private writeDiscordTokenTroubleshooting(validation: { reason: string; error?: string }): void {
-    this.prompts.write("Discord could not log in with that bot token.\n");
-    this.prompts.write("Common causes:\n");
-    this.prompts.write("  - you copied Client Secret instead of Bot Token\n");
-    this.prompts.write("  - the bot has not been added yet in the Bot tab\n");
-    this.prompts.write("  - the token was regenerated and the old one no longer works\n");
-    this.prompts.write("  - extra spaces or line breaks were pasted\n");
-    if (validation.reason === "network") {
-      this.prompts.write("  - your internet connection or Discord was temporarily unavailable\n");
-    }
-    this.prompts.write(`Discord Developer Portal: ${DISCORD_DEVELOPER_PORTAL_URL}\n`);
-    if (validation.error) {
-      this.prompts.write(`Details: ${validation.error}\n`);
-    }
+    this.writePanel("Discord token troubleshooting", [
+      "Discord could not log in with that bot token.",
+      "Common causes:",
+      "- you copied Client Secret instead of Bot Token",
+      "- the bot has not been added yet in the Bot tab",
+      "- the token was regenerated and the old one no longer works",
+      "- extra spaces or line breaks were pasted",
+      ...(validation.reason === "network"
+        ? ["- your internet connection or Discord was temporarily unavailable"]
+        : []),
+      `Discord Developer Portal: ${DISCORD_DEVELOPER_PORTAL_URL}`,
+      ...(validation.error ? [`Details: ${validation.error}`] : []),
+    ]);
   }
 
   private async showDiscordInvite(inviteUrl: string): Promise<void> {
-    this.prompts.write("Invite the bot to the Discord server where you want to chat with Hermes.\n");
-    this.prompts.write(`Invite URL: ${inviteUrl}\n`);
     const opened = await this.tryOpenBrowser(inviteUrl);
-    if (opened) {
-      this.prompts.write("I opened the Discord invite link in your browser.\n");
-    } else {
-      this.prompts.write("If the browser did not open, copy the invite URL above.\n");
-    }
+    this.writeCopyableSection(
+      "Discord invite",
+      "Invite the bot to the Discord server where you want to chat with Hermes.",
+      [`Invite URL: ${inviteUrl}`],
+      [
+        opened
+          ? "I opened the Discord invite link in your browser."
+          : "If the browser did not open, copy the invite URL above.",
+      ]
+    );
     try {
       const qr = await this.qrRenderer.render(inviteUrl);
       this.prompts.write("Scan this QR code to open the Discord invite on another device:\n\n");
@@ -3162,42 +3391,43 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private async confirmConfig(config: DeployConfig, messagingSetup: MessagingSetup): Promise<void> {
-    this.prompts.write("\nReview your setup\n");
-    this.prompts.write(`  Fly organization: ${config.orgSlug}\n`);
-    this.prompts.write(`  Deployment name: ${config.appName}\n`);
-    this.prompts.write(`  Location:        ${config.region}\n`);
-    this.prompts.write(`  Server size:     ${this.describeVmSize(config.vmSize)}\n`);
-    this.prompts.write(`  Storage:         ${config.volumeSize} GB\n`);
-    this.prompts.write(`  AI access:       ${this.describeAiAccess(config.provider)}\n`);
-    this.prompts.write(`  AI model:        ${this.describeModel(config.model)}\n`);
+    const entries: Array<[string, string]> = [
+      ["Fly organization", config.orgSlug],
+      ["Deployment name", config.appName],
+      ["Location", config.region],
+      ["Server size", this.describeVmSize(config.vmSize)],
+      ["Storage", `${config.volumeSize} GB`],
+      ["AI access", this.describeAiAccess(config.provider)],
+      ["AI model", this.describeModel(config.model)],
+    ];
     if (config.reasoningEffort) {
-      this.prompts.write(`  Reasoning:       ${config.reasoningEffort}\n`);
+      entries.push(["Reasoning", config.reasoningEffort]);
     }
-    if (messagingSetup.platforms.length > 0) {
-      this.prompts.write(`  Messaging:       ${messagingSetup.platforms.join(", ")}\n`);
-    } else {
-      this.prompts.write("  Messaging:       skip for now\n");
-    }
+    entries.push([
+      "Messaging",
+      messagingSetup.platforms.length > 0 ? messagingSetup.platforms.join(", ") : "skip for now",
+    ]);
     if (config.botToken) {
-      this.prompts.write(`  Telegram:        ${this.describeTelegramBot(messagingSetup.telegram ?? { botToken: config.botToken })}\n`);
-      this.prompts.write(`  Telegram access: ${this.describeTelegramAccess(config)}\n`);
+      entries.push(["Telegram", this.describeTelegramBot(messagingSetup.telegram ?? { botToken: config.botToken })]);
+      entries.push(["Telegram access", this.describeTelegramAccess(config)]);
       if (config.telegramHomeChannel) {
-        this.prompts.write(`  Home channel:    ${config.telegramHomeChannel}\n`);
+        entries.push(["Home channel", config.telegramHomeChannel]);
       }
     }
     if (config.discordBotToken) {
-      this.prompts.write(`  Discord:         ${this.describeDiscordBot(messagingSetup.discord)}\n`);
-      this.prompts.write(`  Discord access:  ${this.describeDiscordAccessSummary(config)}\n`);
+      entries.push(["Discord", this.describeDiscordBot(messagingSetup.discord)]);
+      entries.push(["Discord access", this.describeDiscordAccessSummary(config)]);
     }
     if (config.slackBotToken && config.slackAppToken) {
-      this.prompts.write(`  Slack:           ${this.describeSlackBot(messagingSetup.slack)}\n`);
-      this.prompts.write(`  Slack access:    ${this.describeSlackAccessSummary(config)}\n`);
+      entries.push(["Slack", this.describeSlackBot(messagingSetup.slack)]);
+      entries.push(["Slack access", this.describeSlackAccessSummary(config)]);
     }
     if (config.whatsappEnabled) {
-      this.prompts.write(`  WhatsApp:        ${this.describeWhatsAppSetup(messagingSetup.whatsapp)}\n`);
-      this.prompts.write(`  WhatsApp access: ${this.describeWhatsAppAccessSummary(config)}\n`);
+      entries.push(["WhatsApp", this.describeWhatsAppSetup(messagingSetup.whatsapp)]);
+      entries.push(["WhatsApp access", this.describeWhatsAppAccessSummary(config)]);
     }
-    this.prompts.write(`  Release channel: ${config.channel || DEFAULT_CHANNEL}\n\n`);
+    entries.push(["Release channel", config.channel || DEFAULT_CHANNEL]);
+    this.writeKeyValuePanel("Review your setup", entries);
 
     while (true) {
       const answer = (await this.prompts.ask("Continue with deployment? [Y/n]: ")).trim().toLowerCase();
@@ -3285,14 +3515,18 @@ export class FlyDeployWizard implements DeployWizardPort {
     options: { allowAnyone: boolean } = { allowAnyone: true }
   ): Promise<MessagingPolicy> {
     while (true) {
-      this.prompts.write("\nWho should be able to talk to this bot?\n\n");
-      this.prompts.write("   1  Only me          Just you. Hermes will detect your Telegram user ID automatically.\n");
-      this.prompts.write("   2  Specific people  You and other approved users.\n");
+      const choiceOptions = [
+        { label: "Only me", description: "Just you. Hermes will detect your Telegram user ID automatically." },
+        { label: "Specific people", description: "You and other approved users." },
+      ];
       if (options.allowAnyone) {
-        this.prompts.write("   3  Anyone           No restrictions. Not recommended for most setups.\n\n");
-      } else {
-        this.prompts.write("\n");
+        choiceOptions.push({ label: "Anyone", description: "No restrictions. Not recommended for most setups." });
       }
+      this.writeChoiceSection(
+        "Telegram access",
+        "Who should be able to talk to this bot?",
+        renderDeployChoiceOptions(choiceOptions, 1),
+      );
 
       const maxChoice = options.allowAnyone ? 3 : 2;
       const choice = await this.chooseNumber("Choose an option [1]: ", maxChoice, 1);
@@ -3300,8 +3534,10 @@ export class FlyDeployWizard implements DeployWizardPort {
         return await this.collectTelegramOnlyMePolicy(botToken, identity.username);
       }
       if (choice === 2) {
-        this.prompts.write("Enter the numeric Telegram user IDs for the people who should be allowed.\n");
-        this.prompts.write("Use commas to separate multiple users.\n\n");
+        this.writePanel("Telegram access", [
+          "Enter the numeric Telegram user IDs for the people who should be allowed.",
+          "Use commas to separate multiple users.",
+        ]);
         return await this.collectTelegramUserIds("specific_users", "Telegram user IDs (comma-separated): ");
       }
       if (options.allowAnyone && await this.confirmYesNo("Allow anyone to use this bot? This is not recommended for most setups. [y/N]: ", false)) {
@@ -3326,9 +3562,12 @@ export class FlyDeployWizard implements DeployWizardPort {
     botUsername: string
   ): Promise<MessagingPolicy> {
     const directLink = telegramBotLink(botUsername);
-    this.prompts.write(`Open your bot directly: ${directLink}\n`);
-    this.prompts.write("Send /start from the Telegram account that should be allowed.\n");
-    this.prompts.write("After that, press Enter here and Hermes will detect your Telegram user ID automatically.\n\n");
+    this.writeCopyableSection(
+      "Telegram direct chat",
+      "Open your bot directly and send /start from the account that should be allowed.",
+      [`Open your bot directly: ${directLink}`],
+      ["After that, press Enter here and Hermes will detect your Telegram user ID automatically."]
+    );
 
     while (true) {
       await this.prompts.ask("Press Enter after sending /start: ");
@@ -3410,7 +3649,9 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private async collectTelegramHomeChannel(defaultUserId: number): Promise<string | undefined> {
-    this.prompts.write("\nHermes can also use Telegram for its own status updates.\n");
+    this.writePanel("Telegram home channel", [
+      "Hermes can also use Telegram for its own status updates.",
+    ]);
     const useDefault = await this.confirmYesNo(
       `Use ${defaultUserId} as the home channel for bot status messages? [y/N]: `,
       false

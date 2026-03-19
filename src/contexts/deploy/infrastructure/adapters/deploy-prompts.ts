@@ -2,6 +2,7 @@ import { createInterface } from "node:readline/promises";
 
 export interface DeployPromptPort {
   isInteractive(): boolean;
+  columns(): number | undefined;
   write(message: string): void;
   ask(message: string): Promise<string>;
   askSecret(message: string): Promise<string>;
@@ -16,6 +17,10 @@ export class ReadlineDeployPrompts implements DeployPromptPort {
 
   isInteractive(): boolean {
     return Boolean(this.input.isTTY && this.output.isTTY);
+  }
+
+  columns(): number | undefined {
+    return typeof this.output.columns === "number" ? this.output.columns : undefined;
   }
 
   write(message: string): void {

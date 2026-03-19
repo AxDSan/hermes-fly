@@ -34,6 +34,7 @@ function makePromptPort(): DeployPromptPort & { writes: string[] } {
   return {
     writes,
     isInteractive: () => true,
+    columns: () => process.stderr.columns ?? 80,
     write: (message: string) => {
       writes.push(message);
     },

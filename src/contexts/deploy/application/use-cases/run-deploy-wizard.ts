@@ -4,6 +4,11 @@ import type {
   FinalizeMessagingSetupResult,
 } from "../ports/deploy-wizard.port.js";
 import type { PostDeployCleanupPort } from "../ports/post-deploy-cleanup.port.js";
+import {
+  renderDeployCopyableSection,
+  renderDeployKeyValuePanel,
+  supportsEnhancedDeployScreen,
+} from "../presentation/deploy-screen.js";
 
 const VALID_CHANNELS = new Set(["stable", "preview", "edge"]);
 
@@ -12,6 +17,11 @@ export type DeployWizardResult =
   | { kind: "failed"; error: string };
 
 export type DeployChannel = "stable" | "preview" | "edge";
+export type DeployOutputWriter = {
+  write: (s: string) => void;
+  isTTY?: boolean;
+  columns?: number;
+};
 
 const VM_SIZE_LABELS = new Map<string, string>([
   ["shared-cpu-1x", "Starter (shared-cpu-1x, 256 MB)"],
@@ -183,69 +193,110 @@ function describeAiAccess(provider: string): string {
   return "OpenRouter API key";
 }
 
-function writeCompletionSummary(stdout: { write: (s: string) => void }, config: DeployConfig): void {
-  stdout.write("Deployment complete\n");
-  stdout.write(`  Fly organization: ${config.orgSlug}\n`);
-  stdout.write(`  Deployment name: ${config.appName}\n`);
-  stdout.write(`  Location:        ${config.region}\n`);
-  stdout.write(`  Server size:     ${describeVmSize(config.vmSize)}\n`);
-  stdout.write(`  Storage:         ${config.volumeSize} GB\n`);
-  stdout.write(`  AI access:       ${describeAiAccess(config.provider)}\n`);
-  stdout.write(`  AI model:        ${config.model}\n`);
-  if (config.reasoningEffort) {
-    stdout.write(`  Reasoning:       ${config.reasoningEffort}\n`);
+function shouldUseEnhancedCompletionSummary(stdout: DeployOutputWriter): boolean {
+  if (stdout.isTTY !== true) {
+    return false;
   }
-  stdout.write(`  Hermes ref:      ${config.hermesRef.slice(0, 8)}\n`);
-  stdout.write(`  Release channel: ${config.channel}\n`);
+  return supportsEnhancedDeployScreen(stdout.columns);
+}
+
+function writeCompletionSummary(stdout: DeployOutputWriter, config: DeployConfig): void {
+  const entries: Array<[string, string]> = [
+    ["Fly organization", config.orgSlug],
+    ["Deployment name", config.appName],
+    ["Location", config.region],
+    ["Server size", describeVmSize(config.vmSize)],
+    ["Storage", `${config.volumeSize} GB`],
+    ["AI access", describeAiAccess(config.provider)],
+    ["AI model", config.model],
+  ];
+  if (config.reasoningEffort) {
+    entries.push(["Reasoning", config.reasoningEffort]);
+  }
+  entries.push(["Hermes ref", config.hermesRef.slice(0, 8)]);
+  entries.push(["Release channel", config.channel]);
 
   const telegram = describeTelegram(config);
+  const copyableLines: string[] = [];
   if (telegram) {
-    stdout.write(`  Telegram:        ${telegram}\n`);
+    entries.push(["Telegram", telegram]);
     const access = describeTelegramAccess(config);
     if (access) {
-      stdout.write(`  Telegram access: ${access}\n`);
+      entries.push(["Telegram access", access]);
     }
     if (config.telegramHomeChannel) {
-      stdout.write(`  Home channel:    ${config.telegramHomeChannel}\n`);
+      entries.push(["Home channel", config.telegramHomeChannel]);
     }
     const chatLink = buildTelegramChatLink(config);
     if (chatLink) {
-      stdout.write(`  Chat link:       ${chatLink}\n`);
+      copyableLines.push(`Chat link: ${chatLink}`);
     }
   }
 
   const discord = describeDiscord(config);
   if (discord) {
-    stdout.write(`  Discord:         ${discord}\n`);
+    entries.push(["Discord", discord]);
     const access = describeDiscordAccess(config);
     if (access) {
-      stdout.write(`  Discord access:  ${access}\n`);
+      entries.push(["Discord access", access]);
     }
   }
 
   const slack = describeSlack(config);
   if (slack) {
-    stdout.write(`  Slack:           ${slack}\n`);
+    entries.push(["Slack", slack]);
     const access = describeSlackAccess(config);
     if (access) {
-      stdout.write(`  Slack access:    ${access}\n`);
+      entries.push(["Slack access", access]);
     }
   }
 
   const whatsapp = describeWhatsApp(config);
   if (whatsapp) {
-    stdout.write(`  WhatsApp:        ${whatsapp}\n`);
+    entries.push(["WhatsApp", whatsapp]);
     const access = describeWhatsAppAccess(config);
     if (access) {
-      stdout.write(`  WhatsApp access: ${access}\n`);
+      entries.push(["WhatsApp access", access]);
     }
   }
 
-  stdout.write("\n");
-  stdout.write("  Next steps:\n");
-  stdout.write(`    - Check app status:  hermes-fly status -a ${config.appName}\n`);
-  stdout.write(`    - View logs:         hermes-fly logs -a ${config.appName}\n`);
-  stdout.write(`    - Run diagnostics:   hermes-fly doctor -a ${config.appName}\n`);
+  copyableLines.push(
+    `hermes-fly status -a ${config.appName}`,
+    `hermes-fly logs -a ${config.appName}`,
+    `hermes-fly doctor -a ${config.appName}`,
+  );
+
+  if (!shouldUseEnhancedCompletionSummary(stdout)) {
+    stdout.write("Deployment complete\n");
+    stdout.write("Your Hermes agent is live on Fly.io.\n\n");
+    stdout.write("Deployment summary\n");
+    for (const [label, value] of entries) {
+      stdout.write(`  ${label}: ${value}\n`);
+    }
+    stdout.write("\n");
+    stdout.write("Next steps\n");
+    for (const line of copyableLines) {
+      stdout.write(`  ${line}\n`);
+    }
+    stdout.write("\n");
+    return;
+  }
+
+  stdout.write("◆  Deployment complete\n");
+  stdout.write("│\n");
+  stdout.write("│  Your Hermes agent is live on Fly.io.\n");
+  stdout.write("└\n\n");
+  stdout.write(renderDeployKeyValuePanel({
+    title: "Deployment summary",
+    entries,
+    width: stdout.columns,
+  }));
+  stdout.write(renderDeployCopyableSection({
+    title: "Next steps",
+    question: "Use these links and commands after deploy:",
+    lines: copyableLines,
+    width: stdout.columns,
+  }));
 }
 
 export class RunDeployWizardUseCase {
@@ -256,8 +307,8 @@ export class RunDeployWizardUseCase {
 
   async execute(
     opts: { autoInstall: boolean; channel: string },
-    stderr: { write: (s: string) => void },
-    stdout: { write: (s: string) => void } = { write: () => {} }
+    stderr: DeployOutputWriter,
+    stdout: DeployOutputWriter = { write: () => {} }
   ): Promise<DeployWizardResult> {
     const channel = resolveChannel(opts.channel);
 

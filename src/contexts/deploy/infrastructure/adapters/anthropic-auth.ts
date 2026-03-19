@@ -3,6 +3,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { ProcessRunner } from "../../../../adapters/process.js";
+import {
+  renderAdaptiveDeployCopyableSection,
+  renderAdaptiveDeployPanel,
+} from "../../application/presentation/deploy-screen.js";
 import type { DeployPromptPort } from "./deploy-prompts.js";
 
 const ANTHROPIC_OAUTH_AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
@@ -75,14 +79,26 @@ export class AnthropicAuthAdapter {
     const verifier = this.generateVerifier();
     const challenge = sha256Base64Url(verifier);
     const authUrl = this.buildAuthorizationUrl(challenge, verifier);
+    const width = prompts.columns();
 
-    prompts.write("Hermes can use your Claude / Anthropic subscription through OAuth.\n");
-    prompts.write("No separate API key is required for this path.\n\n");
-    prompts.write("To continue, follow these steps:\n\n");
-    prompts.write("  1. Open this URL in your browser:\n");
-    prompts.write(`     ${authUrl}\n\n`);
-    prompts.write("  2. Approve access, then copy the authorization code shown by Anthropic.\n");
-    prompts.write("     If Anthropic shows code#state, paste the full value below.\n\n");
+    prompts.write(renderAdaptiveDeployPanel({
+      title: "Anthropic sign-in",
+      lines: [
+        "Hermes can use your Claude / Anthropic subscription through OAuth.",
+        "No separate API key is required for this path.",
+        "",
+        "Open the authorization URL in your browser and approve access.",
+        "Copy the authorization code shown by Anthropic, then paste it below.",
+        "If Anthropic shows code#state, paste the full value.",
+      ],
+      width,
+    }));
+    prompts.write(renderAdaptiveDeployCopyableSection({
+      title: "Anthropic sign-in",
+      question: "Open this URL in your browser:",
+      lines: [authUrl],
+      width,
+    }));
 
     const rawAuthorizationCode = (await prompts.ask("Authorization code: ")).trim();
     if (rawAuthorizationCode.length === 0) {

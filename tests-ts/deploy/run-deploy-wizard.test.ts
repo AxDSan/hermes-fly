@@ -19,16 +19,60 @@ import type {
   DiscordBotValidationResult,
 } from "../../src/contexts/deploy/infrastructure/adapters/discord-bot-auth.ts";
 
-function makeIO() {
+type MockOutputOptions = {
+  isTTY?: boolean;
+  columns?: number;
+};
+
+function makeIO(opts: { stdout?: MockOutputOptions; stderr?: MockOutputOptions } = {}) {
   const outLines: string[] = [];
   const errLines: string[] = [];
+  const stdout = {
+    write: (s: string) => { outLines.push(s); },
+    isTTY: opts.stdout?.isTTY ?? true,
+    columns: opts.stdout?.columns ?? 80,
+  };
+  const stderr = {
+    write: (s: string) => { errLines.push(s); },
+    isTTY: opts.stderr?.isTTY ?? true,
+    columns: opts.stderr?.columns ?? 80,
+  };
   return {
-    stdout: { write: (s: string) => { outLines.push(s); } },
-    stderr: { write: (s: string) => { errLines.push(s); } },
+    stdout,
+    stderr,
     get outText() { return outLines.join(""); },
     get errText() { return errLines.join(""); },
     get text() { return errLines.join(""); }
   };
+}
+
+function maxRenderedWidth(rendered: string): number {
+  return rendered
+    .trimEnd()
+    .split("\n")
+    .reduce((max, line) => Math.max(max, Array.from(line).length), 0);
+}
+
+async function withMockedTerminalWidth<T>(width: number, fn: () => Promise<T> | T): Promise<T> {
+  const stream = process.stderr as NodeJS.WriteStream & { columns?: number };
+  const hadOwn = Object.prototype.hasOwnProperty.call(stream, "columns");
+  const previous = stream.columns;
+  Object.defineProperty(stream, "columns", {
+    value: width,
+    configurable: true,
+  });
+  try {
+    return await fn();
+  } finally {
+    if (hadOwn) {
+      Object.defineProperty(stream, "columns", {
+        value: previous,
+        configurable: true,
+      });
+    } else {
+      delete stream.columns;
+    }
+  }
 }
 
 const DEFAULT_CONFIG: DeployConfig = {
@@ -117,7 +161,7 @@ function isFlyCommand(command: string): boolean {
 
 function makePromptPort(
   answers: string[],
-  opts: { interactive?: boolean } = {}
+  opts: { interactive?: boolean; columns?: number } = {}
 ): DeployPromptPort & { asked: string[]; secretAsked: string[]; pauses: string[]; writes: string[] } {
   const asked: string[] = [];
   const secretAsked: string[] = [];
@@ -129,6 +173,7 @@ function makePromptPort(
     pauses,
     writes,
     isInteractive: () => opts.interactive ?? true,
+    columns: () => opts.columns ?? process.stderr.columns ?? 80,
     write: (message: string) => { writes.push(message); },
     ask: async (message: string) => {
       asked.push(message);
@@ -302,13 +347,65 @@ describe("RunDeployWizardUseCase - happy path", () => {
     await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
 
     assert.match(io.outText, /Deployment complete/);
+    assert.match(io.outText, /Deployment summary/);
     assert.match(io.outText, /Fly organization:\s+personal/);
     assert.match(io.outText, /Deployment name:\s+test-app/);
     assert.match(io.outText, /Location:\s+iad/);
     assert.match(io.outText, /AI model:\s+anthropic\/claude-sonnet-4-20250514/);
+    assert.match(io.outText, /Next steps/);
     assert.match(io.outText, /hermes-fly status -a test-app/);
     assert.match(io.outText, /hermes-fly logs -a test-app/);
     assert.match(io.outText, /hermes-fly doctor -a test-app/);
+  });
+
+  it("falls back to the plain completion summary on narrow terminals", async () => {
+    const io = makeIO({ stdout: { columns: 40 } });
+    const uc = new RunDeployWizardUseCase(makePort({
+      collectConfig: async () => ({
+        ...DEFAULT_CONFIG,
+        botToken: "123:abc",
+        telegramBotUsername: "testhermesbot",
+        telegramBotName: "Test Hermes Bot",
+        telegramAllowedUsers: "1467489858",
+      })
+    }));
+
+    await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
+
+    assert.match(io.outText, /Deployment complete/);
+    assert.match(io.outText, /Deployment summary/);
+    assert.match(io.outText, /  Fly organization: personal/);
+    assert.match(io.outText, /  Telegram: @testhermesbot/);
+    assert.match(io.outText, /Next steps/);
+    assert.match(io.outText, /Chat link: https:\/\/t\.me\/testhermesbot\?start=test-app/);
+    assert.match(io.outText, /hermes-fly status -a test-app/);
+    assert.doesNotMatch(io.outText, /◇  Deployment summary/);
+    assert.doesNotMatch(io.outText, /◆  Next steps/);
+    assert.doesNotMatch(io.outText, /│/);
+  });
+
+  it("falls back to the plain completion summary when stdout is not a tty", async () => {
+    await withMockedTerminalWidth(120, async () => {
+      const io = makeIO({ stdout: { isTTY: false } });
+      const uc = new RunDeployWizardUseCase(makePort({
+        collectConfig: async () => ({
+          ...DEFAULT_CONFIG,
+          botToken: "123:abc",
+          telegramBotUsername: "testhermesbot",
+          telegramBotName: "Test Hermes Bot",
+          telegramAllowedUsers: "1467489858",
+        })
+      }));
+
+      await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
+
+      assert.match(io.outText, /Deployment summary/);
+      assert.match(io.outText, /  Fly organization: personal/);
+      assert.match(io.outText, /Next steps/);
+      assert.match(io.outText, /Chat link: https:\/\/t\.me\/testhermesbot\?start=test-app/);
+      assert.doesNotMatch(io.outText, /◇  Deployment summary/);
+      assert.doesNotMatch(io.outText, /◆  Next steps/);
+    });
   });
 
   it("prints the specific post-deploy failure reason when health checks detect instability", async () => {
@@ -361,6 +458,49 @@ describe("RunDeployWizardUseCase - happy path", () => {
     assert.match(io.outText, /Telegram:\s+@testhermesbot/);
     assert.match(io.outText, /Chat link:\s+https:\/\/t\.me\/testhermesbot\?start=test-app/);
     assert.match(io.outText, /Home channel:\s+1467489858/);
+  });
+
+  it("keeps long completion commands and Telegram chat links copyable", async () => {
+    const longAppName = `hermes-${"a".repeat(56)}`;
+    const longTelegramUsername = `hermes${"bot".repeat(8)}`;
+    const io = makeIO();
+    const uc = new RunDeployWizardUseCase(makePort({
+      collectConfig: async () => ({
+        ...DEFAULT_CONFIG,
+        appName: longAppName,
+        botToken: "123:abc",
+        telegramBotUsername: longTelegramUsername,
+        telegramBotName: "Long Hermes Bot",
+        telegramAllowedUsers: "1467489858",
+      })
+    }));
+
+    await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
+
+    assert.ok(io.outText.includes(`Chat link: https://t.me/${longTelegramUsername}?start=${longAppName}`), io.outText);
+    assert.ok(io.outText.includes(`hermes-fly status -a ${longAppName}`), io.outText);
+    assert.ok(io.outText.includes(`hermes-fly logs -a ${longAppName}`), io.outText);
+    assert.ok(io.outText.includes(`hermes-fly doctor -a ${longAppName}`), io.outText);
+  });
+
+  it("uses the caller stdout width when rendering enhanced completion summaries", async () => {
+    await withMockedTerminalWidth(120, async () => {
+      const io = makeIO({ stdout: { columns: 64 } });
+      const uc = new RunDeployWizardUseCase(makePort({
+        collectConfig: async () => ({
+          ...DEFAULT_CONFIG,
+          discordBotToken: "discord-live-token",
+          discordApplicationId: "123456789012345678",
+          discordBotUsername: "hermes-discord-bot-with-an-intentionally-long-handle",
+          discordAllowedUsers: "123456789012345678,987654321098765432",
+        })
+      }));
+
+      await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr, io.stdout);
+
+      assert.match(io.outText, /◇  Deployment summary/);
+      assert.ok(maxRenderedWidth(io.outText) <= 64, io.outText);
+    });
   });
 
   it("prints Discord, Slack, and WhatsApp details in the completion summary", async () => {
@@ -949,9 +1089,13 @@ describe("FlyDeployWizard.postDeployActions", () => {
     });
 
     const guidedCopy = prompts.writes.join("");
-    assert.match(guidedCopy, /Telegram does not document any Bot API method that permanently deletes a bot/);
+    assert.match(guidedCopy, /Telegram does not document any Bot API method/);
+    assert.match(guidedCopy, /permanently deletes a/);
+    assert.match(guidedCopy, /bot\./);
     assert.match(guidedCopy, /https:\/\/t\.me\/BotFather\?text=%2Fdeletebot/);
-    assert.match(guidedCopy, /Scan this QR code with your phone to open BotFather with \/deletebot ready to send/);
+    assert.match(guidedCopy, /Scan this QR code with your phone to open BotFather/);
+    assert.match(guidedCopy, /\/deletebot ready to/);
+    assert.match(guidedCopy, /send:/);
     assert.match(guidedCopy, /\[\[DELETEBOT-QR\]\]/);
     assert.match(guidedCopy, /choose @testhermesbot/);
   });
@@ -2591,7 +2735,9 @@ describe("FlyDeployWizard.collectConfig", () => {
       "Telegram bot token (required): "
     ]);
     const guidedCopy = prompts.writes.join("");
-    assert.match(guidedCopy, /Hermes Agent Guided Setup/);
+    assert.match(guidedCopy, /Hermes Fly 0\.1\.95/);
+    assert.match(guidedCopy, /┌  Hermes Fly deploy/);
+    assert.match(guidedCopy, /◇  Guided setup/);
     assert.match(guidedCopy, /Each deployment needs a unique name on Fly\.io/);
     assert.match(guidedCopy, /Where are you \(or most of your users\) located/);
     assert.match(guidedCopy, /How powerful should your agent's server be/);
@@ -2599,12 +2745,202 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /Get your OpenRouter API key at: https:\/\/openrouter\.ai\/settings\/keys/);
     assert.match(guidedCopy, /Which AI provider do you want to use through OpenRouter/);
     assert.match(guidedCopy, /Which OpenAI model should your agent use/);
+    assert.match(guidedCopy, /1  ○ Telegram/);
+    assert.match(guidedCopy, /5  ● Skip for now/);
+    assert.match(guidedCopy, /1  ○ Telegram now/);
+    assert.match(guidedCopy, /2  ● Skip for now/);
     assert.match(guidedCopy, /Do you want to connect Telegram now/);
-    assert.match(guidedCopy, /Open BotFather directly with \/newbot prefilled: https:\/\/t\.me\/BotFather\?text=%2Fnewbot/);
-    assert.match(guidedCopy, /Scan this QR code with your phone to open BotFather with \/newbot ready to send/);
+    assert.match(guidedCopy, /Open BotFather directly with \/newbot prefilled:/);
+    assert.match(guidedCopy, /https:\/\/t\.me\/BotFather\?text=%2Fnewbot/);
+    assert.match(guidedCopy, /Scan this QR code with your phone to open BotFather/);
+    assert.match(guidedCopy, /\/newbot ready to/);
+    assert.match(guidedCopy, /send:/);
     assert.match(guidedCopy, /\[\[QR: https:\/\/t\.me\/BotFather\?text=%2Fnewbot\]\]/);
     assert.match(guidedCopy, /tap Send to submit \/newbot/);
     assert.match(guidedCopy, /Review your setup/);
+  });
+
+  it("falls back to the plain guided deploy screens on narrow terminals", async () => {
+    await withMockedTerminalWidth(60, async () => {
+      const prompts = makePromptPort([
+        "my-app",
+        "2",
+        "2",
+        "1",
+        "2",
+        "1",
+        "sk-live",
+        "2",
+        "2",
+        "1",
+        "1",
+        "123:abc",
+        "1",
+        "",
+        "y",
+        "y"
+      ], { interactive: true });
+      const runner = makeProcessRunner(async (command, args) => {
+        if (command === "fly" && args[0] === "platform" && args[1] === "regions") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify([
+              { code: "iad", name: "Ashburn, Virginia (US)" },
+              { code: "lhr", name: "London, United Kingdom" }
+            ])
+          };
+        }
+        if (command === "fly" && args[0] === "platform" && args[1] === "vm-sizes") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify([
+              { name: "shared-cpu-1x", memory_mb: 256 },
+              { name: "shared-cpu-2x", memory_mb: 512 }
+            ])
+          };
+        }
+        if (command === "curl" && args.some((value) => value.includes("api.telegram.org/bot123:abc/getMe"))) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              ok: true,
+              result: {
+                id: 12345,
+                is_bot: true,
+                first_name: "Hermes Test Bot",
+                username: "test_hermes_bot"
+              }
+            })
+          };
+        }
+        if (command === "curl" && args.some((value) => value.includes("api.telegram.org/bot123:abc/getUpdates"))) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              ok: true,
+              result: [
+                {
+                  update_id: 1,
+                  message: {
+                    chat: { id: 12345, type: "private" },
+                    from: { id: 12345, is_bot: false }
+                  }
+                }
+              ]
+            })
+          };
+        }
+        if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
+          return { exitCode: 0, stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } }) };
+        }
+        if (command === "curl" && args.includes("https://openrouter.ai/api/v1/models")) {
+          return { exitCode: 0, stdout: JSON.stringify({ data: liveOpenRouterModelsFixture() }) };
+        }
+        return { exitCode: 1 };
+      });
+      const wizard = new FlyDeployWizard({}, { prompts, process: runner, qrRenderer: makeQrRenderer() });
+
+      const config = await wizard.collectConfig({ channel: "preview" });
+
+      assert.equal(config.appName, "my-app");
+      const guidedCopy = prompts.writes.join("");
+      assert.match(guidedCopy, /Hermes Agent Guided Setup/);
+      assert.match(guidedCopy, /I'll walk you through the deployment setup step by step/);
+      assert.match(guidedCopy, /Deployment name/);
+      assert.doesNotMatch(guidedCopy, /┌  Hermes Fly deploy/);
+      assert.doesNotMatch(guidedCopy, /◇  Guided setup/);
+      assert.doesNotMatch(guidedCopy, /██╗/);
+    });
+  });
+
+  it("sizes guided deploy screens from the prompt output width", async () => {
+    await withMockedTerminalWidth(120, async () => {
+      const prompts = makePromptPort([
+        "my-app",
+        "2",
+        "2",
+        "1",
+        "2",
+        "1",
+        "sk-live",
+        "2",
+        "2",
+        "1",
+        "1",
+        "123:abc",
+        "1",
+        "",
+        "y",
+        "y"
+      ], { interactive: true, columns: 60 });
+      const runner = makeProcessRunner(async (command, args) => {
+        if (command === "fly" && args[0] === "platform" && args[1] === "regions") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify([
+              { code: "iad", name: "Ashburn, Virginia (US)" },
+              { code: "lhr", name: "London, United Kingdom" }
+            ])
+          };
+        }
+        if (command === "fly" && args[0] === "platform" && args[1] === "vm-sizes") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify([
+              { name: "shared-cpu-1x", memory_mb: 256 },
+              { name: "shared-cpu-2x", memory_mb: 512 }
+            ])
+          };
+        }
+        if (command === "curl" && args.some((value) => value.includes("api.telegram.org/bot123:abc/getMe"))) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              ok: true,
+              result: {
+                id: 12345,
+                is_bot: true,
+                first_name: "Hermes Test Bot",
+                username: "test_hermes_bot"
+              }
+            })
+          };
+        }
+        if (command === "curl" && args.some((value) => value.includes("api.telegram.org/bot123:abc/getUpdates"))) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              ok: true,
+              result: [
+                {
+                  update_id: 1,
+                  message: {
+                    chat: { id: 12345, type: "private" },
+                    from: { id: 12345, is_bot: false }
+                  }
+                }
+              ]
+            })
+          };
+        }
+        if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
+          return { exitCode: 0, stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } }) };
+        }
+        if (command === "curl" && args.includes("https://openrouter.ai/api/v1/models")) {
+          return { exitCode: 0, stdout: JSON.stringify({ data: liveOpenRouterModelsFixture() }) };
+        }
+        return { exitCode: 1 };
+      });
+      const wizard = new FlyDeployWizard({}, { prompts, process: runner, qrRenderer: makeQrRenderer() });
+
+      await wizard.collectConfig({ channel: "preview" });
+
+      const guidedCopy = prompts.writes.join("");
+      assert.match(guidedCopy, /Hermes Agent Guided Setup/);
+      assert.doesNotMatch(guidedCopy, /┌  Hermes Fly deploy/);
+      assert.doesNotMatch(guidedCopy, /◇  Guided setup/);
+      assert.doesNotMatch(guidedCopy, /██╗/);
+    });
   });
 
   it("does not offer Starter and keeps Standard as the lowest guided tier", async () => {
@@ -2740,6 +3076,9 @@ describe("FlyDeployWizard.collectConfig", () => {
       const guidedCopy = prompts.writes.join("");
       assert.match(guidedCopy, /How should Hermes access AI models/);
       assert.match(guidedCopy, /ChatGPT subscription.*OpenAI Codex/);
+      assert.match(guidedCopy, /◆  OpenAI Codex login/);
+      assert.match(guidedCopy, /1\s+● Reuse it/);
+      assert.match(guidedCopy, /2\s+○ Sign in again/);
       assert.match(guidedCopy, /I found an existing Hermes OpenAI Codex login on this machine/);
       assert.match(guidedCopy, /Which OpenAI Codex model should your agent use/);
     } finally {
@@ -2810,6 +3149,7 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.equal(config.sttProvider, "local");
     assert.equal(config.sttModel, "base");
     const guidedCopy = prompts.writes.join("");
+    assert.match(guidedCopy, /◇  OpenAI Codex sign-in/);
     assert.match(guidedCopy, /https:\/\/auth\.openai\.com\/codex\/device/);
     assert.match(guidedCopy, /https:\/\/chatgpt\.com\/#settings\/Security/);
     assert.match(guidedCopy, /Enable device code authorization for Codex/);
@@ -2885,6 +3225,9 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.ok(config.authJsonB64);
     assert.equal(userCodeAttempts, 2);
     const guidedCopy = prompts.writes.join("");
+    assert.match(guidedCopy, /◆  OpenAI Codex sign-in failed/);
+    assert.match(guidedCopy, /1\s+● Retry sign-in/);
+    assert.match(guidedCopy, /2\s+○ Cancel setup/);
     assert.match(guidedCopy, /https:\/\/chatgpt\.com\/#settings\/Security/);
     assert.match(guidedCopy, /Enable device code authorization for Codex/);
     assert.match(guidedCopy, /Retry sign-in/);
@@ -3031,6 +3374,9 @@ describe("FlyDeployWizard.collectConfig", () => {
       const guidedCopy = prompts.writes.join("");
       assert.match(guidedCopy, /How should Hermes access AI models/);
       assert.match(guidedCopy, /Nous Portal subscription/);
+      assert.match(guidedCopy, /◆  Nous Portal login/);
+      assert.match(guidedCopy, /1\s+● Reuse it/);
+      assert.match(guidedCopy, /2\s+○ Sign in again/);
       assert.match(guidedCopy, /I found an existing Hermes Nous Portal login on this machine/);
       assert.match(guidedCopy, /Fetching available models from Nous Portal/);
       assert.match(guidedCopy, /Which Nous Portal model should your agent use/);
@@ -3081,6 +3427,9 @@ describe("FlyDeployWizard.collectConfig", () => {
       const guidedCopy = prompts.writes.join("");
       assert.match(guidedCopy, /How should Hermes access AI models/);
       assert.match(guidedCopy, /Anthropic subscription/);
+      assert.match(guidedCopy, /◆  Anthropic login/);
+      assert.match(guidedCopy, /1\s+● Reuse them/);
+      assert.match(guidedCopy, /2\s+○ Sign in again/);
       assert.match(guidedCopy, /I found existing Claude Code credentials on this machine/);
       assert.match(guidedCopy, /Which Anthropic model should your agent use/);
       assert.match(guidedCopy, /AI access:\s+Anthropic OAuth/);
@@ -3400,12 +3749,19 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.equal(config.telegramAllowedUsers, "12345");
     assert.equal(config.telegramHomeChannel, "12345");
     const guidedCopy = prompts.writes.join("");
-    assert.match(guidedCopy, /Open BotFather directly with \/newbot prefilled: https:\/\/t\.me\/BotFather\?text=%2Fnewbot/);
-    assert.match(guidedCopy, /Scan this QR code with your phone to open BotFather with \/newbot ready to send/);
+    assert.match(guidedCopy, /Open BotFather directly with \/newbot prefilled:/);
+    assert.match(guidedCopy, /https:\/\/t\.me\/BotFather\?text=%2Fnewbot/);
+    assert.match(guidedCopy, /Scan this QR code with your phone to open BotFather/);
+    assert.match(guidedCopy, /\/newbot ready to/);
+    assert.match(guidedCopy, /send:/);
     assert.match(guidedCopy, /\[\[BOTFATHER-QR\]\]/);
     assert.match(guidedCopy, /tap Send to submit \/newbot/);
     assert.match(guidedCopy, /Guide: https:\/\/core\.telegram\.org\/bots#6-botfather/);
     assert.match(guidedCopy, /Found bot: @test_hermes_bot \(Hermes Test Bot\)/);
+    assert.match(guidedCopy, /◆  Telegram access/);
+    assert.match(guidedCopy, /1\s+● Only me/);
+    assert.match(guidedCopy, /2\s+○ Specific people/);
+    assert.match(guidedCopy, /◆  Telegram direct chat/);
     assert.match(guidedCopy, /Open your bot directly: https:\/\/t\.me\/test_hermes_bot/);
     assert.match(guidedCopy, /Detected your Telegram user ID: 12345/);
     assert.ok(prompts.asked.some((message) => message.includes("Use 12345 as the home channel")));
@@ -3485,7 +3841,7 @@ describe("FlyDeployWizard.collectConfig", () => {
     const guidedCopy = prompts.writes.join("");
     assert.match(guidedCopy, /Telegram bot token format looks invalid/);
     assert.match(guidedCopy, /Verifying your bot token with Telegram/);
-    assert.match(guidedCopy, /Who should be able to talk to this bot/);
+    assert.match(guidedCopy, /◆  Telegram access/);
     assert.match(guidedCopy, /user IDs must be numeric/i);
     assert.ok(prompts.asked.some((message) => message.includes("Continue with this bot?")));
   });
@@ -3556,12 +3912,17 @@ describe("FlyDeployWizard.collectConfig", () => {
     ]);
     const guidedCopy = prompts.writes.join("");
     assert.match(guidedCopy, /If you already have a Discord bot token, you can paste it now/);
+    assert.match(guidedCopy, /1  ○ I already have a bot token/);
+    assert.match(guidedCopy, /2\s+● Help me create one/);
+    assert.match(guidedCopy, /◇  Discord Developer Portal/);
     assert.match(guidedCopy, /New Application/);
     assert.match(guidedCopy, /Add Bot/);
     assert.match(guidedCopy, /Reset Token/);
+    assert.match(guidedCopy, /◆  Discord invite/);
     assert.match(guidedCopy, /Invite URL: https:\/\/discord\.com\/oauth2\/authorize\?client_id=123456789012345678&scope=bot%20applications\.commands/);
     assert.match(guidedCopy, /\[\[DISCORD-QR\]\]/);
-    assert.match(guidedCopy, /Only me\s+Just you\. Hermes will use DM pairing after deploy/);
+    assert.match(guidedCopy, /◆  Discord access/);
+    assert.match(guidedCopy, /1\s+● Only me/);
     assert.ok(prompts.pauses.some((message) => message.includes("copied the Discord bot token")));
     assert.ok(prompts.pauses.some((message) => message.includes("invited this bot to your Discord server")));
   });
@@ -3618,7 +3979,7 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.equal(config.discordBotToken, "good-token");
     assert.deepEqual(seenTokens, ["bad-token", "good-token"]);
     const guidedCopy = prompts.writes.join("");
-    assert.match(guidedCopy, /Discord could not log in with that bot token/);
+    assert.match(guidedCopy, /◇  Discord token troubleshooting/);
     assert.match(guidedCopy, /Client Secret instead of Bot Token/i);
     assert.match(guidedCopy, /token was regenerated/i);
   });
@@ -3727,7 +4088,9 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /If you are just testing for yourself, pick Self-chat/);
     assert.match(guidedCopy, /If you want other people to talk to Hermes, pick Bot mode/);
     assert.match(guidedCopy, /a dedicated WhatsApp number is the recommended setup/);
-    assert.match(guidedCopy, /Hermes will finish WhatsApp pairing after deploy by opening the remote WhatsApp setup flow in this terminal/);
+    assert.match(guidedCopy, /Hermes will finish WhatsApp pairing after deploy/);
+    assert.match(guidedCopy, /opening the remote/);
+    assert.match(guidedCopy, /WhatsApp setup flow in this terminal/);
     assert.match(guidedCopy, /Recommended for safe personal testing/);
     assert.match(guidedCopy, /detect the linked WhatsApp account from the QR pairing step/i);
     assert.match(guidedCopy, /You do not need to enter your phone number here/i);

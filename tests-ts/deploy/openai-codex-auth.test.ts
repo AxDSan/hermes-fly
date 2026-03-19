@@ -38,6 +38,7 @@ function makePromptPort(
     writes,
     asked,
     isInteractive: () => true,
+    columns: () => process.stderr.columns ?? 80,
     write: (message: string) => { writes.push(message); },
     ask: async (message: string) => {
       asked.push(message);
