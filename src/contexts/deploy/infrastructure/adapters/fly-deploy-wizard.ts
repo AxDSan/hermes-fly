@@ -2663,10 +2663,12 @@ export class FlyDeployWizard implements DeployWizardPort {
 
     const modeChoice = await this.chooseNumber("Choose a mode [1]: ", 2, 1);
     const mode: "bot" | "self-chat" = modeChoice === 2 ? "self-chat" : "bot";
-    const access = await this.collectWhatsAppAccessPolicy({
-      ...options,
-      mode,
-    });
+    const access = mode === "self-chat"
+      ? await this.collectWhatsAppSelfChatAccessPolicy(options.appName)
+      : await this.collectWhatsAppAccessPolicy({
+          ...options,
+          mode,
+        });
     if (access.skipSetup) {
       return { enabled: false, mode };
     }
@@ -2678,6 +2680,41 @@ export class FlyDeployWizard implements DeployWizardPort {
       completeAccessDuringSetup: access.completeAccessDuringSetup,
       takeoverAppNames: access.takeoverAppNames,
     };
+  }
+
+  private async collectWhatsAppSelfChatAccessPolicy(
+    appName: string
+  ): Promise<{ allowedUsers?: string; completeAccessDuringSetup?: boolean; skipSetup?: boolean; takeoverAppNames?: string[] }> {
+    this.prompts.write("\nSelf-chat only works in your own built-in Message yourself chat.\n");
+    this.prompts.write("Enter the WhatsApp number of the account you will link now. You can paste it with +, spaces, or dashes — hermes-fly will normalize it.\n");
+
+    while (true) {
+      const answer = (await this.prompts.ask("Your WhatsApp number: ")).trim();
+      try {
+        const normalized = this.parseWhatsAppNumbers(answer).join(",");
+        const conflicts = await this.findWhatsAppConflicts(appName, normalized, "self-chat");
+        if (conflicts.length > 0) {
+          const resolution = await this.resolveWhatsAppConflict(conflicts);
+          if (resolution.action === "retry") {
+            continue;
+          }
+          if (resolution.action === "skip") {
+            return { skipSetup: true };
+          }
+          return {
+            allowedUsers: normalized,
+            completeAccessDuringSetup: true,
+            takeoverAppNames: resolution.appNames,
+          };
+        }
+        return {
+          allowedUsers: normalized,
+          completeAccessDuringSetup: true,
+        };
+      } catch {
+        this.prompts.write("Enter a valid WhatsApp number with country code. Example: +39 340 6844897\n");
+      }
+    }
   }
 
   private async collectWhatsAppAccessPolicy(

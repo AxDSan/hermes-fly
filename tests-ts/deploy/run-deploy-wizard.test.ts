@@ -3319,7 +3319,6 @@ describe("FlyDeployWizard.collectConfig", () => {
       "",
       "4",
       "2",
-      "1",
       "+39 340 6844897",
       "y"
     ], { interactive: true });
@@ -3354,7 +3353,55 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /a dedicated WhatsApp number is the recommended setup/);
     assert.match(guidedCopy, /Hermes will finish WhatsApp pairing after deploy by opening the remote WhatsApp setup flow in this terminal/);
     assert.match(guidedCopy, /Recommended for safe personal testing/);
-    assert.match(guidedCopy, /Enter your own WhatsApp number now/);
+    assert.match(guidedCopy, /Enter the WhatsApp number of the account you will link now/);
+    assert.doesNotMatch(guidedCopy, /Who should be able to talk to your WhatsApp setup/i);
+    assert.doesNotMatch(guidedCopy, /Specific people/i);
+  });
+
+  it("keeps the WhatsApp allowlist flow for bot mode", async () => {
+    const prompts = makePromptPort([
+      "",
+      "",
+      "",
+      "",
+      "",
+      "1",
+      "sk-live",
+      "",
+      "",
+      "4",
+      "1",
+      "2",
+      "+39 340 6844897, +44 7871 172820",
+      "y"
+    ], { interactive: true });
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command === "fly" && args[0] === "platform" && args[1] === "regions") {
+        return { exitCode: 0, stdout: JSON.stringify([{ code: "iad", name: "Ashburn, Virginia (US)" }]) };
+      }
+      if (command === "fly" && args[0] === "platform" && args[1] === "vm-sizes") {
+        return { exitCode: 0, stdout: JSON.stringify([{ name: "shared-cpu-1x", memory_mb: 256 }]) };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
+        return { exitCode: 0, stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } }) };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/models")) {
+        return { exitCode: 0, stdout: JSON.stringify({ data: liveOpenRouterModelsFixture() }) };
+      }
+      return { exitCode: 1 };
+    });
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner });
+
+    const config = await wizard.collectConfig({ channel: "stable" });
+
+    assert.deepEqual(config.messagingPlatforms, ["whatsapp"]);
+    assert.equal(config.whatsappEnabled, true);
+    assert.equal(config.whatsappMode, "bot");
+    assert.equal(config.whatsappAllowedUsers, "393406844897,447871172820");
+    assert.equal(config.whatsappCompleteAccessDuringSetup, undefined);
+    const guidedCopy = prompts.writes.join("");
+    assert.match(guidedCopy, /Who should be able to talk to your WhatsApp setup/i);
+    assert.match(guidedCopy, /Specific people\s+Enter the phone numbers that should be allowed/i);
   });
 
   it("warns early when the same self-chat WhatsApp number is already used by another saved deployment and lets the user skip WhatsApp", async () => {
