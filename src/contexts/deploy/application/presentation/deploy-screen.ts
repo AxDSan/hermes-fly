@@ -275,7 +275,7 @@ export function renderDeployHero(params: HeroParams): string {
   return [
     `· ${params.eyebrow}`,
     "",
-    `✈ Hermes Fly ${params.version} — guided deploy for Hermes Agent on Fly.io.`,
+    `🪽 Hermes Fly ${params.version} — guided deploy for Hermes Agent on Fly.io.`,
     "",
     ...HERO_ART,
     "",
