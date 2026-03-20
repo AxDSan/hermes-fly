@@ -54,7 +54,8 @@ describe("deploy-screen", () => {
 
     assert.match(rendered, /Starting deploy/);
     assert.match(rendered, /Hermes Fly 0\.1\.95/);
-    assert.match(rendered, /HERMES/);
+    assert.match(rendered, /^\s+_\/\\_\s+F L Y\s+_\/\\_$/m);
+    assert.doesNotMatch(rendered, /^\s+HERMES FLY$/m);
     assert.match(rendered, /Guided setup/);
     assert.match(rendered, /guided setup flow/i);
   });
