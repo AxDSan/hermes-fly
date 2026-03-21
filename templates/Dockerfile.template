@@ -44,6 +44,8 @@ RUN mkdir -p /opt/hermes/defaults && \
     mv /root/.hermes/node         /opt/hermes/node && \
     cp /root/.hermes/.env /root/.hermes/config.yaml /root/.hermes/SOUL.md /opt/hermes/defaults/ && \
     cp -r /root/.hermes/skills /opt/hermes/defaults/skills
+RUN git -C /opt/hermes/hermes-agent checkout "${HERMES_VERSION}" && \
+    git -C /opt/hermes/hermes-agent submodule update --init --recursive
 ENV PATH="/root/.local/bin:${PATH}"
 COPY entrypoint.sh /entrypoint.sh
 COPY gateway-supervisor.sh /gateway-supervisor.sh

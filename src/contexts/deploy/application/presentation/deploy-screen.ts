@@ -1,3 +1,5 @@
+import * as nodeUtil from "node:util";
+
 const DEFAULT_TERMINAL_WIDTH = 80;
 const MAX_RENDER_WIDTH = 88;
 const MIN_RENDER_WIDTH = 48;
@@ -51,6 +53,19 @@ type CopyableSectionParams = {
   lines: string[];
   width?: number;
 };
+
+type RenderDeployChoiceOptionsParams = {
+  numbered?: boolean;
+  colorizeDisabled?: boolean;
+  disabledStyleStream?: NodeJS.WriteStream;
+  disabledStyleTextFn?: StyleTextFn;
+};
+
+type StyleTextFn = (
+  format: string | string[],
+  text: string,
+  options?: { stream?: NodeJS.WriteStream; validateStream?: boolean }
+) => string;
 
 function maxLineLength(lines: string[]): number {
   return lines.reduce((max, line) => Math.max(max, Array.from(line).length), 0);
@@ -242,18 +257,37 @@ export function renderAdaptiveDeployCopyableSection(params: CopyableSectionParam
 }
 
 export function renderDeployChoiceOptions(
-  options: Array<{ label: string; description?: string }>,
-  defaultIndex: number
+  options: Array<{ label: string; description?: string; disabled?: boolean }>,
+  defaultIndex: number,
+  params: RenderDeployChoiceOptionsParams = {}
 ): string[] {
+  const numbered = params.numbered ?? true;
   const labelWidth = options.reduce((max, option) => Math.max(max, option.label.length), 0);
   return options.map((option, index) => {
     const number = String(index + 1).padStart(2, " ");
-    const marker = index + 1 === defaultIndex ? "●" : "○";
+    const marker = !option.disabled && index + 1 === defaultIndex ? "●" : "○";
     const paddedLabel = option.description ? option.label.padEnd(labelWidth) : option.label;
-    return option.description
-      ? `${number}  ${marker} ${paddedLabel} ${option.description}`
-      : `${number}  ${marker} ${paddedLabel}`;
+    const line = option.description
+      ? `${numbered ? `${number}  ` : ""}${marker} ${paddedLabel} ${option.description}`
+      : `${numbered ? `${number}  ` : ""}${marker} ${paddedLabel}`;
+
+    if (option.disabled && params.colorizeDisabled) {
+      return renderDisabledDeployChoiceLine(line, params.disabledStyleTextFn, params.disabledStyleStream);
+    }
+
+    return line;
   });
+}
+
+export function renderDisabledDeployChoiceLine(
+  line: string,
+  styleTextFn: StyleTextFn | undefined = nodeUtil.styleText as StyleTextFn | undefined,
+  stream: NodeJS.WriteStream | undefined = undefined
+): string {
+  if (typeof styleTextFn !== "function" || !stream?.isTTY) {
+    return line;
+  }
+  return styleTextFn(["gray", "dim"], line, { stream });
 }
 
 export function renderDeployKeyValuePanel(params: KeyValuePanelParams): string {

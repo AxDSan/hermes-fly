@@ -3,6 +3,11 @@ import test from "node:test";
 
 import { DeploymentIntent } from "../../src/contexts/deploy/domain/deployment-intent";
 import { DeploymentPlan } from "../../src/contexts/deploy/domain/deployment-plan";
+import {
+  HostingPlatformOption,
+  listHostingPlatforms,
+  resolveDefaultHostingPlatform,
+} from "../../src/contexts/deploy/domain/hosting-platform";
 import { ProvenanceRecord } from "../../src/contexts/deploy/domain/provenance-record";
 import { DriftFinding } from "../../src/contexts/diagnostics/domain/drift-finding";
 import { MessagingPolicy } from "../../src/contexts/messaging/domain/messaging-policy";
@@ -258,5 +263,40 @@ test("ReleaseContract enforces semver invariants and tag/version match", () => {
         hermesFlyVersion: "1.2.3",
       }),
     "ReleaseContract.tag must match hermesFlyVersion",
+  );
+});
+
+test("HostingPlatform catalog exposes Fly.io as the default and marks upcoming platforms unavailable", () => {
+  const defaultPlatform = resolveDefaultHostingPlatform();
+  const platforms = listHostingPlatforms();
+  const railway = platforms.find((platform) => platform.key === "railway");
+
+  assert.equal(defaultPlatform.key, "fly-io");
+  assert.equal(defaultPlatform.disabled, false);
+  assert.equal(defaultPlatform.displayLabel, "Fly.io");
+  assert.ok(railway);
+  assert.equal(railway.disabled, true);
+  assert.equal(railway.displayLabel, "[SOON] Railway.com");
+});
+
+test("HostingPlatformOption validates required fields", () => {
+  expectError(
+    () =>
+      HostingPlatformOption.create({
+        key: "fly-io",
+        label: "   ",
+        availability: "available",
+      }),
+    "HostingPlatformOption.label must be non-empty",
+  );
+
+  expectError(
+    () =>
+      HostingPlatformOption.create({
+        key: "fly-io",
+        label: "Fly.io",
+        availability: "later" as never,
+      }),
+    "HostingPlatformOption.availability must be available|coming_soon",
   );
 });

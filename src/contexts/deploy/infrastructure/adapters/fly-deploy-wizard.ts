@@ -11,6 +11,10 @@ import { FlyDeployRunner } from "./fly-deploy-runner.js";
 import { TemplateWriter } from "./template-writer.js";
 import { NodeProcessRunner, type ForegroundProcessRunner } from "../../../../adapters/process.js";
 import { DeploymentIntent } from "../../domain/deployment-intent.js";
+import {
+  listHostingPlatforms,
+  resolveDefaultHostingPlatform,
+} from "../../domain/hosting-platform.js";
 import { ReadlineDeployPrompts, type DeployPromptPort } from "./deploy-prompts.js";
 import { TerminalQrCodeRenderer, type QrCodeRendererPort } from "./qr-code.js";
 import { SystemBrowserOpener, type BrowserOpenerPort } from "./browser-opener.js";
@@ -88,6 +92,15 @@ type FlyOrgOption = {
   name: string;
   type?: string;
 };
+
+type SelectableChoiceOption<T> = {
+  value: T;
+  label: string;
+  description?: string;
+  disabled?: boolean;
+};
+
+const SINGLE_SELECT_INTERACTION_HINT = "Use ↑/↓ or j/k to move, then Enter to confirm.";
 
 type VmOption = {
   value: string;
@@ -521,6 +534,7 @@ export class FlyDeployWizard implements DeployWizardPort {
     const env = this.env;
     if (this.prompts.isInteractive()) {
       this.writeHero();
+      this.writeHostingPlatformSection();
     }
 
     const orgSlug = await this.collectOrgSlug(env.HERMES_FLY_ORG ?? env.DEPLOY_ORG ?? env.FLY_ORG);
@@ -619,6 +633,29 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     return config;
+  }
+
+  private writeHostingPlatformSection(): void {
+    const platforms = listHostingPlatforms();
+    const defaultPlatform = resolveDefaultHostingPlatform();
+    const defaultIndex = Math.max(1, platforms.findIndex((platform) => platform.key === defaultPlatform.key) + 1);
+
+    this.writeChoiceSection(
+      "Hosting Platform",
+      "",
+      renderDeployChoiceOptions(
+        platforms.map((platform) => ({
+          label: platform.displayLabel,
+          disabled: platform.disabled,
+        })),
+        defaultIndex,
+        {
+          numbered: false,
+          colorizeDisabled: true,
+          disabledStyleStream: this.prompts.outputStream?.(),
+        }
+      )
+    );
   }
 
   async createBuildContext(config: DeployConfig): Promise<{ buildDir: string }> {
@@ -1287,16 +1324,262 @@ export class FlyDeployWizard implements DeployWizardPort {
       );
     }
 
-    this.writeChoiceSection(
-      "Fly organization",
-      "Which Fly.io organization should own this deployment?",
-      orgs.map((org, index) => `${String(index + 1).padStart(2, " ")}  ${org.name.padEnd(26, " ")} ${org.slug}`),
-      ["If you only use Fly personally, the Personal organization is usually the right choice."]
-    );
-
     const defaultIndex = Math.max(0, orgs.findIndex((org) => org.type?.toUpperCase() === "PERSONAL"));
+    if (this.prompts.selectChoice) {
+      const selectedSlug = await this.prompts.selectChoice({
+        options: orgs.map((org) => ({ value: org.slug })),
+        initialIndex: defaultIndex + 1,
+        render: (activeIndex) => this.renderFlyOrganizationSection(orgs, activeIndex, {
+          includeInteractionHint: true,
+        }),
+        renderFallback: (activeIndex) => this.renderFlyOrganizationSection(orgs, activeIndex, {
+          numbered: true,
+        }),
+        fallbackPrompt: `Choose an organization [${defaultIndex + 1}]: `,
+      });
+      return selectedSlug;
+    }
+
+    this.prompts.write(this.renderFlyOrganizationSection(orgs, defaultIndex + 1, {
+      numbered: true,
+    }));
     const selected = orgs[await this.chooseNumber(`Choose an organization [${defaultIndex + 1}]: `, orgs.length, defaultIndex + 1) - 1];
     return selected.slug;
+  }
+
+  private renderFlyOrganizationSection(
+    orgs: FlyOrgOption[],
+    activeIndex: number,
+    params: { numbered?: boolean; includeInteractionHint?: boolean } = {}
+  ): string {
+    return renderAdaptiveDeployChoiceSection({
+      title: "Fly organization",
+      question: "Which Fly.io organization should own this deployment?",
+      details: [
+        "",
+        "If you only use Fly personally, the Personal organization is usually the right choice.",
+        ...(params.includeInteractionHint ? [SINGLE_SELECT_INTERACTION_HINT] : []),
+      ],
+      options: [
+        ...renderDeployChoiceOptions(
+          orgs.map((org) => ({ label: `${org.name.padEnd(26, " ")} ${org.slug}` })),
+          activeIndex,
+          { numbered: params.numbered ?? false }
+        ),
+        "",
+      ],
+      width: this.promptWidth(),
+    });
+  }
+
+  private renderSelectableChoiceSection<T>(params: {
+    title: string;
+    question: string;
+    details?: string[];
+    options: SelectableChoiceOption<T>[];
+    activeIndex: number;
+    numbered?: boolean;
+    includeInteractionHint?: boolean;
+  }): string {
+    return renderAdaptiveDeployChoiceSection({
+      title: params.title,
+      question: params.question,
+      details: [
+        ...(params.details ?? []),
+        ...(params.includeInteractionHint ? [SINGLE_SELECT_INTERACTION_HINT] : []),
+      ],
+      options: [
+        ...renderDeployChoiceOptions(
+          params.options.map((option) => ({
+            label: option.label,
+            description: option.description,
+            disabled: option.disabled,
+          })),
+          params.activeIndex,
+          { numbered: params.numbered ?? false }
+        ),
+        "",
+      ],
+      width: this.promptWidth(),
+    });
+  }
+
+  private async selectFromChoiceSection<T>(params: {
+    title: string;
+    question: string;
+    details?: string[];
+    options: SelectableChoiceOption<T>[];
+    defaultIndex: number;
+    fallbackPrompt: string;
+  }): Promise<T> {
+    const defaultIndex = Math.max(1, Math.min(params.defaultIndex, params.options.length));
+    if (this.prompts.selectChoice) {
+      return await this.prompts.selectChoice({
+        options: params.options.map((option) => ({ value: option.value, disabled: option.disabled })),
+        initialIndex: defaultIndex,
+        render: (activeIndex) => this.renderSelectableChoiceSection({
+          title: params.title,
+          question: params.question,
+          details: params.details,
+          options: params.options,
+          activeIndex,
+          includeInteractionHint: true,
+        }),
+        renderFallback: (activeIndex) => this.renderSelectableChoiceSection({
+          title: params.title,
+          question: params.question,
+          details: params.details,
+          options: params.options,
+          activeIndex,
+          numbered: true,
+        }),
+        fallbackPrompt: params.fallbackPrompt,
+      });
+    }
+
+    this.prompts.write(this.renderSelectableChoiceSection({
+      title: params.title,
+      question: params.question,
+      details: params.details,
+      options: params.options,
+      activeIndex: defaultIndex,
+      numbered: true,
+    }));
+    const selectedIndex = await this.chooseNumber(params.fallbackPrompt, params.options.length, defaultIndex);
+    return params.options[selectedIndex - 1].value;
+  }
+
+  private renderMultiSelectableChoiceSection<T>(params: {
+    title: string;
+    question: string;
+    details?: string[];
+    options: SelectableChoiceOption<T>[];
+    activeIndex: number;
+    selectedIndices: number[];
+    numbered?: boolean;
+  }): string {
+    const selectedIndexSet = new Set(params.selectedIndices);
+    const labelWidth = params.options.reduce((max, option) => Math.max(max, option.label.length), 0);
+    return renderAdaptiveDeployChoiceSection({
+      title: params.title,
+      question: params.question,
+      details: params.details,
+      options: [
+        ...params.options.map((option, index) => {
+          const currentIndex = index + 1;
+          const marker = selectedIndexSet.has(currentIndex) ? "●" : "○";
+          const paddedLabel = option.description ? option.label.padEnd(labelWidth) : option.label;
+          const label = option.description ? `${paddedLabel} ${option.description}` : paddedLabel;
+          if (params.numbered) {
+            return `${String(currentIndex).padStart(2, " ")}  ${marker} ${label}`;
+          }
+          const prefix = currentIndex === params.activeIndex ? "› " : "  ";
+          return `${prefix}${marker} ${label}`;
+        }),
+        "",
+      ],
+      width: this.promptWidth(),
+    });
+  }
+
+  private async selectManyFromChoiceSection<T>(params: {
+    title: string;
+    question: string;
+    details?: string[];
+    options: SelectableChoiceOption<T>[];
+    defaultIndex: number;
+    initialSelectedIndices: number[];
+    fallbackPrompt: string;
+    interactionHint?: string;
+    fallbackDetails?: string[];
+    normalizeSelectedIndices?: (selectedIndices: number[], activeIndex: number) => number[];
+    validateSelectedIndices?: (selectedIndices: number[]) => string | undefined;
+  }): Promise<T[]> {
+    const defaultIndex = Math.max(1, Math.min(params.defaultIndex, params.options.length));
+    const initialSelectedIndices = params.initialSelectedIndices
+      .filter((index) => index >= 1 && index <= params.options.length);
+    const normalizedInitialSelectedIndices = params.normalizeSelectedIndices
+      ? params.normalizeSelectedIndices(initialSelectedIndices, defaultIndex)
+      : initialSelectedIndices;
+
+    if (this.prompts.selectManyChoices) {
+      return await this.prompts.selectManyChoices({
+        options: params.options.map((option) => ({ value: option.value, disabled: option.disabled })),
+        initialIndex: defaultIndex,
+        initialSelectedIndices: normalizedInitialSelectedIndices,
+        normalizeSelectedIndices: params.normalizeSelectedIndices,
+        validateSelectedIndices: params.validateSelectedIndices,
+        render: (activeIndex, selectedIndices) => this.renderMultiSelectableChoiceSection({
+          title: params.title,
+          question: params.question,
+          details: [
+            ...(params.details ?? []),
+            ...(params.interactionHint ? [params.interactionHint] : []),
+          ],
+          options: params.options,
+          activeIndex,
+          selectedIndices,
+        }),
+        renderFallback: (activeIndex, selectedIndices) => this.renderMultiSelectableChoiceSection({
+          title: params.title,
+          question: params.question,
+          details: [
+            ...(params.details ?? []),
+            ...(params.fallbackDetails ?? []),
+          ],
+          options: params.options,
+          activeIndex,
+          selectedIndices,
+          numbered: true,
+        }),
+        fallbackPrompt: params.fallbackPrompt,
+      });
+    }
+
+    this.prompts.write(this.renderMultiSelectableChoiceSection({
+      title: params.title,
+      question: params.question,
+      details: [
+        ...(params.details ?? []),
+        ...(params.fallbackDetails ?? []),
+      ],
+      options: params.options,
+      activeIndex: defaultIndex,
+      selectedIndices: normalizedInitialSelectedIndices,
+      numbered: true,
+    }));
+
+    while (true) {
+      const answer = (await this.prompts.ask(params.fallbackPrompt)).trim();
+      if (answer.length === 0) {
+        return normalizedInitialSelectedIndices.map((index) => params.options[index - 1].value);
+      }
+
+      const choices = answer.split(",").map((value) => value.trim()).filter(Boolean);
+      const uniqueChoices = [...new Set(choices)];
+      if (uniqueChoices.some((value) => !/^[1-9][0-9]*$/.test(value))) {
+        this.prompts.write(`Enter one or more numbers from 1 to ${params.options.length}, separated by commas.\n`);
+        continue;
+      }
+
+      const numericChoices = uniqueChoices.map((value) => Number(value));
+      if (numericChoices.some((value) => value < 1 || value > params.options.length)) {
+        this.prompts.write(`Enter one or more numbers from 1 to ${params.options.length}, separated by commas.\n`);
+        continue;
+      }
+
+      const validationError = params.validateSelectedIndices?.(numericChoices);
+      if (validationError) {
+        this.prompts.write(`${validationError}\n`);
+        continue;
+      }
+
+      const normalizedChoices = params.normalizeSelectedIndices
+        ? params.normalizeSelectedIndices(numericChoices, numericChoices.at(-1) ?? defaultIndex)
+        : numericChoices;
+
+      return normalizedChoices.map((index) => params.options[index - 1].value);
+    }
   }
 
   private async collectRegion(envValue: string | undefined): Promise<string> {
@@ -1313,24 +1596,30 @@ export class FlyDeployWizard implements DeployWizardPort {
       .map((area) => ({ area, options: regions.filter((region) => region.area === area) }))
       .filter((row) => row.options.length > 0);
 
-    this.writeChoiceSection(
-      "Region",
-      "Where are you (or most of your users) located?",
-      areaRows.map((row, index) => `${String(index + 1).padStart(2, " ")}  ${row.area.padEnd(15, " ")} ${String(row.options.length).padStart(2, " ")} locations`),
-      ["Choosing a closer server usually means faster responses."]
-    );
-
     const defaultAreaIndex = Math.max(0, areaRows.findIndex((row) => row.options.some((option) => option.code === DEFAULT_REGION)));
-    const selectedArea = areaRows[await this.chooseNumber(`Choose an area [${defaultAreaIndex + 1}]: `, areaRows.length, defaultAreaIndex + 1) - 1];
-
-    this.writeChoiceSection(
-      `${selectedArea.area} locations`,
-      `${selectedArea.area} locations:`,
-      selectedArea.options.map((region, index) => `${String(index + 1).padStart(2, " ")}  ${region.name.padEnd(32, " ")} ${region.code}`)
-    );
+    const selectedArea = await this.selectFromChoiceSection({
+      title: "Region",
+      question: "Where are you (or most of your users) located?",
+      details: ["Choosing a closer server usually means faster responses."],
+      options: areaRows.map((row) => ({
+        value: row,
+        label: `${row.area.padEnd(15, " ")} ${String(row.options.length).padStart(2, " ")} locations`,
+      })),
+      defaultIndex: defaultAreaIndex + 1,
+      fallbackPrompt: `Choose an area [${defaultAreaIndex + 1}]: `,
+    });
 
     const defaultLocationIndex = Math.max(0, selectedArea.options.findIndex((region) => region.code === DEFAULT_REGION));
-    const selectedLocation = selectedArea.options[await this.chooseNumber(`Choose a location [${defaultLocationIndex + 1}]: `, selectedArea.options.length, defaultLocationIndex + 1) - 1];
+    const selectedLocation = await this.selectFromChoiceSection({
+      title: `${selectedArea.area} locations`,
+      question: `${selectedArea.area} locations:`,
+      options: selectedArea.options.map((region) => ({
+        value: region,
+        label: `${region.name.padEnd(32, " ")} ${region.code}`,
+      })),
+      defaultIndex: defaultLocationIndex + 1,
+      fallbackPrompt: `Choose a location [${defaultLocationIndex + 1}]: `,
+    });
     return selectedLocation.code;
   }
 
@@ -1387,16 +1676,18 @@ export class FlyDeployWizard implements DeployWizardPort {
 
     const options = await this.fetchVmOptions();
     const defaultIndex = Math.max(0, options.findIndex((option) => option.value === DEFAULT_VM_SIZE));
-
-    this.writeChoiceSection(
-      "Server size",
-      "How powerful should your agent's server be?",
-      options.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${option.tier.padEnd(10, " ")} ${option.ramLabel.padEnd(14, " ")} ${option.costLabel.padEnd(10, " ")} ${option.bestFor}`),
-      ["Prices are estimates. Check current rates: https://fly.io/calculator"]
-    );
-
-    const selected = options[await this.chooseNumber(`Choose a tier [${defaultIndex + 1}]: `, options.length, defaultIndex + 1) - 1];
-    return selected.value;
+    return await this.selectFromChoiceSection({
+      title: "Server size",
+      question: "How powerful should your agent's server be?",
+      details: ["Prices are estimates. Check current rates: https://fly.io/calculator"],
+      options: options.map((option) => ({
+        value: option.value,
+        label: `${option.tier.padEnd(10, " ")} ${option.ramLabel.padEnd(14, " ")} ${option.costLabel.padEnd(10, " ")}`,
+        description: option.bestFor,
+      })),
+      defaultIndex: defaultIndex + 1,
+      fallbackPrompt: `Choose a tier [${defaultIndex + 1}]: `,
+    });
   }
 
   private async collectVolumeSize(envValue: string | undefined): Promise<number> {
@@ -1409,19 +1700,21 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     const defaultIndex = Math.max(0, STATIC_VOLUME_OPTIONS.findIndex((option) => option.value === DEFAULT_VOLUME_SIZE));
-
-    this.writeChoiceSection(
-      "Storage",
-      "How much storage should your agent have?",
-      STATIC_VOLUME_OPTIONS.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${String(option.value).padStart(2, " ")} GB  ${option.costLabel.padEnd(10, " ")} ${option.bestFor}`),
-      [
+    return await this.selectFromChoiceSection({
+      title: "Storage",
+      question: "How much storage should your agent have?",
+      details: [
         "This is where your agent saves conversations, memories, and files.",
         "Prices are estimates. Check current rates: https://fly.io/calculator",
-      ]
-    );
-
-    const selected = STATIC_VOLUME_OPTIONS[await this.chooseNumber(`Choose a size [${defaultIndex + 1}]: `, STATIC_VOLUME_OPTIONS.length, defaultIndex + 1) - 1];
-    return selected.value;
+      ],
+      options: STATIC_VOLUME_OPTIONS.map((option) => ({
+        value: option.value,
+        label: `${String(option.value).padStart(2, " ")} GB  ${option.costLabel.padEnd(10, " ")}`,
+        description: option.bestFor,
+      })),
+      defaultIndex: defaultIndex + 1,
+      fallbackPrompt: `Choose a size [${defaultIndex + 1}]: `,
+    });
   }
 
   private async collectAiAccess(input: {
@@ -1504,38 +1797,44 @@ export class FlyDeployWizard implements DeployWizardPort {
       return this.collectOpenRouterAccess(input.model, input.reasoningEffort, input.sttProvider, input.sttModel);
     }
 
-    this.writeChoiceSection(
-      "AI access",
-      "How should Hermes access AI models?",
-      renderDeployChoiceOptions([
+    const selection = await this.selectFromChoiceSection({
+      title: "AI access",
+      question: "How should Hermes access AI models?",
+      details: [
+        "You can use your own OpenRouter API key, sign in with your ChatGPT subscription through OpenAI Codex, use your Nous Portal subscription, sign in with Anthropic OAuth, or use your Z.AI GLM API key.",
+      ],
+      options: [
         {
+          value: "openrouter" as const,
           label: "OpenRouter API key",
           description: "Bring your own API key and choose from OpenRouter's model catalog",
         },
         {
+          value: "openai-codex" as const,
           label: "ChatGPT subscription",
           description: "Sign in with ChatGPT / OpenAI through OpenAI Codex",
         },
         {
+          value: "nous" as const,
           label: "Nous Portal subscription",
           description: "Sign in with your Nous Portal account and use Portal models",
         },
         {
+          value: "anthropic" as const,
           label: "Anthropic subscription",
           description: "Sign in with Claude / Anthropic through OAuth",
         },
         {
+          value: "zai" as const,
           label: "Z.AI GLM API key",
           description: "Use your Z.AI key and detect the matching GLM endpoint, including Coding Plan",
         },
-      ], 1),
-      [
-        "You can use your own OpenRouter API key, sign in with your ChatGPT subscription through OpenAI Codex, use your Nous Portal subscription, sign in with Anthropic OAuth, or use your Z.AI GLM API key.",
-      ]
-    );
+      ],
+      defaultIndex: 1,
+      fallbackPrompt: "Choose an option [1]: ",
+    });
 
-    const selection = await this.chooseNumber("Choose an option [1]: ", 5, 1);
-    if (selection === 2) {
+    if (selection === "openai-codex") {
       return this.collectOpenAICodexAccess(
         input.model,
         input.reasoningEffort,
@@ -1544,7 +1843,7 @@ export class FlyDeployWizard implements DeployWizardPort {
         input.sttModel
       );
     }
-    if (selection === 3) {
+    if (selection === "nous") {
       return this.collectNousPortalAccess(
         input.model,
         input.reasoningEffort,
@@ -1553,7 +1852,7 @@ export class FlyDeployWizard implements DeployWizardPort {
         input.sttModel
       );
     }
-    if (selection === 4) {
+    if (selection === "anthropic") {
       return this.collectAnthropicAccess(
         input.model,
         input.reasoningEffort,
@@ -1562,7 +1861,7 @@ export class FlyDeployWizard implements DeployWizardPort {
         input.sttModel
       );
     }
-    if (selection === 5) {
+    if (selection === "zai") {
       return this.collectZaiAccess(
         input.model,
         input.apiBaseUrl,
@@ -1941,17 +2240,26 @@ export class FlyDeployWizard implements DeployWizardPort {
       return models[0]?.value ?? "gpt-5.3-codex";
     }
 
-    const optionLines = models.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}`);
-    const manualIndex = models.length + 1;
-    optionLines.push(`${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually`);
-    this.writeChoiceSection(
-      "OpenAI Codex model",
-      "Which OpenAI Codex model should your agent use?",
-      optionLines
-    );
+    const selectedModel = await this.selectFromChoiceSection({
+      title: "OpenAI Codex model",
+      question: "Which OpenAI Codex model should your agent use?",
+      options: [
+        ...models.map((option) => ({
+          value: option.value,
+          label: option.label.padEnd(24, " "),
+          description: option.bestFor,
+        })),
+        {
+          value: "__manual__" as const,
+          label: "Bring my own model",
+          description: "Enter a model ID manually",
+        },
+      ],
+      defaultIndex: 1,
+      fallbackPrompt: "Choose a model [1]: ",
+    });
 
-    const selectedIndex = await this.chooseNumber("Choose a model [1]: ", manualIndex, 1);
-    if (selectedIndex === manualIndex) {
+    if (selectedModel === "__manual__") {
       this.prompts.write("Model IDs come from the OpenAI Codex catalog. Example: gpt-5.3-codex\n\n");
       while (true) {
         const answer = (await this.prompts.ask("Model ID: ")).trim();
@@ -1962,7 +2270,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    return models[selectedIndex - 1].value;
+    return selectedModel;
   }
 
   private async collectNousModel(envValue: string | undefined, auth: ResolvedNousPortalAuth): Promise<string> {
@@ -1990,17 +2298,26 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    const optionLines = models.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}`);
-    const manualIndex = models.length + 1;
-    optionLines.push(`${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually`);
-    this.writeChoiceSection(
-      "Nous Portal model",
-      "Which Nous Portal model should your agent use?",
-      optionLines
-    );
+    const selectedModel = await this.selectFromChoiceSection({
+      title: "Nous Portal model",
+      question: "Which Nous Portal model should your agent use?",
+      options: [
+        ...models.map((option) => ({
+          value: option.value,
+          label: option.label.padEnd(24, " "),
+          description: option.bestFor,
+        })),
+        {
+          value: "__manual__" as const,
+          label: "Bring my own model",
+          description: "Enter a model ID manually",
+        },
+      ],
+      defaultIndex: 1,
+      fallbackPrompt: "Choose a model [1]: ",
+    });
 
-    const selectedIndex = await this.chooseNumber("Choose a model [1]: ", manualIndex, 1);
-    if (selectedIndex === manualIndex) {
+    if (selectedModel === "__manual__") {
       while (true) {
         const answer = (await this.prompts.ask("Model ID: ")).trim();
         if (answer.length > 0) {
@@ -2010,7 +2327,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    return models[selectedIndex - 1].value;
+    return selectedModel;
   }
 
   private async collectAnthropicModel(envValue: string | undefined): Promise<string> {
@@ -2023,17 +2340,26 @@ export class FlyDeployWizard implements DeployWizardPort {
       return models[0]?.value ?? "claude-sonnet-4-6";
     }
 
-    const optionLines = models.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}`);
-    const manualIndex = models.length + 1;
-    optionLines.push(`${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually`);
-    this.writeChoiceSection(
-      "Anthropic model",
-      "Which Anthropic model should your agent use?",
-      optionLines
-    );
+    const selectedModel = await this.selectFromChoiceSection({
+      title: "Anthropic model",
+      question: "Which Anthropic model should your agent use?",
+      options: [
+        ...models.map((option) => ({
+          value: option.value,
+          label: option.label.padEnd(24, " "),
+          description: option.bestFor,
+        })),
+        {
+          value: "__manual__" as const,
+          label: "Bring my own model",
+          description: "Enter a model ID manually",
+        },
+      ],
+      defaultIndex: 1,
+      fallbackPrompt: "Choose a model [1]: ",
+    });
 
-    const selectedIndex = await this.chooseNumber("Choose a model [1]: ", manualIndex, 1);
-    if (selectedIndex === manualIndex) {
+    if (selectedModel === "__manual__") {
       this.prompts.write("Anthropic model IDs look like claude-sonnet-4-6.\n\n");
       while (true) {
         const answer = (await this.prompts.ask("Model ID: ")).trim();
@@ -2044,7 +2370,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    return models[selectedIndex - 1].value;
+    return selectedModel;
   }
 
   private async collectZaiModel(envValue: string | undefined, endpoint: ZaiEndpointResolution): Promise<string> {
@@ -2057,18 +2383,27 @@ export class FlyDeployWizard implements DeployWizardPort {
       return endpoint.defaultModel || models[0]?.value || "glm-4.7";
     }
 
-    const optionLines = models.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}`);
     const manualIndex = models.length + 1;
-    optionLines.push(`${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually`);
-
     const defaultIndex = Math.max(0, models.findIndex((option) => option.value === endpoint.defaultModel)) + 1;
-    this.writeChoiceSection(
-      "Z.AI GLM model",
-      "Which Z.AI GLM model should your agent use?",
-      optionLines
-    );
-    const selectedIndex = await this.chooseNumber(`Choose a model [${defaultIndex}]: `, manualIndex, defaultIndex);
-    if (selectedIndex === manualIndex) {
+    const selectedModel = await this.selectFromChoiceSection({
+      title: "Z.AI GLM model",
+      question: "Which Z.AI GLM model should your agent use?",
+      options: [
+        ...models.map((option) => ({
+          value: option.value,
+          label: option.label.padEnd(24, " "),
+          description: option.bestFor,
+        })),
+        {
+          value: "__manual__",
+          label: "Bring my own model",
+          description: "Enter a model ID manually",
+        },
+      ],
+      defaultIndex,
+      fallbackPrompt: `Choose a model [${defaultIndex}]: `,
+    });
+    if (selectedModel === "__manual__") {
       this.prompts.write("GLM model IDs look like glm-4.7 or glm-5.\n\n");
       while (true) {
         const answer = (await this.prompts.ask("Model ID: ")).trim();
@@ -2079,7 +2414,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    return models[selectedIndex - 1].value;
+    return selectedModel;
   }
 
   private fetchAnthropicModels(): AnthropicModelOption[] {
@@ -2430,30 +2765,40 @@ export class FlyDeployWizard implements DeployWizardPort {
   private async collectProviderChoice(catalog: ModelOption[]): Promise<ProviderOption> {
     const providers = this.buildProviderOptions(catalog);
     const defaultIndex = Math.max(0, providers.findIndex((provider) => provider.key === "anthropic"));
-
-    this.writeChoiceSection(
-      "OpenRouter provider",
-      "Which AI provider do you want to use through OpenRouter?",
-      providers.map((provider, index) => `${String(index + 1).padStart(2, " ")}  ${provider.label.padEnd(12, " ")} ${provider.description}`),
-      ["You'll pick a specific model from that provider next."]
-    );
-
-    const selectedIndex = await this.chooseNumber(`Choose a provider [${defaultIndex + 1}]: `, providers.length, defaultIndex + 1);
-    return providers[selectedIndex - 1];
+    return await this.selectFromChoiceSection({
+      title: "OpenRouter provider",
+      question: "Which AI provider do you want to use through OpenRouter?",
+      details: ["You'll pick a specific model from that provider next."],
+      options: providers.map((provider) => ({
+        value: provider,
+        label: provider.label.padEnd(12, " "),
+        description: provider.description,
+      })),
+      defaultIndex: defaultIndex + 1,
+      fallbackPrompt: `Choose a provider [${defaultIndex + 1}]: `,
+    });
   }
 
   private async collectProviderModelChoice(provider: ProviderOption, models: ModelOption[]): Promise<string> {
-    const optionLines = models.map((option, index) => `${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}`);
-    const manualIndex = models.length + 1;
-    optionLines.push(`${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually`);
-    this.writeChoiceSection(
-      `${provider.label} model`,
-      `Which ${provider.label} model should your agent use?`,
-      optionLines
-    );
-
-    const selectedIndex = await this.chooseNumber(`Choose a model [1]: `, manualIndex, 1);
-    if (selectedIndex === manualIndex) {
+    const selectedModel = await this.selectFromChoiceSection({
+      title: `${provider.label} model`,
+      question: `Which ${provider.label} model should your agent use?`,
+      options: [
+        ...models.map((option) => ({
+          value: option.value,
+          label: option.label.padEnd(24, " "),
+          description: option.bestFor,
+        })),
+        {
+          value: "__manual__" as const,
+          label: "Bring my own model",
+          description: "Enter a model ID manually",
+        },
+      ],
+      defaultIndex: 1,
+      fallbackPrompt: "Choose a model [1]: ",
+    });
+    if (selectedModel === "__manual__") {
       this.prompts.write(`Find model IDs at ${OPENROUTER_MODELS_URL}\n`);
       this.prompts.write("Example: anthropic/claude-3-5-sonnet\n\n");
       while (true) {
@@ -2465,7 +2810,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    return models[selectedIndex - 1].value;
+    return selectedModel;
   }
 
   private async collectMessagingSetup(input: {
@@ -2549,48 +2894,26 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private async collectMessagingPlatformsChoice(): Promise<string[]> {
-    this.writeChoiceSection(
-      "Messaging",
-      "Which messaging platforms do you want to connect now?",
-      renderDeployChoiceOptions([
-        { label: "Telegram", description: "Chat with your agent in Telegram" },
-        { label: "Discord", description: "Chat with your agent in Discord" },
-        { label: "Slack", description: "Chat with your agent in Slack" },
-        { label: "WhatsApp", description: "Chat with your agent in WhatsApp" },
-        { label: "Skip for now" },
-      ], 5),
-      ["You can connect more than one. Enter numbers separated by commas."]
-    );
+    const selection = await this.selectFromChoiceSection({
+      title: "Messaging",
+      question: "Which messaging platforms do you want to connect now?",
+      details: ["You can connect the others later if you prefer."],
+      options: [
+        { value: "telegram", label: "Telegram", description: "Chat with your agent in Telegram" },
+        { value: "discord", label: "Discord", description: "Chat with your agent in Discord" },
+        { value: "slack", label: "Slack", description: "Chat with your agent in Slack" },
+        { value: "whatsapp", label: "WhatsApp", description: "Chat with your agent in WhatsApp" },
+        { value: "skip", label: "Skip for now" },
+      ],
+      defaultIndex: 5,
+      fallbackPrompt: "Choose a platform [5]: ",
+    });
 
-    while (true) {
-      const answer = (await this.prompts.ask("Choose platform numbers [5]: ")).trim();
-      if (answer.length === 0 || answer === "5") {
-        return [];
-      }
-
-      const choices = answer.split(",").map((value) => value.trim()).filter(Boolean);
-      const uniqueChoices = [...new Set(choices)];
-      if (uniqueChoices.some((value) => !/^[1-5]$/.test(value))) {
-        this.prompts.write("Enter one or more numbers from 1 to 5, separated by commas.\n");
-        continue;
-      }
-      if (uniqueChoices.includes("5")) {
-        if (uniqueChoices.length > 1) {
-          this.prompts.write("Choose either specific platforms or 5 to skip.\n");
-          continue;
-        }
-        return [];
-      }
-
-      return uniqueChoices
-        .map((value) => ({
-          "1": "telegram",
-          "2": "discord",
-          "3": "slack",
-          "4": "whatsapp",
-        }[value]))
-        .filter((value): value is string => typeof value === "string");
+    if (selection === "skip") {
+      return [];
     }
+
+    return [selection];
   }
 
   private async collectTelegramSetup(input: {

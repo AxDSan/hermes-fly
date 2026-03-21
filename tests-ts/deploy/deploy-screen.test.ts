@@ -5,6 +5,7 @@ import {
   renderAdaptiveDeployChoiceSection,
   renderAdaptiveDeployCopyableSection,
   renderAdaptiveDeployPanel,
+  renderDisabledDeployChoiceLine,
   renderDeployCopyableSection,
   renderDeployChoiceOptions,
   renderDeployChoiceSection,
@@ -41,6 +42,10 @@ function maxRenderedWidth(rendered: string): number {
     .trimEnd()
     .split("\n")
     .reduce((max, line) => Math.max(max, Array.from(line).length), 0);
+}
+
+function stripAnsi(rendered: string): string {
+  return rendered.replace(/\u001B\[[0-9;]*m/g, "");
 }
 
 describe("deploy-screen", () => {
@@ -108,6 +113,63 @@ describe("deploy-screen", () => {
 
     assert.match(rendered, /1  ○ Telegram/);
     assert.match(rendered, /5  ● Skip for now/);
+  });
+
+  it("renders read-only upcoming options without numeric selectors", () => {
+    const rendered = stripAnsi(renderDeployChoiceSection({
+      title: "Hosting Platform",
+      options: renderDeployChoiceOptions([
+        { label: "Fly.io" },
+        { label: "[SOON] Deploy locally", disabled: true },
+        { label: "[SOON] Railway.com", disabled: true },
+      ], 1, { numbered: false, colorizeDisabled: true }),
+    }));
+
+    assert.match(rendered, /◆  Hosting Platform/);
+    assert.match(rendered, /│  ● Fly\.io/);
+    assert.match(rendered, /│  ○ \[SOON\] Deploy locally/);
+    assert.match(rendered, /│  ○ \[SOON\] Railway\.com/);
+    assert.doesNotMatch(rendered, /1\s+● Fly\.io/);
+  });
+
+  it("falls back to plain disabled choice text when styleText is unavailable", () => {
+    const rendered = renderDisabledDeployChoiceLine("○ [SOON] Railway.com", undefined);
+
+    assert.equal(rendered, "○ [SOON] Railway.com");
+  });
+
+  it("only styles disabled choices when the prompt owns a tty stream", () => {
+    let styleInvocationCount = 0;
+    const styleTextFn = (_format: string | string[], text: string) => {
+      styleInvocationCount += 1;
+      return `styled:${text}`;
+    };
+
+    const withoutStream = renderDeployChoiceOptions([
+      { label: "[SOON] Railway.com", disabled: true },
+    ], 1, {
+      colorizeDisabled: true,
+      disabledStyleTextFn: styleTextFn,
+    });
+    const withNonTtyStream = renderDeployChoiceOptions([
+      { label: "[SOON] Railway.com", disabled: true },
+    ], 1, {
+      colorizeDisabled: true,
+      disabledStyleTextFn: styleTextFn,
+      disabledStyleStream: { isTTY: false } as NodeJS.WriteStream,
+    });
+    const withTtyStream = renderDeployChoiceOptions([
+      { label: "[SOON] Railway.com", disabled: true },
+    ], 1, {
+      colorizeDisabled: true,
+      disabledStyleTextFn: styleTextFn,
+      disabledStyleStream: { isTTY: true } as NodeJS.WriteStream,
+    });
+
+    assert.deepEqual(withoutStream, [" 1  ○ [SOON] Railway.com"]);
+    assert.deepEqual(withNonTtyStream, [" 1  ○ [SOON] Railway.com"]);
+    assert.deepEqual(withTtyStream, ["styled: 1  ○ [SOON] Railway.com"]);
+    assert.equal(styleInvocationCount, 1);
   });
 
   it("renders boxed key-value summaries", () => {

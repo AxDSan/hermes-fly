@@ -54,6 +54,10 @@ function maxRenderedWidth(rendered: string): number {
     .reduce((max, line) => Math.max(max, Array.from(line).length), 0);
 }
 
+function stripAnsi(rendered: string): string {
+  return rendered.replace(/\u001B\[[0-9;]*m/g, "");
+}
+
 async function withMockedTerminalWidth<T>(width: number, fn: () => Promise<T> | T): Promise<T> {
   const stream = process.stderr as NodeJS.WriteStream & { columns?: number };
   const hadOwn = Object.prototype.hasOwnProperty.call(stream, "columns");
@@ -74,6 +78,35 @@ async function withMockedTerminalWidth<T>(width: number, fn: () => Promise<T> | 
       delete stream.columns;
     }
   }
+}
+
+async function withMockedEnvVar<T>(
+  name: string,
+  value: string | undefined,
+  fn: () => Promise<T> | T
+): Promise<T> {
+  const hadOwn = Object.prototype.hasOwnProperty.call(process.env, name);
+  const previous = process.env[name];
+  if (typeof value === "undefined") {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+  try {
+    return await fn();
+  } finally {
+    if (hadOwn) {
+      process.env[name] = previous;
+    } else {
+      delete process.env[name];
+    }
+  }
+}
+
+function itWithAnsiTerminal(name: string, fn: () => Promise<void> | void): void {
+  it(name, async () => {
+    await withMockedEnvVar("TERM", "xterm-256color", fn);
+  });
 }
 
 const DEFAULT_CONFIG: DeployConfig = {
@@ -163,16 +196,27 @@ function isFlyCommand(command: string): boolean {
 function makePromptPort(
   answers: string[],
   opts: { interactive?: boolean; columns?: number } = {}
-): DeployPromptPort & { asked: string[]; secretAsked: string[]; pauses: string[]; writes: string[] } {
+): DeployPromptPort & {
+  asked: string[];
+  secretAsked: string[];
+  pauses: string[];
+  writes: string[];
+  selections: Array<{ initialIndex: number; optionCount: number }>;
+  multiSelections: Array<{ initialIndex: number; optionCount: number; initialSelectedIndices: number[] }>;
+} {
   const asked: string[] = [];
   const secretAsked: string[] = [];
   const pauses: string[] = [];
   const writes: string[] = [];
+  const selections: Array<{ initialIndex: number; optionCount: number }> = [];
+  const multiSelections: Array<{ initialIndex: number; optionCount: number; initialSelectedIndices: number[] }> = [];
   return {
     asked,
     secretAsked,
     pauses,
     writes,
+    selections,
+    multiSelections,
     isInteractive: () => opts.interactive ?? true,
     columns: () => opts.columns ?? process.stderr.columns ?? 80,
     write: (message: string) => { writes.push(message); },
@@ -183,6 +227,74 @@ function makePromptPort(
     askSecret: async (message: string) => {
       secretAsked.push(message);
       return answers.shift() ?? "";
+    },
+    selectChoice: async <T>(params: {
+      options: Array<{ value: T }>;
+      initialIndex: number;
+      render: (activeIndex: number) => string;
+    }) => {
+      selections.push({ initialIndex: params.initialIndex, optionCount: params.options.length });
+      const answer = (answers.shift() ?? "").trim();
+      let selectedIndex = params.initialIndex;
+      if (answer.length === 0) {
+        writes.push(params.render(selectedIndex));
+        return params.options[selectedIndex - 1]?.value;
+      }
+      const numeric = Number(answer);
+      if (Number.isInteger(numeric) && numeric >= 1 && numeric <= params.options.length) {
+        selectedIndex = numeric;
+      } else {
+        const matchedIndex = params.options.findIndex((option) => String(option.value) === answer);
+        if (matchedIndex >= 0) {
+          selectedIndex = matchedIndex + 1;
+        }
+      }
+      writes.push(params.render(selectedIndex));
+      return params.options[selectedIndex - 1]?.value;
+    },
+    selectManyChoices: async <T>(params: {
+      options: Array<{ value: T }>;
+      initialIndex: number;
+      initialSelectedIndices?: number[];
+      render: (activeIndex: number, selectedIndices: number[]) => string;
+      normalizeSelectedIndices?: (selectedIndices: number[], activeIndex: number) => number[];
+      validateSelectedIndices?: (selectedIndices: number[]) => string | undefined;
+    }) => {
+      multiSelections.push({
+        initialIndex: params.initialIndex,
+        optionCount: params.options.length,
+        initialSelectedIndices: [...(params.initialSelectedIndices ?? [])],
+      });
+      while (true) {
+        const answer = (answers.shift() ?? "").trim();
+        let selectedIndices = [...(params.initialSelectedIndices ?? [])];
+        if (answer.length > 0) {
+          const parts = answer.split(",").map((value) => value.trim()).filter(Boolean);
+          const numeric = parts
+            .map((value) => Number(value))
+            .filter((value) => Number.isInteger(value) && value >= 1 && value <= params.options.length);
+          if (numeric.length > 0) {
+            selectedIndices = [...new Set(numeric)];
+          } else {
+            selectedIndices = params.options
+              .map((option, index) => (parts.includes(String(option.value)) ? index + 1 : null))
+              .filter((value): value is number => value !== null);
+          }
+        }
+        const validationError = params.validateSelectedIndices?.(selectedIndices);
+        if (validationError) {
+          writes.push(`${validationError}\n`);
+          continue;
+        }
+        if (params.normalizeSelectedIndices) {
+          selectedIndices = params.normalizeSelectedIndices(
+            selectedIndices,
+            selectedIndices.at(-1) ?? params.initialIndex
+          );
+        }
+        writes.push(params.render(params.initialIndex, selectedIndices));
+        return selectedIndices.map((index) => params.options[index - 1]?.value).filter((value): value is T => value !== undefined);
+      }
     },
     pause: async (message: string) => {
       pauses.push(message);
@@ -2775,13 +2887,21 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /◇  Guided setup/);
     assert.match(guidedCopy, /Each deployment needs a unique name on Fly\.io/);
     assert.match(guidedCopy, /Where are you \(or most of your users\) located/);
+    assert.match(guidedCopy, /Use ↑\/↓ or j\/k to move, then Enter to confirm\./);
+    assert.match(guidedCopy, /● Europe\s+2 locations/);
+    assert.match(guidedCopy, /● London, United Kingdom\s+lhr/);
     assert.match(guidedCopy, /How powerful should your agent's server be/);
+    assert.match(guidedCopy, /● Standard\s+512 MB/);
     assert.match(guidedCopy, /How much storage should your agent have/);
+    assert.match(guidedCopy, /● 10 GB\s+~\$1\.50\/mo/);
     assert.match(guidedCopy, /Get your OpenRouter API key at: https:\/\/openrouter\.ai\/settings\/keys/);
+    assert.match(guidedCopy, /● OpenRouter API key/);
     assert.match(guidedCopy, /Which AI provider do you want to use through OpenRouter/);
     assert.match(guidedCopy, /Which OpenAI model should your agent use/);
-    assert.match(guidedCopy, /1  ○ Telegram/);
-    assert.match(guidedCopy, /5  ● Skip for now/);
+    assert.match(guidedCopy, /Messaging/);
+    assert.match(guidedCopy, /Use ↑\/↓ or j\/k to move, then Enter to confirm\./);
+    assert.match(guidedCopy, /● Telegram\s+Chat with your agent in Telegram/);
+    assert.match(guidedCopy, /○ Skip for now/);
     assert.match(guidedCopy, /1  ○ Telegram now/);
     assert.match(guidedCopy, /2  ● Skip for now/);
     assert.match(guidedCopy, /Do you want to connect Telegram now/);
@@ -2793,6 +2913,11 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /\[\[QR: https:\/\/t\.me\/BotFather\?text=%2Fnewbot\]\]/);
     assert.match(guidedCopy, /tap Send to submit \/newbot/);
     assert.match(guidedCopy, /Review your setup/);
+    assert.ok(!prompts.asked.some((message) => message.includes("Choose an area")));
+    assert.ok(!prompts.asked.some((message) => message.includes("Choose a location")));
+    assert.ok(!prompts.asked.some((message) => message.includes("Choose a tier")));
+    assert.ok(!prompts.asked.some((message) => message.includes("Choose a size")));
+    assert.ok(!prompts.asked.some((message) => message.includes("Choose platform numbers")));
   });
 
   it("falls back to the plain guided deploy screens on narrow terminals", async () => {
@@ -2878,7 +3003,7 @@ describe("FlyDeployWizard.collectConfig", () => {
       const config = await wizard.collectConfig({ channel: "preview" });
 
       assert.equal(config.appName, "my-app");
-      const guidedCopy = prompts.writes.join("");
+      const guidedCopy = stripAnsi(prompts.writes.join(""));
       assert.match(guidedCopy, /Hermes Agent Guided Setup/);
       assert.match(guidedCopy, /I'll walk you through the deployment setup step by step/);
       assert.match(guidedCopy, /Deployment name/);
@@ -3054,7 +3179,7 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(prompts.writes.join(""), /How powerful should your agent's server be/);
     assert.match(prompts.writes.join(""), /Standard\s+512 MB/);
     assert.doesNotMatch(prompts.writes.join(""), /Starter\s+256 MB/);
-    assert.ok(prompts.asked.includes("Choose a tier [1]: "));
+    assert.ok(!prompts.asked.includes("Choose a tier [1]: "));
   });
 
   it("offers ChatGPT subscription access through OpenAI Codex and can reuse existing Hermes auth", async () => {
@@ -3116,6 +3241,9 @@ describe("FlyDeployWizard.collectConfig", () => {
       assert.match(guidedCopy, /2\s+○ Sign in again/);
       assert.match(guidedCopy, /I found an existing Hermes OpenAI Codex login on this machine/);
       assert.match(guidedCopy, /Which OpenAI Codex model should your agent use/);
+      assert.match(guidedCopy, /● GPT 5\.4\s+OpenAI Codex model/);
+      assert.match(guidedCopy, /○ Bring my own model\s+Enter a model ID manually/);
+      assert.ok(!prompts.asked.some((message) => message.includes("Choose a model")));
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -3318,7 +3446,7 @@ describe("FlyDeployWizard.collectConfig", () => {
       assert.equal(config.provider, "openai-codex");
       assert.equal(config.model, "gpt-5.4");
       assert.equal(config.reasoningEffort, "low");
-      const guidedCopy = prompts.writes.join("");
+      const guidedCopy = stripAnsi(prompts.writes.join(""));
       assert.match(guidedCopy, /How much extra reasoning effort should Hermes use with this model/);
       assert.match(guidedCopy, /Lower cost and faster responses/);
       assert.match(guidedCopy, /Balanced \(recommended\)/);
@@ -3415,7 +3543,10 @@ describe("FlyDeployWizard.collectConfig", () => {
       assert.match(guidedCopy, /I found an existing Hermes Nous Portal login on this machine/);
       assert.match(guidedCopy, /Fetching available models from Nous Portal/);
       assert.match(guidedCopy, /Which Nous Portal model should your agent use/);
+      assert.match(guidedCopy, /● GPT 5\.4\s+Nous Portal model/);
+      assert.match(guidedCopy, /○ Bring my own model\s+Enter a model ID manually/);
       assert.match(guidedCopy, /AI access:\s+Nous Portal OAuth/);
+      assert.ok(!prompts.asked.some((message) => message.includes("Choose a model")));
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -3467,7 +3598,10 @@ describe("FlyDeployWizard.collectConfig", () => {
       assert.match(guidedCopy, /2\s+○ Sign in again/);
       assert.match(guidedCopy, /I found existing Claude Code credentials on this machine/);
       assert.match(guidedCopy, /Which Anthropic model should your agent use/);
+      assert.match(guidedCopy, /● Claude Sonnet 4\.6/);
+      assert.match(guidedCopy, /○ Bring my own model\s+Enter a model ID manually/);
       assert.match(guidedCopy, /AI access:\s+Anthropic OAuth/);
+      assert.ok(!prompts.asked.some((message) => message.includes("Choose a model")));
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -3519,7 +3653,10 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /Detecting the matching Z\.AI GLM endpoint/);
     assert.match(guidedCopy, /Global \(Coding Plan\)/);
     assert.match(guidedCopy, /Which Z\.AI GLM model should your agent use/);
+    assert.match(guidedCopy, /● GLM 4\.7\s+Recommended for Coding Plan/);
+    assert.match(guidedCopy, /○ Bring my own model\s+Enter a model ID manually/);
     assert.match(guidedCopy, /AI access:\s+Z\.AI GLM API key/);
+    assert.ok(!prompts.asked.some((message) => message.includes("Choose a model")));
   });
 
   it("rejects an invalid Z.AI API key and reprompts before deploying", async () => {
@@ -3625,14 +3762,20 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /Get your OpenRouter API key at: https:\/\/openrouter\.ai\/settings\/keys/);
     assert.match(guidedCopy, /Fetching available models from OpenRouter/);
     assert.match(guidedCopy, /Which AI provider do you want to use through OpenRouter/);
+    assert.match(guidedCopy, /○ Anthropic\s+Claude models with strong quality/);
+    assert.match(guidedCopy, /● OpenAI\s+GPT models with broad general capability/);
     assert.match(guidedCopy, /Anthropic/);
     assert.match(guidedCopy, /OpenAI/);
     assert.match(guidedCopy, /Mistral/);
     assert.match(guidedCopy, /Which OpenAI model should your agent use/);
+    assert.match(guidedCopy, /● GPT-5 Pro\s+Higher capability/);
+    assert.match(guidedCopy, /○ Bring my own model\s+Enter a model ID manually/);
     assert.match(guidedCopy, /GPT-5 Mini/);
     assert.match(guidedCopy, /GPT-5\s+/);
     assert.match(guidedCopy, /GPT-5 Pro/);
     assert.match(guidedCopy, /GPT-4o/);
+    assert.ok(!prompts.asked.some((message) => message.includes("Choose a provider")));
+    assert.ok(!prompts.asked.some((message) => message.includes("Choose a model")));
   });
 
   it("prompts for a Fly.io organization when multiple orgs are available", async () => {
@@ -3691,7 +3834,182 @@ describe("FlyDeployWizard.collectConfig", () => {
 
     assert.equal(config.orgSlug, "team-deployments");
     assert.match(prompts.writes.join(""), /Which Fly\.io organization should own this deployment/);
-    assert.ok(prompts.asked.some((message) => message.includes("Choose an organization")));
+    assert.ok(!prompts.asked.some((message) => message.includes("Choose an organization")));
+    const guidedCopy = stripAnsi(prompts.writes.join(""));
+    assert.match(guidedCopy, /○ Personal\s+personal/);
+    assert.match(guidedCopy, /● Team Deployments\s+team-deployments/);
+    assert.ok(prompts.selections.some((selection) => selection.optionCount === 2 && selection.initialIndex === 1));
+  });
+
+  it("renders numbered Fly organization options when selectChoice support is unavailable", async () => {
+    const prompts = makePromptPort([
+      "2",
+      "",
+      "1",
+      "1",
+      "1",
+      "1",
+      "1",
+      "sk-live",
+      "1",
+      "1",
+      "",
+      "y"
+    ], { interactive: true });
+    delete prompts.selectChoice;
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command === "fly" && args[0] === "orgs" && args[1] === "list") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([
+            { name: "Personal", slug: "personal", type: "PERSONAL" },
+            { name: "Team Deployments", slug: "team-deployments", type: "SHARED" }
+          ])
+        };
+      }
+      if (command === "fly" && args[0] === "platform" && args[1] === "regions") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([{ code: "iad", name: "Ashburn, Virginia (US)" }])
+        };
+      }
+      if (command === "fly" && args[0] === "platform" && args[1] === "vm-sizes") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([{ name: "shared-cpu-1x", memory_mb: 256 }])
+        };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } })
+        };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/models")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ data: liveOpenRouterModelsFixture() })
+        };
+      }
+      return { exitCode: 1 };
+    });
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner });
+
+    const config = await wizard.collectConfig({ channel: "stable" });
+
+    assert.equal(config.orgSlug, "team-deployments");
+    assert.ok(prompts.asked.includes("Choose an organization [1]: "));
+    const guidedCopy = stripAnsi(prompts.writes.join(""));
+    assert.match(guidedCopy, /1\s+● Personal\s+personal/);
+    assert.match(guidedCopy, /2\s+○ Team Deployments\s+team-deployments/);
+    assert.doesNotMatch(guidedCopy, /Use ↑\/↓ or j\/k to move, then Enter to confirm\./);
+  });
+
+  it("shows hosting platform availability before Fly organization without adding a new prompt", async () => {
+    const prompts = makePromptPort([
+      "2",
+      "",
+      "",
+      "",
+      "",
+      "1",
+      "sk-live",
+      "1",
+      "1",
+      "2",
+      "y"
+    ], { interactive: true });
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command === "fly" && args[0] === "orgs" && args[1] === "list") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([
+            { name: "Personal", slug: "personal", type: "PERSONAL" },
+            { name: "Team Deployments", slug: "team-deployments", type: "SHARED" }
+          ])
+        };
+      }
+      if (command === "fly" && args[0] === "platform" && args[1] === "regions") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([{ code: "iad", name: "Ashburn, Virginia (US)" }])
+        };
+      }
+      if (command === "fly" && args[0] === "platform" && args[1] === "vm-sizes") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([{ name: "shared-cpu-1x", memory_mb: 256 }])
+        };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/key")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ data: { is_free_tier: false, usage: 10 } })
+        };
+      }
+      if (command === "curl" && args.includes("https://openrouter.ai/api/v1/models")) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ data: liveOpenRouterModelsFixture() })
+        };
+      }
+      return { exitCode: 1 };
+    });
+    const wizard = new FlyDeployWizard({}, { prompts, process: runner });
+
+    await wizard.collectConfig({ channel: "stable" });
+
+    const guidedCopy = stripAnsi(prompts.writes.join(""));
+    const hostingIndex = guidedCopy.indexOf("Hosting Platform");
+    const organizationIndex = guidedCopy.indexOf("Fly organization");
+
+    assert.ok(hostingIndex >= 0, guidedCopy);
+    assert.ok(organizationIndex > hostingIndex, guidedCopy);
+    assert.match(guidedCopy, /● Fly\.io/);
+    assert.match(guidedCopy, /○ \[SOON\] Deploy locally/);
+    assert.match(guidedCopy, /○ \[SOON\] Railway\.com/);
+    assert.doesNotMatch(prompts.writes.join(""), /\u001B\[[0-9;]*m/);
+    assert.ok(!prompts.asked.some((message) => /Choose a hosting platform/i.test(message)));
+    assert.ok(!prompts.asked.some((message) => message.includes("Choose an organization")));
+    assert.match(guidedCopy, /Which Fly\.io organization should own this deployment\?\n│\n│  If you only use Fly personally/);
+    assert.match(guidedCopy, /○ Personal\s+personal/);
+    assert.match(guidedCopy, /● Team Deployments\s+team-deployments/);
+  });
+
+  it("uses a single-select messaging choice in the interactive selector path", async () => {
+    const prompts = makePromptPort(["4"], { interactive: true });
+    const wizard = new FlyDeployWizard({}, { prompts });
+
+    const selection = await (wizard as unknown as {
+      collectMessagingPlatformsChoice: () => Promise<string[]>;
+    }).collectMessagingPlatformsChoice();
+
+    assert.deepEqual(selection, ["whatsapp"]);
+    assert.ok(prompts.selections.some((selection) => selection.optionCount === 5 && selection.initialIndex === 5));
+    assert.equal(prompts.multiSelections.length, 0);
+    const guidedCopy = stripAnsi(prompts.writes.join(""));
+    assert.match(guidedCopy, /Use ↑\/↓ or j\/k to move, then Enter to confirm\./);
+    assert.match(guidedCopy, /● WhatsApp\s+Chat with your agent in WhatsApp/);
+    assert.match(guidedCopy, /○ Skip for now/);
+    assert.doesNotMatch(guidedCopy, /Space to toggle/);
+  });
+
+  it("renders numbered single-select messaging options when selectChoice support is unavailable", async () => {
+    const prompts = makePromptPort(["4"], { interactive: true });
+    delete prompts.selectChoice;
+    const wizard = new FlyDeployWizard({}, { prompts });
+
+    const selection = await (wizard as unknown as {
+      collectMessagingPlatformsChoice: () => Promise<string[]>;
+    }).collectMessagingPlatformsChoice();
+
+    assert.deepEqual(selection, ["whatsapp"]);
+    const guidedCopy = stripAnsi(prompts.writes.join(""));
+    assert.match(guidedCopy, /1\s+○ Telegram\s+Chat with your agent in Telegram/);
+    assert.match(guidedCopy, /4\s+○ WhatsApp\s+Chat with your agent in WhatsApp/);
+    assert.match(guidedCopy, /5\s+● Skip for now/);
+    assert.doesNotMatch(guidedCopy, /You can connect more than one/);
+    assert.equal(prompts.asked.filter((message) => message === "Choose a platform [5]: ").length, 1);
   });
 
   it("shows a direct BotFather link and renders a QR code when Telegram setup is selected", async () => {
@@ -4464,7 +4782,11 @@ describe("FlyDeployWizard.collectConfig", () => {
     assert.match(guidedCopy, /I couldn't load the live OpenRouter model list/);
     assert.match(guidedCopy, /Browse every available model at: https:\/\/openrouter\.ai\/models/);
     assert.match(guidedCopy, /Which AI provider do you want to use through OpenRouter/);
+    assert.match(guidedCopy, /● Anthropic\s+Claude models with strong quality/);
     assert.match(guidedCopy, /Which Anthropic model should your agent use/);
+    assert.match(guidedCopy, /● Claude 3\.5 Haiku\s+Fast and lower cost/);
+    assert.ok(!prompts.asked.some((message) => message.includes("Choose a provider")));
+    assert.ok(!prompts.asked.some((message) => message.includes("Choose a model")));
   });
 
   it("uses the pinned Hermes Agent ref for stable deployments", async () => {
@@ -4558,6 +4880,897 @@ describe("ReadlineDeployPrompts.askSecret", () => {
     const written = chunks.join("");
     assert.match(written, /OpenRouter API key \(required\): /);
     assert.doesNotMatch(written, /sk-hidden/);
+  });
+});
+
+describe("ReadlineDeployPrompts.selectChoice", () => {
+  it("reads numeric input through readline when stdin is piped", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    Object.assign(input, { isTTY: false });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectChoice({
+      options: [
+        { value: "personal" },
+        { value: "team" }
+      ],
+      initialIndex: 1,
+      render: () => "● Personal\n○ Team\n",
+      renderFallback: (activeIndex) => [
+        `${activeIndex === 1 ? "1 ●" : "1 ○"} Personal`,
+        `${activeIndex === 2 ? "2 ●" : "2 ○"} Team`,
+        "",
+      ].join("\n"),
+      fallbackPrompt: "Choose an organization [1]: ",
+    });
+    input.write("2\n");
+    const selection = await selectionPromise;
+
+    assert.equal(selection, "team");
+    const written = stripAnsi(chunks.join(""));
+    assert.match(written, /1 ● Personal\n2 ○ Team/);
+    assert.match(written, /Choose an organization \[1\]: /);
+  });
+
+  it("falls back to numbered input on dumb terminals even when raw mode is available", async () => {
+    await withMockedEnvVar("TERM", "dumb", async () => {
+      const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+      const rawModeTransitions: boolean[] = [];
+      Object.assign(input, {
+        isTTY: true,
+        setRawMode: (value: boolean) => {
+          rawModeTransitions.push(value);
+        }
+      });
+
+      const chunks: string[] = [];
+      const output = new Writable({
+        write(chunk, _encoding, callback) {
+          chunks.push(chunk.toString());
+          callback();
+        }
+      }) as Writable & NodeJS.WriteStream;
+      Object.assign(output, { isTTY: true });
+
+      const prompts = new ReadlineDeployPrompts(input, output);
+      const selectionPromise = prompts.selectChoice({
+        options: [
+          { value: "personal" },
+          { value: "team" }
+        ],
+        initialIndex: 1,
+        render: () => "● Personal\n○ Team\n",
+        renderFallback: (activeIndex) => [
+          `${activeIndex === 1 ? "1 ●" : "1 ○"} Personal`,
+          `${activeIndex === 2 ? "2 ●" : "2 ○"} Team`,
+          "",
+        ].join("\n"),
+        fallbackPrompt: "Choose an organization [1]: ",
+      });
+      input.write("2\n");
+      const selection = await selectionPromise;
+
+      assert.equal(selection, "team");
+      const written = stripAnsi(chunks.join(""));
+      assert.match(written, /1 ● Personal\n2 ○ Team/);
+      assert.match(written, /Choose an organization \[1\]: /);
+      assert.doesNotMatch(chunks.join(""), /\u001B\[\?25l/);
+      assert.doesNotMatch(chunks.join(""), /\u001B\[[0-9]+F\u001B\[J/);
+    });
+  });
+
+  it("falls back to numbered input when the terminal cannot enter raw mode", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    Object.assign(input, { isTTY: true });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectChoice({
+      options: [
+        { value: "personal" },
+        { value: "team" }
+      ],
+      initialIndex: 1,
+      render: () => "● Personal\n○ Team\n",
+      renderFallback: (activeIndex) => [
+        `${activeIndex === 1 ? "1 ●" : "1 ○"} Personal`,
+        `${activeIndex === 2 ? "2 ●" : "2 ○"} Team`,
+        "",
+      ].join("\n"),
+      fallbackPrompt: "Choose an organization [1]: ",
+    });
+    input.write("2\n");
+    const selection = await selectionPromise;
+
+    assert.equal(selection, "team");
+    const written = stripAnsi(chunks.join(""));
+    assert.match(written, /1 ● Personal\n2 ○ Team/);
+    assert.match(written, /Choose an organization \[1\]: /);
+  });
+
+  itWithAnsiTerminal("accepts numeric input before Enter and repaints the chosen option", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    const rawModeTransitions: boolean[] = [];
+    Object.assign(input, {
+      isTTY: true,
+      setRawMode: (value: boolean) => {
+        rawModeTransitions.push(value);
+      }
+    });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectChoice({
+      options: [
+        { value: "personal" },
+        { value: "team" },
+        { value: "shared" }
+      ],
+      initialIndex: 1,
+      render: (activeIndex) => [
+        activeIndex === 1 ? "● Personal" : "○ Personal",
+        activeIndex === 2 ? "● Team" : "○ Team",
+        activeIndex === 3 ? "● Shared" : "○ Shared",
+        "",
+      ].join("\n")
+    });
+    input.write("2");
+    input.write("\n");
+    const selection = await selectionPromise;
+
+    assert.equal(selection, "team");
+    assert.deepEqual(rawModeTransitions, [true, false]);
+    assert.match(stripAnsi(chunks.join("")), /○ Personal\n● Team\n○ Shared/);
+  });
+
+  itWithAnsiTerminal("shows an error for invalid numeric input and does not fall back to the previous highlight", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    const rawModeTransitions: boolean[] = [];
+    Object.assign(input, {
+      isTTY: true,
+      setRawMode: (value: boolean) => {
+        rawModeTransitions.push(value);
+      }
+    });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectChoice({
+      options: [
+        { value: "personal" },
+        { value: "team" }
+      ],
+      initialIndex: 1,
+      render: (activeIndex) => activeIndex === 1 ? "● Personal\n○ Team\n" : "○ Personal\n● Team\n"
+    });
+    input.write("22");
+    input.write("\n");
+    input.write("\n");
+    input.write("2");
+    input.write("\n");
+    const selection = await selectionPromise;
+
+    assert.equal(selection, "team");
+    assert.deepEqual(rawModeTransitions, [true, false]);
+    const written = stripAnsi(chunks.join(""));
+    assert.match(written, /Enter a number between 1 and 2\./);
+    assert.match(written, /○ Personal\n● Team/);
+  });
+
+  itWithAnsiTerminal("uses arrow keys to choose an option without a numeric prompt", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    const rawModeTransitions: boolean[] = [];
+    Object.assign(input, {
+      isTTY: true,
+      setRawMode: (value: boolean) => {
+        rawModeTransitions.push(value);
+      }
+    });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectChoice({
+      options: [
+        { value: "personal" },
+        { value: "team" }
+      ],
+      initialIndex: 1,
+      render: (activeIndex) => activeIndex === 1 ? "● Personal\n○ Team\n" : "○ Personal\n● Team\n"
+    });
+    input.write("\u001B[B");
+    input.write("\n");
+    const selection = await selectionPromise;
+
+    assert.equal(selection, "team");
+    assert.deepEqual(rawModeTransitions, [true, false]);
+    assert.match(chunks.join(""), /● Personal/);
+    assert.match(chunks.join(""), /● Team/);
+    assert.doesNotMatch(chunks.join(""), /Choose an organization/);
+  });
+
+  itWithAnsiTerminal("buffers split arrow-key escape sequences across raw input chunks", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    const rawModeTransitions: boolean[] = [];
+    Object.assign(input, {
+      isTTY: true,
+      setRawMode: (value: boolean) => {
+        rawModeTransitions.push(value);
+      }
+    });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectChoice({
+      options: [
+        { value: "personal" },
+        { value: "team" }
+      ],
+      initialIndex: 1,
+      render: (activeIndex) => activeIndex === 1 ? "● Personal\n○ Team\n" : "○ Personal\n● Team\n"
+    });
+    input.write("\u001B");
+    input.write("[");
+    input.write("B");
+    input.write("\n");
+    const selection = await selectionPromise;
+
+    assert.equal(selection, "team");
+    assert.deepEqual(rawModeTransitions, [true, false]);
+    assert.match(stripAnsi(chunks.join("")), /○ Personal\n● Team/);
+  });
+
+  itWithAnsiTerminal("repaints wrapped single-select frames using visual row counts on narrow terminals", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    const rawModeTransitions: boolean[] = [];
+    Object.assign(input, {
+      isTTY: true,
+      setRawMode: (value: boolean) => {
+        rawModeTransitions.push(value);
+      }
+    });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true, columns: 10 });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectChoice({
+      options: [
+        { value: "first" },
+        { value: "second" }
+      ],
+      initialIndex: 1,
+      render: (activeIndex) => [
+        activeIndex === 1 ? "● First option wraps twice" : "○ First option wraps twice",
+        activeIndex === 2 ? "● Second choice wraps too" : "○ Second choice wraps too",
+        "",
+      ].join("\n")
+    });
+    input.write("\u001B[B");
+    input.write("\n");
+    const selection = await selectionPromise;
+
+    assert.equal(selection, "second");
+    assert.deepEqual(rawModeTransitions, [true, false]);
+    assert.match(chunks.join(""), /\u001B\[6F\u001B\[J/);
+  });
+
+  itWithAnsiTerminal("supports j and k navigation", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    const rawModeTransitions: boolean[] = [];
+    Object.assign(input, {
+      isTTY: true,
+      setRawMode: (value: boolean) => {
+        rawModeTransitions.push(value);
+      }
+    });
+
+    const output = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectChoice({
+      options: [
+        { value: "personal" },
+        { value: "team" }
+      ],
+      initialIndex: 1,
+      render: (activeIndex) => activeIndex === 1 ? "● Personal\n○ Team\n" : "○ Personal\n● Team\n"
+    });
+    input.write("j");
+    input.write("k");
+    input.write("\n");
+    const selection = await selectionPromise;
+
+    assert.equal(selection, "personal");
+    assert.deepEqual(rawModeTransitions, [true, false]);
+  });
+});
+
+describe("ReadlineDeployPrompts.selectManyChoices", () => {
+  it("reads numeric input through readline when output is redirected", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    Object.assign(input, { isTTY: true });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: false });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectManyChoices({
+      options: [
+        { value: "telegram" },
+        { value: "discord" },
+        { value: "skip" }
+      ],
+      initialIndex: 3,
+      initialSelectedIndices: [3],
+      normalizeSelectedIndices: (selectedIndices, activeIndex) => (
+        activeIndex === 3
+          ? (selectedIndices.includes(3) ? [3] : [])
+          : selectedIndices.filter((index) => index !== 3)
+      ),
+      render: () => "› ○ Telegram\n  ○ Discord\n  ● Skip for now\n",
+      renderFallback: (_activeIndex, selectedIndices) => {
+        const selected = new Set(selectedIndices);
+        return [
+          `1  ${selected.has(1) ? "●" : "○"} Telegram`,
+          `2  ${selected.has(2) ? "●" : "○"} Discord`,
+          `3  ${selected.has(3) ? "●" : "○"} Skip for now`,
+          "",
+        ].join("\n");
+      },
+      fallbackPrompt: "Choose platform numbers [3]: ",
+    });
+    input.write("1,2\n");
+    const selection = await selectionPromise;
+
+    assert.deepEqual(selection, ["telegram", "discord"]);
+    const written = stripAnsi(chunks.join(""));
+    assert.match(written, /1  ○ Telegram\n2  ○ Discord\n3  ● Skip for now/);
+    assert.match(written, /Choose platform numbers \[3\]: /);
+  });
+
+  it("falls back to numbered multiselect input on dumb terminals even when raw mode is available", async () => {
+    await withMockedEnvVar("TERM", "dumb", async () => {
+      const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+      const rawModeTransitions: boolean[] = [];
+      Object.assign(input, {
+        isTTY: true,
+        setRawMode: (value: boolean) => {
+          rawModeTransitions.push(value);
+        }
+      });
+
+      const chunks: string[] = [];
+      const output = new Writable({
+        write(chunk, _encoding, callback) {
+          chunks.push(chunk.toString());
+          callback();
+        }
+      }) as Writable & NodeJS.WriteStream;
+      Object.assign(output, { isTTY: true });
+
+      const prompts = new ReadlineDeployPrompts(input, output);
+      const selectionPromise = prompts.selectManyChoices({
+        options: [
+          { value: "telegram" },
+          { value: "discord" },
+          { value: "skip" }
+        ],
+        initialIndex: 3,
+        initialSelectedIndices: [3],
+        normalizeSelectedIndices: (selectedIndices, activeIndex) => (
+          activeIndex === 3
+            ? (selectedIndices.includes(3) ? [3] : [])
+            : selectedIndices.filter((index) => index !== 3)
+        ),
+        render: () => "› ○ Telegram\n  ○ Discord\n  ● Skip for now\n",
+        renderFallback: (_activeIndex, selectedIndices) => {
+          const selected = new Set(selectedIndices);
+          return [
+            `1  ${selected.has(1) ? "●" : "○"} Telegram`,
+            `2  ${selected.has(2) ? "●" : "○"} Discord`,
+            `3  ${selected.has(3) ? "●" : "○"} Skip for now`,
+            "",
+          ].join("\n");
+        },
+        fallbackPrompt: "Choose platform numbers [3]: ",
+      });
+      input.write("1,2\n");
+      const selection = await selectionPromise;
+
+      assert.deepEqual(selection, ["telegram", "discord"]);
+      const written = stripAnsi(chunks.join(""));
+      assert.match(written, /1  ○ Telegram\n2  ○ Discord\n3  ● Skip for now/);
+      assert.match(written, /Choose platform numbers \[3\]: /);
+      assert.doesNotMatch(chunks.join(""), /\u001B\[\?25l/);
+      assert.doesNotMatch(chunks.join(""), /\u001B\[[0-9]+F\u001B\[J/);
+    });
+  });
+
+  it("falls back to numbered multiselect input when the terminal cannot enter raw mode", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    Object.assign(input, { isTTY: true });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectManyChoices({
+      options: [
+        { value: "telegram" },
+        { value: "discord" },
+        { value: "skip" }
+      ],
+      initialIndex: 3,
+      initialSelectedIndices: [3],
+      normalizeSelectedIndices: (selectedIndices, activeIndex) => (
+        activeIndex === 3
+          ? (selectedIndices.includes(3) ? [3] : [])
+          : selectedIndices.filter((index) => index !== 3)
+      ),
+      render: () => "› ○ Telegram\n  ○ Discord\n  ● Skip for now\n",
+      renderFallback: (_activeIndex, selectedIndices) => {
+        const selected = new Set(selectedIndices);
+        return [
+          `1  ${selected.has(1) ? "●" : "○"} Telegram`,
+          `2  ${selected.has(2) ? "●" : "○"} Discord`,
+          `3  ${selected.has(3) ? "●" : "○"} Skip for now`,
+          "",
+        ].join("\n");
+      },
+      fallbackPrompt: "Choose platform numbers [3]: ",
+    });
+    input.write("1, 2\n");
+    const selection = await selectionPromise;
+
+    assert.deepEqual(selection, ["telegram", "discord"]);
+    const written = stripAnsi(chunks.join(""));
+    assert.match(written, /1  ○ Telegram\n2  ○ Discord\n3  ● Skip for now/);
+    assert.match(written, /Choose platform numbers \[3\]: /);
+  });
+
+  itWithAnsiTerminal("accepts comma-separated numeric input before Enter and repaints the chosen selections", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    const rawModeTransitions: boolean[] = [];
+    Object.assign(input, {
+      isTTY: true,
+      setRawMode: (value: boolean) => {
+        rawModeTransitions.push(value);
+      }
+    });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectManyChoices({
+      options: [
+        { value: "telegram" },
+        { value: "discord" },
+        { value: "skip" }
+      ],
+      initialIndex: 3,
+      initialSelectedIndices: [3],
+      normalizeSelectedIndices: (selectedIndices, activeIndex) => (
+        activeIndex === 3
+          ? (selectedIndices.includes(3) ? [3] : [])
+          : selectedIndices.filter((index) => index !== 3)
+      ),
+      render: (activeIndex, selectedIndices) => {
+        const selected = new Set(selectedIndices);
+        return [
+          `${activeIndex === 1 ? "›" : " "} ${selected.has(1) ? "●" : "○"} Telegram`,
+          `${activeIndex === 2 ? "›" : " "} ${selected.has(2) ? "●" : "○"} Discord`,
+          `${activeIndex === 3 ? "›" : " "} ${selected.has(3) ? "●" : "○"} Skip for now`,
+          "",
+        ].join("\n");
+      }
+    });
+    input.write("1, 2");
+    input.write("\n");
+    const selection = await selectionPromise;
+
+    assert.deepEqual(selection, ["telegram", "discord"]);
+    assert.deepEqual(rawModeTransitions, [true, false]);
+    assert.match(stripAnsi(chunks.join("")), /› ● Discord\n  ○ Skip for now/);
+  });
+
+  itWithAnsiTerminal("shows validation feedback for invalid numeric selections before accepting corrected input", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    const rawModeTransitions: boolean[] = [];
+    Object.assign(input, {
+      isTTY: true,
+      setRawMode: (value: boolean) => {
+        rawModeTransitions.push(value);
+      }
+    });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectManyChoices({
+      options: [
+        { value: "telegram" },
+        { value: "discord" },
+        { value: "skip" }
+      ],
+      initialIndex: 3,
+      initialSelectedIndices: [3],
+      normalizeSelectedIndices: (selectedIndices, activeIndex) => (
+        activeIndex === 3
+          ? (selectedIndices.includes(3) ? [3] : [])
+          : selectedIndices.filter((index) => index !== 3)
+      ),
+      validateSelectedIndices: (selectedIndices) => (
+        selectedIndices.includes(3) && selectedIndices.length > 1
+          ? "Choose either specific platforms or 3 to skip."
+          : undefined
+      ),
+      render: (_activeIndex, selectedIndices) => {
+        const selected = new Set(selectedIndices);
+        return [
+          `○ Telegram ${selected.has(1) ? "selected" : ""}`.trimEnd(),
+          `○ Discord ${selected.has(2) ? "selected" : ""}`.trimEnd(),
+          `○ Skip for now ${selected.has(3) ? "selected" : ""}`.trimEnd(),
+          "",
+        ].join("\n");
+      }
+    });
+    input.write("1, 3");
+    input.write("\n");
+    input.write("1, 2");
+    input.write("\n");
+    const selection = await selectionPromise;
+
+    assert.deepEqual(selection, ["telegram", "discord"]);
+    assert.deepEqual(rawModeTransitions, [true, false]);
+    assert.match(stripAnsi(chunks.join("")), /Choose either specific platforms or 3 to skip\./);
+  });
+
+  itWithAnsiTerminal("shows an error for out-of-range numeric input and does not fall back to the existing selections", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    const rawModeTransitions: boolean[] = [];
+    Object.assign(input, {
+      isTTY: true,
+      setRawMode: (value: boolean) => {
+        rawModeTransitions.push(value);
+      }
+    });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectManyChoices({
+      options: [
+        { value: "telegram" },
+        { value: "discord" },
+        { value: "skip" }
+      ],
+      initialIndex: 3,
+      initialSelectedIndices: [3],
+      normalizeSelectedIndices: (selectedIndices, activeIndex) => (
+        activeIndex === 3
+          ? (selectedIndices.includes(3) ? [3] : [])
+          : selectedIndices.filter((index) => index !== 3)
+      ),
+      render: (activeIndex, selectedIndices) => {
+        const selected = new Set(selectedIndices);
+        return [
+          `${activeIndex === 1 ? "›" : " "} ${selected.has(1) ? "●" : "○"} Telegram`,
+          `${activeIndex === 2 ? "›" : " "} ${selected.has(2) ? "●" : "○"} Discord`,
+          `${activeIndex === 3 ? "›" : " "} ${selected.has(3) ? "●" : "○"} Skip for now`,
+          "",
+        ].join("\n");
+      }
+    });
+    input.write("1,9");
+    input.write("\n");
+    input.write("\n");
+    input.write("1, 2");
+    input.write("\n");
+    const selection = await selectionPromise;
+
+    assert.deepEqual(selection, ["telegram", "discord"]);
+    assert.deepEqual(rawModeTransitions, [true, false]);
+    const written = stripAnsi(chunks.join(""));
+    assert.match(written, /Enter one or more numbers from 1 to 3, separated by commas\./);
+    assert.match(written, /› ● Discord\n  ○ Skip for now/);
+  });
+
+  itWithAnsiTerminal("uses arrow keys and space to toggle selections before confirming", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    const rawModeTransitions: boolean[] = [];
+    Object.assign(input, {
+      isTTY: true,
+      setRawMode: (value: boolean) => {
+        rawModeTransitions.push(value);
+      }
+    });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectManyChoices({
+      options: [
+        { value: "telegram" },
+        { value: "discord" },
+        { value: "skip" }
+      ],
+      initialIndex: 3,
+      initialSelectedIndices: [3],
+      normalizeSelectedIndices: (selectedIndices, activeIndex) => (
+        activeIndex === 3
+          ? (selectedIndices.includes(3) ? [3] : [])
+          : selectedIndices.filter((index) => index !== 3)
+      ),
+      render: (activeIndex, selectedIndices) => {
+        const selected = new Set(selectedIndices);
+        const lines = [
+          [1, "Telegram"],
+          [2, "Discord"],
+          [3, "Skip for now"],
+        ].map(([index, label]) => `${index === activeIndex ? "›" : " "} ${selected.has(index as number) ? "●" : "○"} ${label}`);
+        return `${lines.join("\n")}\n`;
+      }
+    });
+    input.write("\u001B[A");
+    input.write("\u001B[A");
+    input.write(" ");
+    input.write("\n");
+    const selection = await selectionPromise;
+
+    assert.deepEqual(selection, ["telegram"]);
+    assert.deepEqual(rawModeTransitions, [true, false]);
+    const written = stripAnsi(chunks.join(""));
+    assert.match(written, /› ○ Telegram/);
+    assert.match(written, /› ● Telegram/);
+    assert.match(written, /○ Skip for now/);
+  });
+
+  itWithAnsiTerminal("buffers split arrow-key escape sequences in multiselect mode", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    const rawModeTransitions: boolean[] = [];
+    Object.assign(input, {
+      isTTY: true,
+      setRawMode: (value: boolean) => {
+        rawModeTransitions.push(value);
+      }
+    });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectManyChoices({
+      options: [
+        { value: "telegram" },
+        { value: "discord" },
+        { value: "skip" }
+      ],
+      initialIndex: 3,
+      initialSelectedIndices: [3],
+      normalizeSelectedIndices: (selectedIndices, activeIndex) => (
+        activeIndex === 3
+          ? (selectedIndices.includes(3) ? [3] : [])
+          : selectedIndices.filter((index) => index !== 3)
+      ),
+      render: (activeIndex, selectedIndices) => {
+        const selected = new Set(selectedIndices);
+        return [
+          `${activeIndex === 1 ? "›" : " "} ${selected.has(1) ? "●" : "○"} Telegram`,
+          `${activeIndex === 2 ? "›" : " "} ${selected.has(2) ? "●" : "○"} Discord`,
+          `${activeIndex === 3 ? "›" : " "} ${selected.has(3) ? "●" : "○"} Skip for now`,
+          "",
+        ].join("\n");
+      }
+    });
+    input.write("\u001B");
+    input.write("[");
+    input.write("A");
+    input.write(" ");
+    input.write("\n");
+    const selection = await selectionPromise;
+
+    assert.deepEqual(selection, ["discord"]);
+    assert.deepEqual(rawModeTransitions, [true, false]);
+    const written = stripAnsi(chunks.join(""));
+    assert.match(written, /› ○ Discord/);
+    assert.match(written, /› ● Discord/);
+  });
+
+  itWithAnsiTerminal("repaints wrapped multiselect frames using visual row counts on narrow terminals", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    const rawModeTransitions: boolean[] = [];
+    Object.assign(input, {
+      isTTY: true,
+      setRawMode: (value: boolean) => {
+        rawModeTransitions.push(value);
+      }
+    });
+
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true, columns: 10 });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectManyChoices({
+      options: [
+        { value: "first" },
+        { value: "second" }
+      ],
+      initialIndex: 1,
+      initialSelectedIndices: [1],
+      render: (activeIndex, selectedIndices) => {
+        const selected = new Set(selectedIndices);
+        return [
+          `${activeIndex === 1 ? "›" : " "} ${selected.has(1) ? "●" : "○"} First option wraps twice`,
+          `${activeIndex === 2 ? "›" : " "} ${selected.has(2) ? "●" : "○"} Second choice wraps too`,
+          "",
+        ].join("\n");
+      }
+    });
+    input.write("\u001B[B");
+    input.write(" ");
+    input.write("\n");
+    const selection = await selectionPromise;
+
+    assert.deepEqual(selection, ["first", "second"]);
+    assert.deepEqual(rawModeTransitions, [true, false]);
+    assert.match(chunks.join(""), /\u001B\[6F\u001B\[J/);
+  });
+
+  itWithAnsiTerminal("supports j and k navigation in multiselect mode while keeping skip exclusive", async () => {
+    const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+    const rawModeTransitions: boolean[] = [];
+    Object.assign(input, {
+      isTTY: true,
+      setRawMode: (value: boolean) => {
+        rawModeTransitions.push(value);
+      }
+    });
+
+    const output = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback();
+      }
+    }) as Writable & NodeJS.WriteStream;
+    Object.assign(output, { isTTY: true });
+
+    const prompts = new ReadlineDeployPrompts(input, output);
+    const selectionPromise = prompts.selectManyChoices({
+      options: [
+        { value: "telegram" },
+        { value: "discord" },
+        { value: "skip" }
+      ],
+      initialIndex: 3,
+      initialSelectedIndices: [3],
+      normalizeSelectedIndices: (selectedIndices, activeIndex) => (
+        activeIndex === 3
+          ? (selectedIndices.includes(3) ? [3] : [])
+          : selectedIndices.filter((index) => index !== 3)
+      ),
+      render: (_activeIndex, _selectedIndices) => ""
+    });
+    input.write("k");
+    input.write(" ");
+    input.write("j");
+    input.write("j");
+    input.write(" ");
+    input.write("\n");
+    const selection = await selectionPromise;
+
+    assert.deepEqual(selection, ["skip"]);
+    assert.deepEqual(rawModeTransitions, [true, false]);
   });
 });
 

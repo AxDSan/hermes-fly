@@ -21,6 +21,8 @@
     "test:deploy-resume-deployment-checks": "tsx --test tests-ts/deploy/resume-deployment-checks.test.ts",
     "test:runtime-resume": "tsx --test tests-ts/runtime/resume-command.test.ts",
     "test:deploy-run-wizard": "tsx --test tests-ts/deploy/run-deploy-wizard.test.ts",
+    "test:deploy-template-writer": "tsx --test tests-ts/deploy/template-writer.test.ts",
+    "test:deploy-whatsapp-bridge-patch": "tsx --test tests-ts/deploy/whatsapp-bridge-patch.test.ts",
     "test:deploy-provision": "tsx --test tests-ts/deploy/provision-deployment.test.ts",
     "test:runtime-deploy": "tsx --test tests-ts/runtime/deploy-command.test.ts",
     "test:runtime-doctor": "tsx --test tests-ts/runtime/doctor-command.test.ts",
