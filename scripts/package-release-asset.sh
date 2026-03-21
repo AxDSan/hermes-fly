@@ -24,6 +24,62 @@ repo_root() {
   cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd
 }
 
+extract_ts_semver() {
+  local file_path="$1"
+
+  grep -oE 'HERMES_FLY_TS_VERSION\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"' "$file_path" \
+    | grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' \
+    | tr -d '"' \
+    | head -1
+}
+
+assert_release_versions_match() {
+  local tag="$1" src_root="$2"
+  local expected source_version dist_version
+  local source_version_file="${src_root}/src/version.ts"
+  local dist_version_file="${src_root}/dist/version.js"
+
+  expected="${tag#v}"
+
+  if [[ ! -f "$source_version_file" ]]; then
+    echo "Error: src/version.ts is required to package a release asset" >&2
+    return 1
+  fi
+  if [[ ! -f "$dist_version_file" ]]; then
+    echo "Error: dist/version.js is required to package a release asset. Run npm run build first." >&2
+    return 1
+  fi
+
+  source_version="$(extract_ts_semver "$source_version_file")"
+  dist_version="$(extract_ts_semver "$dist_version_file")"
+
+  if [[ -z "$source_version" ]]; then
+    echo "Error: could not parse HERMES_FLY_TS_VERSION from ${source_version_file}" >&2
+    return 1
+  fi
+  if [[ -z "$dist_version" ]]; then
+    echo "Error: could not parse HERMES_FLY_TS_VERSION from ${dist_version_file}" >&2
+    return 1
+  fi
+
+  if [[ "$source_version" != "$expected" ]]; then
+    echo "Error: source version mismatch" >&2
+    echo "  Tag:                  ${tag}" >&2
+    echo "  Expected version:     ${expected}" >&2
+    echo "  src/version.ts:       ${source_version}" >&2
+    return 1
+  fi
+
+  if [[ "$dist_version" != "$expected" ]]; then
+    echo "Error: compiled dist version mismatch" >&2
+    echo "  Tag:                  ${tag}" >&2
+    echo "  Expected version:     ${expected}" >&2
+    echo "  dist/version.js:      ${dist_version}" >&2
+    echo "Fix: run npm run build before packaging the release asset." >&2
+    return 1
+  fi
+}
+
 tar_supports_flag() {
   local flag="$1"
   tar --help 2>&1 | grep -F -q -- "$flag"
@@ -70,6 +126,7 @@ package_release_asset() {
 
   local src_root
   src_root="$(repo_root)"
+  assert_release_versions_match "$tag" "$src_root"
   if [[ -z "$out_dir" ]]; then
     out_dir="${HERMES_FLY_PACKAGE_OUT_DIR:-$src_root/dist-release}"
   fi

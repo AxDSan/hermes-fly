@@ -39,6 +39,8 @@ describe("TemplateWriter", () => {
       assert.match(dockerfile, /^FROM python:3\.11-slim/m);
       assert.match(dockerfile, /^ARG HERMES_VERSION=8eefbef91cd715cfe410bba8c13cfab4eb3040df$/m);
       assert.match(dockerfile, /raw\.githubusercontent\.com\/NousResearch\/hermes-agent\/\$\{HERMES_VERSION\}\/scripts\/install\.sh/);
+      assert.match(dockerfile, /git -C \/opt\/hermes\/hermes-agent checkout "\$\{HERMES_VERSION\}"/);
+      assert.match(dockerfile, /git -C \/opt\/hermes\/hermes-agent submodule update --init --recursive/);
       assert.doesNotMatch(dockerfile, /ghcr\.io\/anthropics\/hermes-agent/);
       assert.match(dockerfile, /io\.hermes\.deploy\.channel="stable"/);
       assert.match(dockerfile, /io\.hermes\.compatibility_policy="1\.0\.0"/);
