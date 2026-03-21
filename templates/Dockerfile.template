@@ -8,7 +8,37 @@ ARG HERMES_CHANNEL={{HERMES_CHANNEL}}
 ARG HERMES_COMPAT_POLICY={{HERMES_COMPAT_POLICY}}
 RUN apt-get update && apt-get install -y --no-install-recommends git curl xz-utils && rm -rf /var/lib/apt/lists/*
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-RUN curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_VERSION}/scripts/install.sh | bash -s -- --skip-setup
+RUN python3 - <<'PYEOF'
+from pathlib import Path
+
+target = Path("/tmp/hermes-git-wrapper/git")
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_text(
+    """#!/bin/bash
+set -e
+
+if [ "$#" -eq 3 ] && [ "$1" = "pull" ] && [ "$2" = "origin" ]; then
+  ref="$3"
+  if /usr/bin/git show-ref --verify --quiet "refs/remotes/origin/$ref"; then
+    exec /usr/bin/git "$@"
+  fi
+  exit 0
+fi
+
+exec /usr/bin/git "$@"
+""",
+    encoding="utf-8",
+)
+target.chmod(0o755)
+PYEOF
+RUN mkdir -p /root/.hermes && \
+    git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git /root/.hermes/hermes-agent && \
+    git -C /root/.hermes/hermes-agent fetch origin --tags '+refs/heads/*:refs/remotes/origin/*' && \
+    git -C /root/.hermes/hermes-agent checkout "${HERMES_VERSION}" && \
+    git -C /root/.hermes/hermes-agent submodule update --init --recursive
+RUN curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_VERSION}/scripts/install.sh -o /tmp/hermes-agent-install.sh && \
+    PATH="/tmp/hermes-git-wrapper:${PATH}" bash /tmp/hermes-agent-install.sh --skip-setup --dir /root/.hermes/hermes-agent --branch "${HERMES_VERSION}" && \
+    rm -rf /tmp/hermes-agent-install.sh /tmp/hermes-git-wrapper
 RUN mkdir -p /opt/hermes/defaults && \
     mv /root/.hermes/hermes-agent /opt/hermes/hermes-agent && \
     mv /root/.hermes/node         /opt/hermes/node && \

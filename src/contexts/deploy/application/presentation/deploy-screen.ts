@@ -2,6 +2,7 @@ const DEFAULT_TERMINAL_WIDTH = 80;
 const MAX_RENDER_WIDTH = 88;
 const MIN_RENDER_WIDTH = 48;
 const INNER_PADDING = 2;
+const MIN_ENHANCED_SUMMARY_WIDTH = 64;
 const HERO_ART = [
   "██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗    ███████╗██╗     ██╗   ██╗",
   "██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝    ██╔════╝██║     ╚██╗ ██╔╝",
@@ -81,6 +82,10 @@ function renderPlainSection(title: string, lines: string[]): string {
 
 export function supportsEnhancedDeployScreen(requestedWidth?: number): boolean {
   return resolveTerminalWidth(requestedWidth) >= MIN_ENHANCED_WIDTH;
+}
+
+export function supportsEnhancedDeploySummary(requestedWidth?: number): boolean {
+  return resolveTerminalWidth(requestedWidth) >= MIN_ENHANCED_SUMMARY_WIDTH;
 }
 
 function resolveViewportWidth(requestedWidth?: number): number {

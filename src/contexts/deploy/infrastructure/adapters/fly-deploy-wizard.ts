@@ -5082,7 +5082,7 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private diagnoseWhatsAppBridgeLog(logs: string): { kind: "success" | "accepted_but_unhandled" | "missing_message_payload" | "protocol_only" | "not_self_chat" | "unauthorized_sender" | "empty_message" | "unknown" } {
-    if (/"reason":"agent-echo"/i.test(logs)) {
+    if (this.hasWhatsAppBridgeSelfChatEcho(logs)) {
       return { kind: "success" };
     }
     if (/messages\.poll\.drained/i.test(logs) || /messages\.upsert\.accepted/i.test(logs) || /messages\.upsert\.queued/i.test(logs)) {
@@ -5173,6 +5173,67 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     return {};
+  }
+
+  private normalizeWhatsAppBridgeChatId(value: string | undefined): string | undefined {
+    const trimmed = value?.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    return trimmed.replace(/:.*@/, "@");
+  }
+
+  private buildWhatsAppBridgeSelfChatIds(identity: { selfJid?: string; selfNumber?: string; selfLid?: string }): Set<string> {
+    const ids = new Set<string>();
+    const add = (value: string | undefined) => {
+      const normalized = this.normalizeWhatsAppBridgeChatId(value);
+      if (!normalized) {
+        return;
+      }
+      ids.add(normalized);
+      const localId = normalized.replace(/@.*/, "");
+      if (localId) {
+        ids.add(localId);
+      }
+    };
+
+    add(identity.selfJid);
+    add(identity.selfLid);
+    add(identity.selfNumber);
+    return ids;
+  }
+
+  private hasWhatsAppBridgeSelfChatEcho(logs: string): boolean {
+    const lines = logs
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && /"reason":"agent-echo"/.test(line));
+    if (lines.length === 0) {
+      return false;
+    }
+
+    const identity = this.parseWhatsAppBridgeIdentityFromLog(logs);
+    const selfChatIds = this.buildWhatsAppBridgeSelfChatIds(identity);
+    if (selfChatIds.size === 0) {
+      return true;
+    }
+
+    return lines.some((line) => {
+      const chatIdMatch = line.match(/"chatId":"([^"]+)"/);
+      const normalizedChatId = this.normalizeWhatsAppBridgeChatId(chatIdMatch?.[1]);
+      if (!normalizedChatId) {
+        return false;
+      }
+      if (
+        normalizedChatId.endsWith("@lid")
+        && !identity.selfLid
+        && Boolean(identity.selfJid || identity.selfNumber)
+        && /"echoType":"edit"/.test(line)
+      ) {
+        return true;
+      }
+      return selfChatIds.has(normalizedChatId) || selfChatIds.has(normalizedChatId.replace(/@.*/, ""));
+    });
   }
 
   private extractRelevantWhatsAppLogLines(logs: string): string {

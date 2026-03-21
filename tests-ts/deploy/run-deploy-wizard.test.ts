@@ -1782,7 +1782,7 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.doesNotMatch(io.errText, /you configured WhatsApp self-chat/i);
   });
 
-  it("treats post-prompt bridge agent echoes as successful self-chat replies even when app logs only show startup noise", async () => {
+  it("treats post-prompt bridge edit echoes as successful self-chat replies even when app logs only show startup noise", async () => {
     const prompts = makePromptPort(["y"], { interactive: true });
     const io = makeIO();
     const backgroundCalls: Array<{ command: string; args: string[] }> = [];
@@ -1855,7 +1855,7 @@ describe("FlyDeployWizard.postDeployActions", () => {
               "[hermes-whatsapp-bridge] {\"event\":\"messages.upsert.skipped\",\"reason\":\"protocol-message-no-content\",\"messageId\":\"wamid.protocol\"}",
               "[hermes-whatsapp-bridge] {\"event\":\"messages.upsert.accepted\",\"messageId\":\"wamid.test\",\"chatId\":\"242137421639836@lid\",\"bodyPreview\":\"test\",\"queueLengthBefore\":0}",
               "[hermes-whatsapp-bridge] {\"event\":\"messages.upsert.queued\",\"messageId\":\"wamid.test\",\"chatId\":\"242137421639836@lid\",\"queueLength\":1}",
-              "[hermes-whatsapp-bridge] {\"event\":\"messages.upsert.skipped\",\"messageId\":\"wamid.reply\",\"reason\":\"agent-echo\",\"chatId\":\"242137421639836@lid\"}",
+              "[hermes-whatsapp-bridge] {\"event\":\"messages.update.skipped\",\"messageId\":\"wamid.test\",\"reason\":\"agent-echo\",\"echoType\":\"edit\",\"chatId\":\"242137421639836@lid\",\"targetMessageId\":\"wamid.test\"}",
             ].join("\n"),
             stderr: "",
           };
@@ -2544,6 +2544,40 @@ describe("FlyDeployWizard.postDeployActions", () => {
     assert.deepEqual(result, {});
     assert.equal(streamed, false);
     assert.match(io.errText, /could not disconnect WhatsApp from deployment old-whatsapp-app/i);
+  });
+});
+
+describe("FlyDeployWizard.diagnoseWhatsAppBridgeLog", () => {
+  it("treats agent echoes as success when they match the paired self-chat identity", () => {
+    const wizard = new FlyDeployWizard({}, { prompts: makePromptPort([], { interactive: true }) });
+    const diagnosis = (wizard as unknown as { diagnoseWhatsAppBridgeLog: (logs: string) => { kind: string } }).diagnoseWhatsAppBridgeLog([
+      "[hermes-whatsapp-bridge] {\"event\":\"connection.open\",\"selfJid\":\"447871172820@s.whatsapp.net\",\"selfNumber\":\"447871172820\",\"selfLid\":\"242137421639836@lid\"}",
+      "[hermes-whatsapp-bridge] {\"event\":\"messages.update.skipped\",\"messageId\":\"wamid.test\",\"reason\":\"agent-echo\",\"echoType\":\"edit\",\"chatId\":\"242137421639836@lid\",\"targetMessageId\":\"wamid.test\"}",
+    ].join("\n"));
+
+    assert.deepEqual(diagnosis, { kind: "success" });
+  });
+
+  it("treats @lid edit echoes as success when only selfJid/selfNumber are known", () => {
+    const wizard = new FlyDeployWizard({}, { prompts: makePromptPort([], { interactive: true }) });
+    const diagnosis = (wizard as unknown as { diagnoseWhatsAppBridgeLog: (logs: string) => { kind: string } }).diagnoseWhatsAppBridgeLog([
+      "[hermes-whatsapp-bridge] {\"event\":\"connection.open\",\"selfJid\":\"447871172820@s.whatsapp.net\",\"selfNumber\":\"447871172820\"}",
+      "[hermes-whatsapp-bridge] {\"event\":\"messages.update.skipped\",\"messageId\":\"wamid.test\",\"reason\":\"agent-echo\",\"echoType\":\"edit\",\"chatId\":\"242137421639836@lid\",\"targetMessageId\":\"wamid.test\"}",
+    ].join("\n"));
+
+    assert.deepEqual(diagnosis, { kind: "success" });
+  });
+
+  it("ignores agent echoes from other chats when bridge identity is known", () => {
+    const wizard = new FlyDeployWizard({}, { prompts: makePromptPort([], { interactive: true }) });
+    const diagnosis = (wizard as unknown as { diagnoseWhatsAppBridgeLog: (logs: string) => { kind: string } }).diagnoseWhatsAppBridgeLog([
+      "[hermes-whatsapp-bridge] {\"event\":\"connection.open\",\"selfJid\":\"447871172820@s.whatsapp.net\",\"selfNumber\":\"447871172820\",\"selfLid\":\"242137421639836@lid\"}",
+      "[hermes-whatsapp-bridge] {\"event\":\"messages.upsert.accepted\",\"messageId\":\"wamid.test\",\"chatId\":\"242137421639836@lid\",\"bodyPreview\":\"test\",\"queueLengthBefore\":0}",
+      "[hermes-whatsapp-bridge] {\"event\":\"messages.upsert.queued\",\"messageId\":\"wamid.test\",\"chatId\":\"242137421639836@lid\",\"queueLength\":1}",
+      "[hermes-whatsapp-bridge] {\"event\":\"messages.update.skipped\",\"messageId\":\"wamid.other\",\"reason\":\"agent-echo\",\"echoType\":\"edit\",\"chatId\":\"15551234567@s.whatsapp.net\",\"targetMessageId\":\"wamid.other\"}",
+    ].join("\n"));
+
+    assert.deepEqual(diagnosis, { kind: "accepted_but_unhandled" });
   });
 });
 

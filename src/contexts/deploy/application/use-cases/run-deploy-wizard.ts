@@ -7,7 +7,7 @@ import type { PostDeployCleanupPort } from "../ports/post-deploy-cleanup.port.js
 import {
   renderDeployCopyableSection,
   renderDeployKeyValuePanel,
-  supportsEnhancedDeployScreen,
+  supportsEnhancedDeploySummary,
 } from "../presentation/deploy-screen.js";
 
 const VALID_CHANNELS = new Set(["stable", "preview", "edge"]);
@@ -197,7 +197,7 @@ function shouldUseEnhancedCompletionSummary(stdout: DeployOutputWriter): boolean
   if (stdout.isTTY !== true) {
     return false;
   }
-  return supportsEnhancedDeployScreen(stdout.columns);
+  return supportsEnhancedDeploySummary(stdout.columns);
 }
 
 function writeCompletionSummary(stdout: DeployOutputWriter, config: DeployConfig): void {
