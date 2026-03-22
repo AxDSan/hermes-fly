@@ -1,26 +1,57 @@
-# Hermes Agent Update Dockerfile (fixed version)
+# Hermes Agent Update Dockerfile
+# Updates existing deployments while preserving user data in the volume
 FROM python:3.11-slim
 
-ENV HERMES_DEPLOY_CHANNEL={{HERMES_CHANNEL}}
-ENV PATH="/root/.hermes/bin:/usr/local/bin:/root/.local/bin:${PATH}"
+LABEL maintainer="hermes" \
+      version="{{HERMES_VERSION}}" \
+      io.hermes.deploy.channel="{{HERMES_CHANNEL}}" \
+      io.hermes.compatibility_policy="{{HERMES_COMPATIBILITY_POLICY}}"
+
+ARG HERMES_VERSION={{HERMES_VERSION}}
+ARG HERMES_CHANNEL={{HERMES_CHANNEL}}
+ARG HERMES_COMPATIBILITY_POLICY={{HERMES_COMPATIBILITY_POLICY}}
 
 # Install dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl xz-utils ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # Install Hermes Agent
-ARG HERMES_VERSION={{HERMES_VERSION}}
 RUN curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_VERSION}/scripts/install.sh | bash -s -- --skip-setup
 
-# Move code to /opt/hermes (outside volume) + CREATE ALL NECESSARY SYMLINKS
-RUN mkdir -p /opt/hermes && \
+# Move code to /opt/hermes (outside volume) and preserve defaults
+# The entrypoint will recreate symlinks on boot
+RUN mkdir -p /opt/hermes/defaults && \
     mv /root/.hermes/hermes-agent /opt/hermes/hermes-agent && \
-    ln -sf /opt/hermes/hermes-agent /root/.hermes/hermes-agent && \
-    mkdir -p /root/.hermes/bin /usr/local/bin && \
-    ln -sf /opt/hermes/hermes-agent/venv/bin/hermes /root/.hermes/bin/hermes && \
-    ln -sf /opt/hermes/hermes-agent/venv/bin/hermes /usr/local/bin/hermes && \
-    echo 'export PATH="$HOME/.hermes/bin:/usr/local/bin:$PATH"' >> /root/.bashrc
+    mv /root/.hermes/node /opt/hermes/node && \
+    cp /root/.hermes/.env /root/.hermes/config.yaml /root/.hermes/SOUL.md /opt/hermes/defaults/ 2>/dev/null || true && \
+    cp -r /root/.hermes/skills /opt/hermes/defaults/skills 2>/dev/null || true
 
-WORKDIR /opt/hermes/hermes-agent
-CMD ["hermes", "gateway", "run"]
+# Install sitecustomize.py for Python path handling
+COPY sitecustomize.py /tmp/hermes-fly-sitecustomize.py
+RUN /opt/hermes/hermes-agent/venv/bin/python - <<'PYEOF'
+from pathlib import Path
+import sysconfig
+source = Path("/tmp/hermes-fly-sitecustomize.py")
+target = Path(sysconfig.get_paths()["purelib"]) / "sitecustomize.py"
+target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+target.chmod(0o644)
+PYEOF
+
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Copy runtime scripts
+COPY entrypoint.sh /entrypoint.sh
+COPY gateway-supervisor.sh /gateway-supervisor.sh
+COPY sitecustomize.py /tmp/hermes-fly-sitecustomize.py
+COPY patch-whatsapp-bridge.py /tmp/hermes-fly-patch-whatsapp-bridge.py
+
+# Apply WhatsApp bridge patch
+RUN /opt/hermes/hermes-agent/venv/bin/python /tmp/hermes-fly-patch-whatsapp-bridge.py /opt/hermes/hermes-agent/scripts/whatsapp-bridge/bridge.js 2>/dev/null || true
+
+RUN chmod +x /entrypoint.sh /gateway-supervisor.sh
+
+WORKDIR /root/.hermes
+ENTRYPOINT ["/entrypoint.sh"]
