@@ -38,7 +38,20 @@ describe("TemplateWriter", () => {
 
       assert.match(dockerfile, /^FROM python:3\.11-slim/m);
       assert.match(dockerfile, /^ARG HERMES_VERSION=8eefbef91cd715cfe410bba8c13cfab4eb3040df$/m);
+      assert.match(dockerfile, /target = Path\("\/tmp\/hermes-git-wrapper\/git"\)/);
+      assert.match(dockerfile, /if \[ "\$#" -eq 3 \] && \[ "\$1" = "pull" \] && \[ "\$2" = "origin" \]/);
+      assert.match(
+        dockerfile,
+        /git clone --recurse-submodules https:\/\/github\.com\/NousResearch\/hermes-agent\.git \/root\/\.hermes\/hermes-agent/
+      );
+      assert.match(dockerfile, /git -C \/root\/\.hermes\/hermes-agent checkout "\$\{HERMES_VERSION\}"/);
+      assert.match(
+        dockerfile,
+        /git -C \/root\/\.hermes\/hermes-agent submodule update --init --recursive/
+      );
       assert.match(dockerfile, /raw\.githubusercontent\.com\/NousResearch\/hermes-agent\/\$\{HERMES_VERSION\}\/scripts\/install\.sh/);
+      assert.match(dockerfile, /PATH="\/tmp\/hermes-git-wrapper:\$\{PATH\}" bash \/tmp\/hermes-agent-install\.sh --skip-setup --dir \/root\/\.hermes\/hermes-agent --branch "\$\{HERMES_VERSION\}"/);
+      assert.doesNotMatch(dockerfile, /unexpected Hermes Agent install\.sh shape/);
       assert.doesNotMatch(dockerfile, /ghcr\.io\/anthropics\/hermes-agent/);
       assert.match(dockerfile, /io\.hermes\.deploy\.channel="stable"/);
       assert.match(dockerfile, /io\.hermes\.compatibility_policy="1\.0\.0"/);

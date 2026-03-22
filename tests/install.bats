@@ -1300,7 +1300,7 @@ MOCK
   local npm_args_file="${TEST_TEMP_DIR}/npm_args"
   local tar_args_file="${TEST_TEMP_DIR}/tar_args"
 
-  mkdir -p "$src/dist" "$src/templates" "$src/data" "$mock_dir"
+  mkdir -p "$src/dist" "$src/src" "$src/templates" "$src/data" "$mock_dir"
   cat > "$src/hermes-fly" <<'MOCK'
 #!/usr/bin/env bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -1308,6 +1308,8 @@ exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
 MOCK
   chmod +x "$src/hermes-fly"
   echo '// compiled cli' > "$src/dist/cli.js"
+  echo 'export const HERMES_FLY_TS_VERSION = "0.1.26";' > "$src/dist/version.js"
+  echo 'export const HERMES_FLY_TS_VERSION = "0.1.26";' > "$src/src/version.ts"
   echo '{"type":"module"}' > "$src/package.json"
   echo '{"lockfileVersion":3}' > "$src/package-lock.json"
   echo 'tpl' > "$src/templates/Dockerfile.template"
@@ -1336,6 +1338,44 @@ MOCK
   assert_output --partial "COPYFILE_DISABLE=1"
   assert_output --partial "COPY_EXTENDED_ATTRIBUTES_DISABLE=1"
   [[ "$output" == *"--format ustar"* ]] || [[ "$output" == *"ARGS="* ]]
+}
+
+@test "package_release_asset fails when compiled dist version drifts from src/version.ts" {
+  local src="${TEST_TEMP_DIR}/release_src"
+  local out="${TEST_TEMP_DIR}/out"
+  local mock_dir="${TEST_TEMP_DIR}/mock_bin"
+  local npm_args_file="${TEST_TEMP_DIR}/npm_args"
+  local tar_args_file="${TEST_TEMP_DIR}/tar_args"
+
+  mkdir -p "$src/dist" "$src/src" "$src/templates" "$src/data" "$mock_dir"
+  cat > "$src/hermes-fly" <<'MOCK'
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec node "${SCRIPT_DIR}/dist/cli.js" "$@"
+MOCK
+  chmod +x "$src/hermes-fly"
+  echo '// compiled cli' > "$src/dist/cli.js"
+  echo 'export const HERMES_FLY_TS_VERSION = "0.1.25";' > "$src/dist/version.js"
+  echo 'export const HERMES_FLY_TS_VERSION = "0.1.26";' > "$src/src/version.ts"
+  echo '{"type":"module"}' > "$src/package.json"
+  echo '{"lockfileVersion":3}' > "$src/package-lock.json"
+  echo 'tpl' > "$src/templates/Dockerfile.template"
+  echo '{}' > "$src/data/reasoning-snapshot.json"
+
+  write_mock_npm "$mock_dir"
+  write_mock_release_tar "$mock_dir"
+
+  run bash -c '
+    export PATH="'"$mock_dir"':${PATH}"
+    export HERMES_FLY_PACKAGE_SOURCE_DIR="'"$src"'"
+    export MOCK_NPM_ARGS_FILE="'"$npm_args_file"'"
+    export MOCK_TAR_ARGS_FILE="'"$tar_args_file"'"
+    bash "'"${PROJECT_ROOT}"'/scripts/package-release-asset.sh" v0.1.26 "'"$out"'"
+  '
+  assert_failure
+  assert_output --partial "compiled dist version mismatch"
+  assert_output --partial "Expected version:     0.1.26"
+  assert_output --partial "dist/version.js:      0.1.25"
 }
 
 # --- release resolution ---
