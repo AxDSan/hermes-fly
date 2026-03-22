@@ -88,7 +88,9 @@ describe("TemplateWriter", () => {
       assert.match(entrypoint, /whatsapp-approved\.json/);
       assert.match(entrypoint, /export WHATSAPP_ENABLED=true/);
       assert.match(entrypoint, /export WHATSAPP_MODE="\$\{WHATSAPP_MODE:-self-chat\}"/);
+      assert.match(entrypoint, /export WHATSAPP_HOME_CHANNEL="\$\{HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER\}"/);
       assert.match(entrypoint, /export WHATSAPP_HOME_CONTACT="\$\{HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER\}"/);
+      assert.match(entrypoint, /WHATSAPP_HOME_CHANNEL/);
       assert.match(entrypoint, /WHATSAPP_HOME_CONTACT/);
       assert.match(entrypoint, /find \/root\/\.hermes\/whatsapp\/session -mindepth 1/);
       assert.match(entrypoint, /if \[\[ -z "\$\{WHATSAPP_ENABLED:-\}" \]\]; then/);
@@ -101,7 +103,7 @@ describe("TemplateWriter", () => {
       assert.match(supervisor, /hermes gateway run --replace/);
       assert.match(supervisor, /\/root\/\.hermes\/\.env/);
       assert.match(supervisor, /self-chat-identity\.json/);
-      assert.match(supervisor, /unset WHATSAPP_ENABLED WHATSAPP_MODE WHATSAPP_ALLOWED_USERS WHATSAPP_HOME_CONTACT/);
+      assert.match(supervisor, /unset WHATSAPP_ENABLED WHATSAPP_MODE WHATSAPP_ALLOWED_USERS WHATSAPP_HOME_CHANNEL WHATSAPP_HOME_CONTACT/);
 
       assert.match(sitecustomize, /HERMES_ZAI_THINKING/);
       assert.match(sitecustomize, /thinking/);
@@ -111,6 +113,8 @@ describe("TemplateWriter", () => {
       assert.match(patchGateway, /metadata=None/);
       assert.match(patchGateway, /await self\.send_typing\(chat_id, metadata=metadata\)/);
       assert.match(patchGateway, /signal send_typing signature/);
+      assert.match(patchGateway, /WHATSAPP_HOME_CHANNEL/);
+      assert.match(patchGateway, /whatsapp_home = os\.getenv/);
 
       assert.match(patchBridge, /messages\.upsert\.skipped/);
       assert.match(patchBridge, /messages\.upsert\.accepted/);

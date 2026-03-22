@@ -1985,6 +1985,7 @@ describe("FlyDeployWizard.postDeployActions", () => {
       && call.args.some((value) => value.includes("env_values"))
     );
     assert.ok(persistedStateCall, "expected a remote self-chat identity persistence command");
+    assert.match(persistedStateCall?.args.join(" ") ?? "", /WHATSAPP_HOME_CHANNEL/);
     assert.match(persistedStateCall?.args.join(" ") ?? "", /WHATSAPP_HOME_CONTACT/);
     assert.match(io.outText, /Detecting the paired WhatsApp account and adopting it for self-chat/i);
     assert.match(io.outText, /Send a short message to Message yourself now/i);

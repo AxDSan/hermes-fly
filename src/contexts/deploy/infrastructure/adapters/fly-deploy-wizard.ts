@@ -4737,6 +4737,7 @@ export class FlyDeployWizard implements DeployWizardPort {
           "WHATSAPP_ENABLED",
           "WHATSAPP_MODE",
           "WHATSAPP_ALLOWED_USERS",
+          "WHATSAPP_HOME_CHANNEL",
           "WHATSAPP_HOME_CONTACT",
           "HERMES_FLY_WHATSAPP_PENDING",
           "HERMES_FLY_WHATSAPP_MODE",
@@ -4765,6 +4766,7 @@ export class FlyDeployWizard implements DeployWizardPort {
           "  sed -i '/^WHATSAPP_ENABLED=/d' /root/.hermes/.env",
           "  sed -i '/^WHATSAPP_MODE=/d' /root/.hermes/.env",
           "  sed -i '/^WHATSAPP_ALLOWED_USERS=/d' /root/.hermes/.env",
+          "  sed -i '/^WHATSAPP_HOME_CHANNEL=/d' /root/.hermes/.env",
           "  sed -i '/^WHATSAPP_HOME_CONTACT=/d' /root/.hermes/.env",
           "fi",
         ].join("\n"),
@@ -5055,6 +5057,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       WHATSAPP_ENABLED: "true",
       WHATSAPP_MODE: "self-chat",
       WHATSAPP_ALLOWED_USERS: allowedUsers,
+      WHATSAPP_HOME_CHANNEL: allowedUsers,
       WHATSAPP_HOME_CONTACT: allowedUsers,
     });
 

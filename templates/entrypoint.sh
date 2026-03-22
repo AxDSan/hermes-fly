@@ -67,6 +67,8 @@ if [[ -z "${WHATSAPP_ENABLED:-}" ]] && [[ "${HERMES_FLY_WHATSAPP_PENDING:-}" =~ 
     sed -i '/^WHATSAPP_ENABLED=/d' /root/.hermes/.env 2>/dev/null || true
     sed -i '/^WHATSAPP_MODE=/d' /root/.hermes/.env 2>/dev/null || true
     sed -i '/^WHATSAPP_ALLOWED_USERS=/d' /root/.hermes/.env 2>/dev/null || true
+    sed -i '/^WHATSAPP_HOME_CHANNEL=/d' /root/.hermes/.env 2>/dev/null || true
+    sed -i '/^WHATSAPP_HOME_CONTACT=/d' /root/.hermes/.env 2>/dev/null || true
   fi
 fi
 if [[ -z "${WHATSAPP_ENABLED:-}" ]]; then
@@ -77,6 +79,9 @@ if [[ -z "${WHATSAPP_MODE:-}" ]]; then
 fi
 if [[ -z "${WHATSAPP_ALLOWED_USERS:-}" ]]; then
   sed -i '/^WHATSAPP_ALLOWED_USERS=/d' /root/.hermes/.env 2>/dev/null || true
+fi
+if [[ -z "${WHATSAPP_HOME_CHANNEL:-}" ]]; then
+  sed -i '/^WHATSAPP_HOME_CHANNEL=/d' /root/.hermes/.env 2>/dev/null || true
 fi
 if [[ -z "${WHATSAPP_HOME_CONTACT:-}" ]]; then
   sed -i '/^WHATSAPP_HOME_CONTACT=/d' /root/.hermes/.env 2>/dev/null || true
@@ -111,6 +116,7 @@ if [[ -n "${HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER:-}" ]]; then
   export WHATSAPP_ENABLED=true
   export WHATSAPP_MODE="${WHATSAPP_MODE:-self-chat}"
   export WHATSAPP_ALLOWED_USERS="${HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER}"
+  export WHATSAPP_HOME_CHANNEL="${HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER}"
   export WHATSAPP_HOME_CONTACT="${HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER}"
 fi
 # Bridge Fly secrets into /root/.hermes/.env on every boot (not just first deploy)
@@ -120,7 +126,7 @@ for var in OPENROUTER_API_KEY GLM_API_KEY GLM_BASE_URL LLM_MODEL LLM_BASE_URL LL
   HERMES_STT_PROVIDER HERMES_STT_MODEL \
   TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_USERS DISCORD_BOT_TOKEN DISCORD_ALLOWED_USERS \
   SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_ALLOWED_USERS \
-  WHATSAPP_ENABLED WHATSAPP_MODE WHATSAPP_ALLOWED_USERS WHATSAPP_HOME_CONTACT \
+  WHATSAPP_ENABLED WHATSAPP_MODE WHATSAPP_ALLOWED_USERS WHATSAPP_HOME_CHANNEL WHATSAPP_HOME_CONTACT \
   HERMES_APP_NAME GATEWAY_ALLOW_ALL_USERS TELEGRAM_HOME_CHANNEL; do
   val="${!var:-}"
   if [[ -n "$val" ]]; then
