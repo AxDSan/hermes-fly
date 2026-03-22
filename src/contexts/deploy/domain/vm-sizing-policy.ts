@@ -1,4 +1,5 @@
 export type VmSizingReason = "messaging-gateway";
+export type VmSizingAdvisory = "messaging-minimum";
 
 export interface VmSizingInput {
   currentVmSize: string;
@@ -9,6 +10,7 @@ export interface VmSizingDecision {
   vmSize: string;
   adjusted: boolean;
   reason?: VmSizingReason;
+  advisory?: VmSizingAdvisory;
 }
 
 const VM_SIZE_ORDER = [
@@ -27,6 +29,9 @@ export class VmSizingPolicy {
       return {
         vmSize: input.currentVmSize,
         adjusted: false,
+        ...(minimum.reason === "messaging-gateway" && input.currentVmSize === minimum.vmSize
+          ? { advisory: "messaging-minimum" as const }
+          : {}),
       };
     }
 

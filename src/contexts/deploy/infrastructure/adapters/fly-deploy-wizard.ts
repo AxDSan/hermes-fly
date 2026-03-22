@@ -1,4 +1,4 @@
-import type { DeployConfig, DeployWizardPort } from "../../application/ports/deploy-wizard.port.js";
+import type { DeployConfig, DeployRunResult, DeployWizardPort } from "../../application/ports/deploy-wizard.port.js";
 import {
   renderAdaptiveDeployChoiceSection,
   renderAdaptiveDeployCopyableSection,
@@ -44,7 +44,8 @@ import {
   type ZaiModelOption,
 } from "./zai-api-key.js";
 import { MessagingPolicy, type MessagingPolicyMode } from "../../../messaging/domain/messaging-policy.js";
-import { VmSizingPolicy, type VmSizingReason } from "../../domain/vm-sizing-policy.js";
+import { DeployFailurePolicy } from "../../domain/deploy-failure.js";
+import { VmSizingPolicy, type VmSizingAdvisory, type VmSizingReason } from "../../domain/vm-sizing-policy.js";
 import {
   TELEGRAM_BOTFATHER_DELETEBOT_URL,
   TELEGRAM_BOTFATHER_NEWBOT_URL,
@@ -262,14 +263,14 @@ const STATIC_VM_OPTIONS: VmOption[] = [
     tier: "Standard",
     ramLabel: "512 MB",
     costLabel: "~$4/mo",
-    bestFor: "Most users. Better under everyday load.",
+    bestFor: "Minimum recommended. Good for lighter everyday use.",
   },
   {
     value: "performance-1x",
     tier: "Pro",
     ramLabel: "2 GB",
     costLabel: "~$32/mo",
-    bestFor: "Heavy use or larger agents.",
+    bestFor: "Safer default for messaging or heavier use.",
   },
   {
     value: "performance-2x",
@@ -358,6 +359,8 @@ export interface FlyDeployWizardDeps {
   anthropicAuth?: AnthropicAuthAdapter;
   nousAuth?: NousPortalAuthAdapter;
   zaiAuth?: ZaiApiKeyAdapter;
+  stdout?: { write: (chunk: string) => void };
+  stderr?: { write: (chunk: string) => void };
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -373,6 +376,8 @@ export class FlyDeployWizard implements DeployWizardPort {
   private readonly anthropicAuth: AnthropicAuthAdapter;
   private readonly nousAuth: NousPortalAuthAdapter;
   private readonly zaiAuth: ZaiApiKeyAdapter;
+  private readonly stdout: { write: (chunk: string) => void };
+  private readonly stderr: { write: (chunk: string) => void };
   private readonly env: NodeJS.ProcessEnv;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly defaultAppName: string;
@@ -394,6 +399,8 @@ export class FlyDeployWizard implements DeployWizardPort {
     this.anthropicAuth = deps.anthropicAuth ?? new AnthropicAuthAdapter(this.process, this.env);
     this.nousAuth = deps.nousAuth ?? new NousPortalAuthAdapter(this.process, this.env);
     this.zaiAuth = deps.zaiAuth ?? new ZaiApiKeyAdapter(this.process, this.env);
+    this.stdout = deps.stdout ?? process.stdout;
+    this.stderr = deps.stderr ?? process.stderr;
     this.sleep = deps.sleep ?? (async (ms: number) => { await new Promise((resolve) => setTimeout(resolve, ms)); });
     this.defaultAppName = this.buildDefaultAppName();
     this.rememberModelOptions(STATIC_MODEL_OPTIONS);
@@ -572,6 +579,8 @@ export class FlyDeployWizard implements DeployWizardPort {
     });
     if (vmSizingDecision.adjusted) {
       this.writeVmSizingAdjustment(vmSize, vmSizingDecision.vmSize, vmSizingDecision.reason);
+    } else if (vmSizingDecision.advisory) {
+      this.writeVmSizingAdvisory(vmSizingDecision.vmSize, vmSizingDecision.advisory);
     }
     const hermesRef = this.resolveHermesAgentRef(opts.channel);
 
@@ -741,14 +750,33 @@ export class FlyDeployWizard implements DeployWizardPort {
     return this.runner.setSecrets(config.appName, secrets);
   }
 
-  async runDeploy(buildDir: string, config: DeployConfig): Promise<{ ok: boolean; error?: string }> {
-    const result = await this.process.runForeground(
+  async runDeploy(buildDir: string, config: DeployConfig): Promise<DeployRunResult> {
+    let stdout = "";
+    let stderr = "";
+    const result = await this.process.runStreaming(
       "fly",
       ["deploy", "--app", config.appName, "--config", "fly.toml", "--dockerfile", "Dockerfile", "--wait-timeout", "5m0s"],
-      { env: this.env, cwd: buildDir }
+      {
+        env: this.env,
+        cwd: buildDir,
+        onStdoutChunk: (chunk) => {
+          stdout += chunk;
+          this.stdout.write(chunk);
+        },
+        onStderrChunk: (chunk) => {
+          stderr += chunk;
+          this.stderr.write(chunk);
+        }
+      }
     );
     if (result.exitCode !== 0) {
-      return { ok: false, error: "fly deploy failed" };
+      return {
+        ok: false,
+        failure: DeployFailurePolicy.classify({
+          rawOutput: `${stdout}\n${stderr}`,
+          vmSize: config.vmSize,
+        })
+      };
     }
     return { ok: true };
   }
@@ -1216,6 +1244,18 @@ export class FlyDeployWizard implements DeployWizardPort {
     if (previousVmSize !== nextVmSize) {
       this.prompts.write(`\nAdjusting server size to ${this.describeVmSize(nextVmSize)}.\n\n`);
     }
+  }
+
+  private writeVmSizingAdvisory(vmSize: string, advisory?: VmSizingAdvisory): void {
+    if (!this.prompts.isInteractive()) {
+      return;
+    }
+    if (advisory !== "messaging-minimum" || vmSize !== "shared-cpu-2x") {
+      return;
+    }
+    this.prompts.write("\n");
+    this.prompts.write("Standard (512 MB) is the minimum recommended size once Hermes is keeping messaging gateways online.\n");
+    this.prompts.write("If you want a safer default for busier use or tight Fly.io regions, choose Pro (2 GB).\n\n");
   }
 
   private readPrimaryMachineState(stdout: string): string | undefined {

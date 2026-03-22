@@ -1,8 +1,10 @@
 import type {
   DeployConfig,
+  DeployRunResult,
   DeployWizardPort,
   FinalizeMessagingSetupResult,
 } from "../ports/deploy-wizard.port.js";
+import type { DeployFailure } from "../../domain/deploy-failure.js";
 import type { PostDeployCleanupPort } from "../ports/post-deploy-cleanup.port.js";
 import {
   renderDeployCopyableSection,
@@ -29,6 +31,11 @@ const VM_SIZE_LABELS = new Map<string, string>([
   ["performance-1x", "Pro (performance-1x, 2 GB)"],
   ["performance-2x", "Power (performance-2x, 4 GB)"],
 ]);
+const VM_SIZE_UPGRADE_LABELS = new Map<string, string>([
+  ["shared-cpu-2x", "Standard (512 MB)"],
+  ["performance-1x", "Pro (2 GB)"],
+  ["performance-2x", "Power (4 GB)"],
+]);
 const WHATSAPP_SELF_CHAT_DETECTED_ACCESS_LABEL = "Only me (detected after pairing)";
 
 function resolveChannel(input: string): DeployChannel {
@@ -37,6 +44,30 @@ function resolveChannel(input: string): DeployChannel {
 
 function describeVmSize(vmSize: string): string {
   return VM_SIZE_LABELS.get(vmSize) ?? vmSize;
+}
+
+function describeVmSizeUpgrade(vmSize: string): string {
+  return VM_SIZE_UPGRADE_LABELS.get(vmSize) ?? describeVmSize(vmSize);
+}
+
+function writeDeployFailure(stderr: DeployOutputWriter, failure: DeployFailure, config: DeployConfig): void {
+  stderr.write(`[error] ${failure.summary}\n`);
+  if (failure.detail) {
+    stderr.write(`Fly.io said: ${failure.detail}\n`);
+  }
+
+  if (failure.kind === "capacity") {
+    stderr.write("Try the same deploy again in a few minutes.\n");
+    stderr.write("If it keeps failing, rerun deploy and choose a different region.\n");
+    if (failure.suggestedVmSize) {
+      stderr.write(`If you want a safer default, choose ${describeVmSizeUpgrade(failure.suggestedVmSize)}.\n`);
+    }
+    stderr.write(`If you want to clean up this partial app first, run 'hermes-fly destroy -a ${config.appName}'.\n`);
+    return;
+  }
+
+  stderr.write("Scroll up to the first Fly.io error above for the exact cause.\n");
+  stderr.write(`If you want to clean up this partial app first, run 'hermes-fly destroy -a ${config.appName}'.\n`);
 }
 
 function describeTelegram(config: DeployConfig): string | undefined {
@@ -372,13 +403,12 @@ export class RunDeployWizardUseCase {
     }
 
     // Phase 5: Run deploy — preserve resources even on failure
-    const deployResult = await this.port.runDeploy(buildDir, config);
+    const deployResult: DeployRunResult = await this.port.runDeploy(buildDir, config);
     if (!deployResult.ok) {
       // Save app so resume works
       await this.port.saveApp(config);
-      stderr.write(`[error] Deploy failed: ${deployResult.error ?? "unknown error"}\n`);
-      stderr.write(`Tip: run 'hermes-fly resume -a ${config.appName}' to retry post-deploy checks.\n`);
-      return { kind: "failed", error: deployResult.error ?? "deploy failed" };
+      writeDeployFailure(stderr, deployResult.failure, config);
+      return { kind: "failed", error: deployResult.failure.summary };
     }
 
     // Phase 6: Post-deploy check

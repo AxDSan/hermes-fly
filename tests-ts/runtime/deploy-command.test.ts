@@ -248,6 +248,41 @@ describe("runDeployCommand - successful deploy", () => {
   });
 });
 
+describe("runDeployCommand - deploy failure guidance", () => {
+  it("surfaces actionable capacity guidance instead of a resume hint", async () => {
+    const io = makeIO();
+
+    const code = await runDeployCommand({}, {
+      wizard: makeWizardPort({
+        collectConfig: async () => ({
+          ...DEFAULT_CONFIG,
+          region: "ams",
+          vmSize: "shared-cpu-2x",
+          messagingPlatforms: ["whatsapp"],
+          whatsappEnabled: true,
+          whatsappMode: "self-chat",
+        }),
+        runDeploy: async () => ({
+          ok: false,
+          failure: {
+            kind: "capacity",
+            summary: "Fly.io could not find room for a new server in that region right now.",
+            detail: "insufficient memory available to fulfill request",
+            suggestedVmSize: "performance-1x",
+          }
+        })
+      }),
+      stdout: io.stdout,
+      stderr: io.stderr
+    });
+
+    assert.equal(code, 1);
+    assert.match(io.errText, /Try the same deploy again in a few minutes\./);
+    assert.match(io.errText, /If you want a safer default, choose Pro \(2 GB\)\./);
+    assert.doesNotMatch(io.errText, /resume -a test-app/);
+  });
+});
+
 describe("runDeployCommand - channel flag", () => {
   it("accepts a typed channel without error", async () => {
     const io = makeIO();

@@ -147,6 +147,55 @@ describe("FlyDeployWizard sizing guidance", () => {
     assert.match(copy, /How powerful should your agent's server be/);
     assert.ok(prompts.asked.includes("Choose a tier [1]: "));
     assert.match(copy, /Standard\s+512 MB/);
+    assert.match(copy, /Minimum recommended\./);
     assert.doesNotMatch(copy, /Starter\s+256 MB/);
+  });
+
+  it("warns that Standard is the minimum recommended size once messaging is enabled", async () => {
+    const prompts = makePromptPort([
+      "my-app",
+      "2",
+      "2",
+      "",
+      "2",
+      "1",
+      "sk-live",
+      "y",
+    ]);
+    const runner = makeProcessRunner(async (command, args) => {
+      if (command === "fly" && args[0] === "platform" && args[1] === "regions") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([
+            { code: "iad", name: "Ashburn, Virginia (US)" },
+            { code: "fra", name: "Frankfurt, Germany" },
+            { code: "lhr", name: "London, United Kingdom" },
+          ]),
+        };
+      }
+      if (command === "fly" && args[0] === "platform" && args[1] === "vm-sizes") {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([
+            { name: "shared-cpu-1x", memory_mb: 256 },
+            { name: "shared-cpu-2x", memory_mb: 512 },
+            { name: "performance-1x", memory_mb: 2048 },
+          ]),
+        };
+      }
+      return { exitCode: 1, stdout: "", stderr: "" };
+    });
+    const wizard = new FlyDeployWizard({
+      HERMES_FLY_WHATSAPP_PENDING: "true",
+      HERMES_FLY_WHATSAPP_MODE: "self-chat",
+    }, { prompts, process: runner, qrRenderer: makeQrRenderer() });
+
+    const config = await wizard.collectConfig({ channel: "stable" });
+
+    assert.equal(config.vmSize, "shared-cpu-2x");
+    assert.deepEqual(config.messagingPlatforms, ["whatsapp"]);
+    const copy = prompts.writes.join("");
+    assert.match(copy, /Standard \(512 MB\) is the minimum recommended size once Hermes is keeping messaging gateways online\./);
+    assert.match(copy, /choose Pro \(2 GB\)/i);
   });
 });

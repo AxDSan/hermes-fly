@@ -1,3 +1,5 @@
+import type { DeployFailure } from "../../domain/deploy-failure.js";
+
 export interface DeployConfig {
   orgSlug: string;
   appName: string;
@@ -47,6 +49,7 @@ export interface FinalizeMessagingSetupResult {
 }
 
 export type SuccessfulDeploymentAction = "conclude" | "destroy";
+export type DeployRunResult = { ok: true } | { ok: false; failure: DeployFailure };
 
 export interface DeployWizardPort {
   checkPlatform(): Promise<{ ok: boolean; error?: string }>;
@@ -56,7 +59,7 @@ export interface DeployWizardPort {
   collectConfig(opts: { channel: "stable" | "preview" | "edge" }): Promise<DeployConfig>;
   createBuildContext(config: DeployConfig): Promise<{ buildDir: string }>;
   provisionResources(config: DeployConfig): Promise<{ ok: boolean; error?: string }>;
-  runDeploy(buildDir: string, config: DeployConfig): Promise<{ ok: boolean; error?: string }>;
+  runDeploy(buildDir: string, config: DeployConfig): Promise<DeployRunResult>;
   postDeployCheck(appName: string): Promise<{ ok: boolean; error?: string }>;
   saveApp(config: DeployConfig): Promise<void>;
   finalizeMessagingSetup(

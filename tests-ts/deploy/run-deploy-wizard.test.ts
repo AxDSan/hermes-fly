@@ -159,6 +159,16 @@ function makeProcessRunner(
     command: string,
     args: string[],
     options?: { cwd?: string; env?: NodeJS.ProcessEnv }
+  ) => Promise<{ exitCode: number }> = async () => ({ exitCode: 0 }),
+  streamingImpl: (
+    command: string,
+    args: string[],
+    options?: {
+      cwd?: string;
+      env?: NodeJS.ProcessEnv;
+      onStdoutChunk?: (chunk: string) => void;
+      onStderrChunk?: (chunk: string) => void;
+    }
   ) => Promise<{ exitCode: number }> = async () => ({ exitCode: 0 })
 ): ForegroundProcessRunner {
   return {
@@ -184,7 +194,7 @@ function makeProcessRunner(
         exitCode: result.exitCode
       };
     },
-    runStreaming: async () => ({ exitCode: 0 }),
+    runStreaming: async (command, args, options) => streamingImpl(command, args, options),
     runForeground: async (command, args, options) => foregroundImpl(command, args, options)
   };
 }
@@ -768,7 +778,14 @@ describe("RunDeployWizardUseCase - deploy failure with resume hint", () => {
   it("returns failed when fly deploy fails", async () => {
     const io = makeIO();
     const uc = new RunDeployWizardUseCase(makePort({
-      runDeploy: async () => ({ ok: false, error: "deploy failed" })
+      runDeploy: async () => ({
+        ok: false,
+        failure: {
+          kind: "generic",
+          summary: "Fly.io stopped the deploy before Hermes could finish setup.",
+          detail: "fly deploy exited with code 1",
+        }
+      })
     }));
     const result = await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr);
     assert.equal(result.kind, "failed");
@@ -778,20 +795,48 @@ describe("RunDeployWizardUseCase - deploy failure with resume hint", () => {
     const saved: string[] = [];
     const io = makeIO();
     const uc = new RunDeployWizardUseCase(makePort({
-      runDeploy: async () => ({ ok: false, error: "deploy failed" }),
+      runDeploy: async () => ({
+        ok: false,
+        failure: {
+          kind: "generic",
+          summary: "Fly.io stopped the deploy before Hermes could finish setup.",
+          detail: "fly deploy exited with code 1",
+        }
+      }),
       saveApp: async (appName) => { saved.push(appName); }
     }));
     await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr);
     assert.equal(saved.length, 1, "app should be saved even on deploy failure");
   });
 
-  it("outputs resume hint after deploy failure", async () => {
+  it("prints actionable capacity guidance and avoids the resume hint when Fly has no room for the machine", async () => {
     const io = makeIO();
     const uc = new RunDeployWizardUseCase(makePort({
-      runDeploy: async () => ({ ok: false, error: "deploy failed" })
+      collectConfig: async () => ({
+        ...DEFAULT_CONFIG,
+        region: "ams",
+        vmSize: "shared-cpu-2x",
+        messagingPlatforms: ["whatsapp"],
+        whatsappEnabled: true,
+        whatsappMode: "self-chat",
+      }),
+      runDeploy: async () => ({
+        ok: false,
+        failure: {
+          kind: "capacity",
+          summary: "Fly.io could not find room for a new server in that region right now.",
+          detail: "insufficient memory available to fulfill request",
+          suggestedVmSize: "performance-1x",
+        }
+      })
     }));
     await uc.execute({ autoInstall: true, channel: "stable" }, io.stderr);
-    assert.ok(io.text.includes("resume") || io.text.includes("hermes-fly resume"), `expected resume hint, got: ${io.text}`);
+    assert.match(io.errText, /Fly\.io could not find room for a new server in that region right now\./);
+    assert.match(io.errText, /Fly\.io said: insufficient memory available to fulfill request/);
+    assert.match(io.errText, /Try the same deploy again in a few minutes\./);
+    assert.match(io.errText, /If it keeps failing, rerun deploy and choose a different region\./);
+    assert.match(io.errText, /If you want a safer default, choose Pro \(2 GB\)\./);
+    assert.doesNotMatch(io.errText, /resume -a test-app/);
   });
 });
 
@@ -1032,16 +1077,24 @@ describe("FlyDeployWizard.checkAuth", () => {
 });
 
 describe("FlyDeployWizard.runDeploy", () => {
-  it("runs fly deploy in the foreground from the build directory so users see live output and entrypoint.sh is inside the Docker build context", async () => {
+  it("streams fly deploy from the build directory so users still see live output and entrypoint.sh is inside the Docker build context", async () => {
     const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
     const runner = makeProcessRunner(
       async () => ({ exitCode: 0 }),
       async (command, args, options) => {
         calls.push({ command, args, cwd: options?.cwd });
         return { exitCode: 0 };
+      },
+      async (command, args, options) => {
+        calls.push({ command, args, cwd: options?.cwd });
+        return { exitCode: 0 };
       }
     );
-    const wizard = new FlyDeployWizard({}, { process: runner });
+    const wizard = new FlyDeployWizard({}, {
+      process: runner,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+    });
 
     const result = await wizard.runDeploy("/tmp/hermes-build", DEFAULT_CONFIG);
 
@@ -1052,6 +1105,44 @@ describe("FlyDeployWizard.runDeploy", () => {
       "deploy", "--app", "test-app", "--config", "fly.toml", "--dockerfile", "Dockerfile", "--wait-timeout", "5m0s"
     ]);
     assert.equal(calls[0]?.cwd, "/tmp/hermes-build");
+  });
+
+  it("classifies Fly capacity failures from streamed deploy output", async () => {
+    const runner = makeProcessRunner(
+      async () => ({ exitCode: 0 }),
+      async () => ({ exitCode: 0 }),
+      async (command, args, options) => {
+        assert.equal(command, "fly");
+        assert.deepEqual(args, [
+          "deploy", "--app", "test-app", "--config", "fly.toml", "--dockerfile", "Dockerfile", "--wait-timeout", "5m0s"
+        ]);
+        options?.onStderrChunk?.(
+          "Error: error creating a new machine: failed to launch VM: aborted: insufficient resources available to fulfill request: could not reserve resource for machine: insufficient memory available to fulfill request\n"
+        );
+        return { exitCode: 1 };
+      }
+    );
+    const wizard = new FlyDeployWizard({}, {
+      process: runner,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+    });
+
+    const result = await wizard.runDeploy("/tmp/hermes-build", {
+      ...DEFAULT_CONFIG,
+      region: "ams",
+      vmSize: "shared-cpu-2x",
+    });
+
+    assert.deepEqual(result, {
+      ok: false,
+      failure: {
+        kind: "capacity",
+        summary: "Fly.io could not find room for a new server in that region right now.",
+        detail: "insufficient memory available to fulfill request",
+        suggestedVmSize: "performance-1x",
+      }
+    });
   });
 });
 

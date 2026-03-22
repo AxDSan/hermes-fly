@@ -40,4 +40,17 @@ describe("VmSizingPolicy", () => {
       adjusted: false,
     });
   });
+
+  it("keeps Standard but marks it as the minimum recommended size for messaging gateways", () => {
+    const result = VmSizingPolicy.resolve({
+      currentVmSize: "shared-cpu-2x",
+      messagingPlatforms: ["whatsapp"],
+    });
+
+    assert.deepEqual(result, {
+      vmSize: "shared-cpu-2x",
+      adjusted: false,
+      advisory: "messaging-minimum",
+    });
+  });
 });
