@@ -7,8 +7,8 @@ import type { DeployWizardPort } from "../../src/contexts/deploy/application/por
 describe("UpdateDeploymentUseCase", () => {
   function makeRunner(overrides: Partial<UpdateRunnerPort> & { capturedBuildDir?: string } = {}): UpdateRunnerPort {
     return {
-      checkAppExists: async () => true,
-      runUpdate: async (buildDir: string) => {
+      checkAppExists: async () => ({ exists: true }),
+      runUpdate: async (buildDir: string, appName: string) => {
         overrides.capturedBuildDir = buildDir;
         return { ok: true };
       },
@@ -68,7 +68,7 @@ describe("UpdateDeploymentUseCase", () => {
 
   it("fails if app does not exist", async () => {
     const runner = makeRunner({
-      checkAppExists: async () => false,
+      checkAppExists: async () => ({ exists: false }),
     });
     const wizard = makeWizard();
     const useCase = new UpdateDeploymentUseCase(runner, wizard);
