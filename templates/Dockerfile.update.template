@@ -5,11 +5,11 @@ FROM python:3.11-slim
 LABEL maintainer="hermes" \
       version="{{HERMES_VERSION}}" \
       io.hermes.deploy.channel="{{HERMES_CHANNEL}}" \
-      io.hermes.compatibility_policy="{{HERMES_COMPATIBILITY_POLICY}}"
+      io.hermes.compatibility_policy="{{HERMES_COMPAT_POLICY}}"
 
 ARG HERMES_VERSION={{HERMES_VERSION}}
 ARG HERMES_CHANNEL={{HERMES_CHANNEL}}
-ARG HERMES_COMPATIBILITY_POLICY={{HERMES_COMPATIBILITY_POLICY}}
+ARG HERMES_COMPAT_POLICY={{HERMES_COMPAT_POLICY}}
 
 # Install dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

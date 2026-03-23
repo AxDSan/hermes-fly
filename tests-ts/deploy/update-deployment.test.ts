@@ -36,6 +36,8 @@ describe("UpdateDeploymentUseCase", () => {
         channel: "edge",
       }),
       createBuildContext: async () => ({ buildDir: "/tmp/hermes-deploy-test-app-1234567890" }),
+      fetchExistingConfig: async () => null,
+      promptUpdateConfigChoice: async () => ({ keep: true }),
       provisionResources: async () => ({ ok: true }),
       runDeploy: async () => ({ ok: true }),
       postDeployCheck: async () => ({ ok: true }),
