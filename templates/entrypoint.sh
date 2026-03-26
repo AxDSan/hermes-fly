@@ -4,7 +4,7 @@ set -euo pipefail
 ln -sfn /opt/hermes/hermes-agent /root/.hermes/hermes-agent
 ln -sfn /opt/hermes/node /root/.hermes/node
 # All runtime data directories
-mkdir -p /root/.hermes/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,whatsapp/session}
+mkdir -p /root/.hermes/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,runtime,whatsapp/session}
 # Seed default config files on first deploy (never overwrite user customizations)
 for f in .env config.yaml SOUL.md; do
   if [[ ! -f /root/.hermes/$f ]] && [[ -f /opt/hermes/defaults/$f ]]; then
@@ -67,7 +67,57 @@ if [[ -z "${WHATSAPP_ENABLED:-}" ]] && [[ "${HERMES_FLY_WHATSAPP_PENDING:-}" =~ 
     sed -i '/^WHATSAPP_ENABLED=/d' /root/.hermes/.env 2>/dev/null || true
     sed -i '/^WHATSAPP_MODE=/d' /root/.hermes/.env 2>/dev/null || true
     sed -i '/^WHATSAPP_ALLOWED_USERS=/d' /root/.hermes/.env 2>/dev/null || true
+    sed -i '/^WHATSAPP_HOME_CHANNEL=/d' /root/.hermes/.env 2>/dev/null || true
+    sed -i '/^WHATSAPP_HOME_CONTACT=/d' /root/.hermes/.env 2>/dev/null || true
   fi
+fi
+if [[ -z "${WHATSAPP_ENABLED:-}" ]]; then
+  sed -i '/^WHATSAPP_ENABLED=/d' /root/.hermes/.env 2>/dev/null || true
+fi
+if [[ -z "${WHATSAPP_MODE:-}" ]]; then
+  sed -i '/^WHATSAPP_MODE=/d' /root/.hermes/.env 2>/dev/null || true
+fi
+if [[ -z "${WHATSAPP_ALLOWED_USERS:-}" ]]; then
+  sed -i '/^WHATSAPP_ALLOWED_USERS=/d' /root/.hermes/.env 2>/dev/null || true
+fi
+if [[ -z "${WHATSAPP_HOME_CHANNEL:-}" ]]; then
+  sed -i '/^WHATSAPP_HOME_CHANNEL=/d' /root/.hermes/.env 2>/dev/null || true
+fi
+if [[ -z "${WHATSAPP_HOME_CONTACT:-}" ]]; then
+  sed -i '/^WHATSAPP_HOME_CONTACT=/d' /root/.hermes/.env 2>/dev/null || true
+fi
+# Load the detected WhatsApp self-chat identity from the volume so future boots
+# do not depend on a staged Fly secret for the adopted number.
+if [[ -f /root/.hermes/whatsapp/self-chat-identity.json ]]; then
+  eval "$(
+    python3 - <<'PYEOF'
+import json
+import shlex
+from pathlib import Path
+
+state_path = Path('/root/.hermes/whatsapp/self-chat-identity.json')
+try:
+    state = json.loads(state_path.read_text(encoding='utf-8'))
+except Exception:
+    raise SystemExit(0)
+
+mapping = {
+    'HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER': str(state.get('self_number', '')).strip(),
+    'HERMES_FLY_WHATSAPP_SELF_CHAT_JID': str(state.get('self_jid', '')).strip(),
+    'HERMES_FLY_WHATSAPP_SELF_CHAT_LID': str(state.get('self_lid', '')).strip(),
+}
+for key, value in mapping.items():
+    if value:
+        print(f"export {key}={shlex.quote(value)}")
+PYEOF
+  )"
+fi
+if [[ -n "${HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER:-}" ]]; then
+  export WHATSAPP_ENABLED=true
+  export WHATSAPP_MODE="${WHATSAPP_MODE:-self-chat}"
+  export WHATSAPP_ALLOWED_USERS="${HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER}"
+  export WHATSAPP_HOME_CHANNEL="${HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER}"
+  export WHATSAPP_HOME_CONTACT="${HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER}"
 fi
 # Bridge Fly secrets into /root/.hermes/.env on every boot (not just first deploy)
 for var in OPENROUTER_API_KEY GLM_API_KEY GLM_BASE_URL LLM_MODEL LLM_BASE_URL LLM_API_KEY NOUS_API_KEY \
@@ -76,7 +126,7 @@ for var in OPENROUTER_API_KEY GLM_API_KEY GLM_BASE_URL LLM_MODEL LLM_BASE_URL LL
   HERMES_STT_PROVIDER HERMES_STT_MODEL \
   TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_USERS DISCORD_BOT_TOKEN DISCORD_ALLOWED_USERS \
   SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_ALLOWED_USERS \
-  WHATSAPP_ENABLED WHATSAPP_MODE WHATSAPP_ALLOWED_USERS \
+  WHATSAPP_ENABLED WHATSAPP_MODE WHATSAPP_ALLOWED_USERS WHATSAPP_HOME_CHANNEL WHATSAPP_HOME_CONTACT \
   HERMES_APP_NAME GATEWAY_ALLOW_ALL_USERS TELEGRAM_HOME_CHANNEL; do
   val="${!var:-}"
   if [[ -n "$val" ]]; then
@@ -223,6 +273,53 @@ if entries:
     json.dump(entries, open(approved_file, 'w'))
 PYEOF
 fi
+# Pre-seed WhatsApp self-chat approvals from the detected paired identity. This
+# removes the post-pair race where Hermes can see the first self-chat message
+# before approvals exist.
+if [[ -f /root/.hermes/whatsapp/self-chat-identity.json ]]; then
+  python3 - <<'PYEOF'
+import json
+import os
+import time
+from pathlib import Path
+
+state_path = Path('/root/.hermes/whatsapp/self-chat-identity.json')
+approved_path = Path('/root/.hermes/pairing/whatsapp-approved.json')
+try:
+    state = json.loads(state_path.read_text(encoding='utf-8'))
+except Exception:
+    raise SystemExit(0)
+
+approved_ids = []
+for key in ('self_lid', 'self_jid', 'self_number'):
+    value = str(state.get(key, '')).strip()
+    if value and value not in approved_ids:
+        approved_ids.append(value)
+
+if not approved_ids:
+    raise SystemExit(0)
+
+existing = {}
+if approved_path.exists():
+    try:
+        existing = json.loads(approved_path.read_text(encoding='utf-8'))
+    except Exception:
+        existing = {}
+
+now = time.time()
+for user_id in approved_ids:
+    existing.setdefault(user_id, {
+        'user_name': 'auto-approved',
+        'approved_at': now,
+    })
+
+approved_path.parent.mkdir(parents=True, exist_ok=True)
+tmp_path = approved_path.with_suffix('.json.tmp')
+tmp_path.write_text(json.dumps(existing), encoding='utf-8')
+os.chmod(tmp_path, 0o600)
+os.replace(tmp_path, approved_path)
+PYEOF
+fi
 # Write deploy provenance manifest on every boot (idempotent — latest config always wins)
 python3 - <<'PYEOF'
 import os, json
@@ -240,5 +337,6 @@ _manifest = {
 with open('/root/.hermes/deploy-manifest.json', 'w') as _fh:
     json.dump(_manifest, _fh, indent=2)
 PYEOF
-# Start hermes gateway
-exec /opt/hermes/hermes-agent/venv/bin/hermes gateway run "$@"
+# Start Hermes gateway under a lightweight supervisor so deploy-time setup can
+# restart the gateway process without forcing a full Fly machine reboot.
+exec /gateway-supervisor.sh "$@"

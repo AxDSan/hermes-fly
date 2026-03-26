@@ -100,10 +100,11 @@ teardown() {
   run bash -c '
     NODE_DIR="$(dirname "$(command -v node)")"
     tmp_no_fly="$(mktemp -d)"
-    trap "rm -rf \"${tmp_no_fly}\"" EXIT
+    home_dir="$(mktemp -d)"
+    trap "rm -rf \"${tmp_no_fly}\" \"${home_dir}\"" EXIT
     printf '\''#!/usr/bin/env bash\nif [[ "${1:-}" == "fly" ]]; then exit 1; fi\nexec /usr/bin/which "$@"\n'\'' > "${tmp_no_fly}/which"
     chmod +x "${tmp_no_fly}/which"
-    OPENROUTER_API_KEY=test-key PATH="${tmp_no_fly}:${NODE_DIR}:/usr/bin:/bin" \
+    HOME="${home_dir}" HERMES_FLY_CONFIG_DIR="${home_dir}/.hermes-fly" OPENROUTER_API_KEY=test-key PATH="${tmp_no_fly}:${NODE_DIR}:/usr/bin:/bin" \
       "${PROJECT_ROOT}/hermes-fly" deploy --no-auto-install 2>&1
   '
   assert_failure
@@ -125,10 +126,11 @@ teardown() {
   run bash -c '
     NODE_DIR="$(dirname "$(command -v node)")"
     tmp_no_fly="$(mktemp -d)"
-    trap "rm -rf \"${tmp_no_fly}\"" EXIT
+    home_dir="$(mktemp -d)"
+    trap "rm -rf \"${tmp_no_fly}\" \"${home_dir}\"" EXIT
     printf '\''#!/usr/bin/env bash\nif [[ "${1:-}" == "fly" ]]; then exit 1; fi\nexec /usr/bin/which "$@"\n'\'' > "${tmp_no_fly}/which"
     chmod +x "${tmp_no_fly}/which"
-    OPENROUTER_API_KEY=test-key PATH="${tmp_no_fly}:${NODE_DIR}:/usr/bin:/bin" \
+    HOME="${home_dir}" HERMES_FLY_CONFIG_DIR="${home_dir}/.hermes-fly" OPENROUTER_API_KEY=test-key PATH="${tmp_no_fly}:${NODE_DIR}:/usr/bin:/bin" \
       "${PROJECT_ROOT}/hermes-fly" deploy --channel badvalue --no-auto-install 2>&1
   '
   assert_failure
@@ -142,10 +144,11 @@ teardown() {
   run bash -c '
     NODE_DIR="$(dirname "$(command -v node)")"
     tmp_no_fly="$(mktemp -d)"
-    trap "rm -rf \"${tmp_no_fly}\"" EXIT
+    home_dir="$(mktemp -d)"
+    trap "rm -rf \"${tmp_no_fly}\" \"${home_dir}\"" EXIT
     printf '\''#!/usr/bin/env bash\nif [[ "${1:-}" == "fly" ]]; then exit 1; fi\nexec /usr/bin/which "$@"\n'\'' > "${tmp_no_fly}/which"
     chmod +x "${tmp_no_fly}/which"
-    OPENROUTER_API_KEY=test-key PATH="${tmp_no_fly}:${NODE_DIR}:/usr/bin:/bin" \
+    HOME="${home_dir}" HERMES_FLY_CONFIG_DIR="${home_dir}/.hermes-fly" OPENROUTER_API_KEY=test-key PATH="${tmp_no_fly}:${NODE_DIR}:/usr/bin:/bin" \
       "${PROJECT_ROOT}/hermes-fly" deploy --channel preview --no-auto-install 2>&1
   '
   assert_failure
@@ -161,10 +164,11 @@ teardown() {
   for ch in stable preview edge; do
     run bash -c "
       tmp_no_fly=\"\$(mktemp -d)\"
-      trap \"rm -rf \\\"\${tmp_no_fly}\\\"\" EXIT
+      home_dir=\"\$(mktemp -d)\"
+      trap \"rm -rf \\\"\${tmp_no_fly}\\\" \\\"\${home_dir}\\\"\" EXIT
       printf '#!/usr/bin/env bash\nif [[ \"\${1:-}\" == \"fly\" ]]; then exit 1; fi\nexec /usr/bin/which \"\$@\"\n' > \"\${tmp_no_fly}/which\"
       chmod +x \"\${tmp_no_fly}/which\"
-      OPENROUTER_API_KEY=test-key PATH=\"\${tmp_no_fly}:${node_dir}:/usr/bin:/bin\" \
+      HOME=\"\${home_dir}\" HERMES_FLY_CONFIG_DIR=\"\${home_dir}/.hermes-fly\" OPENROUTER_API_KEY=test-key PATH=\"\${tmp_no_fly}:${node_dir}:/usr/bin:/bin\" \
         \"${PROJECT_ROOT}/hermes-fly\" deploy --channel ${ch} --no-auto-install 2>&1
     "
     assert_failure

@@ -13,10 +13,16 @@ import { runDestroyCommand } from "./commands/destroy.js";
 import { runConsoleCommand } from "./commands/console.js";
 import { runExecCommand } from "./commands/exec.js";
 import { runAgentCommand } from "./commands/agent.js";
+import { runUpdateCommand } from "./commands/update.js";
 import { HERMES_FLY_TS_VERSION } from "./version.js";
 
-export function buildProgram(): Command {
+type CliHandlers = {
+  runDeployCommand?: typeof runDeployCommand;
+};
+
+export function buildProgram(handlers: CliHandlers = {}): Command {
   const versionLine = `hermes-fly ${HERMES_FLY_TS_VERSION}`;
+  const deployRunner = handlers.runDeployCommand ?? runDeployCommand;
   const program = new Command()
     .name("hermes-fly")
     .description("Hermes Fly CLI")
@@ -33,11 +39,22 @@ export function buildProgram(): Command {
     .option("--no-auto-install", "Skip automatic installation of missing prerequisites")
     .option("--no-cache", "Build Docker image without cache (fresh build)")
     .action(async (opts) => {
+      process.exitCode = await deployRunner({
+        channel: opts.channel,
+        autoInstall: opts.autoInstall,
+      });
+    });
+
+  program
+    .command("update")
+    .description("Update existing deployment to latest version")
+    .option("--channel <channel>", "Update channel: stable, preview, or edge", "stable")
+    .option("-a, --app <app>", "App name (defaults to current app)")
+    .action(async (opts) => {
       const args: string[] = [];
       if (opts.channel && opts.channel !== "stable") args.push("--channel", opts.channel);
-      if (!opts.autoInstall) args.push("--no-auto-install");
-      if (opts.noCache) args.push("--no-cache");
-      process.exitCode = await runDeployCommand(args);
+      if (opts.app) args.push("-a", opts.app);
+      process.exitCode = await runUpdateCommand(args);
     });
 
   program

@@ -86,6 +86,30 @@ export class FlyDoctorChecks implements DoctorChecksPort {
       return sshResult.exitCode === 0;
     }
 
+    if (secretsResult.exitCode === 0 && this.hasAnyMessagingGatewaySecret(secretsResult.stdout)) {
+      if (this.hasSecret(secretsResult.stdout, "WHATSAPP_ENABLED") || this.hasSecret(secretsResult.stdout, "HERMES_FLY_WHATSAPP_PENDING")) {
+        const sshResult = await this.runner.run(
+          flyCommand,
+          [
+            "ssh", "console", "--app", appName, "-C",
+            this.whatsAppBridgeHealthProbeCommand()
+          ],
+          { env: this.env }
+        );
+        return sshResult.exitCode === 0 && this.isWhatsAppBridgeConnected(sshResult.stdout);
+      }
+
+      const sshResult = await this.runner.run(
+        flyCommand,
+        [
+          "ssh", "console", "--app", appName, "-C",
+          this.gatewayStatusProbeCommand()
+        ],
+        { env: this.env }
+      );
+      return sshResult.exitCode === 0;
+    }
+
     return this.checkMachineRunning(appName);
   }
 
@@ -163,5 +187,36 @@ export class FlyDoctorChecks implements DoctorChecksPort {
 
   private telegramGetMeProbeCommand(): string {
     return "sh -lc 'curl -sf --max-time 10 \"https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe\" >/dev/null 2>&1'";
+  }
+
+  private hasAnyMessagingGatewaySecret(stdout: string): boolean {
+    const names = [
+      "DISCORD_BOT_TOKEN",
+      "SLACK_BOT_TOKEN",
+      "WHATSAPP_ENABLED",
+      "HERMES_FLY_WHATSAPP_PENDING",
+    ];
+    return names.some((name) => this.hasSecret(stdout, name));
+  }
+
+  private gatewayStatusProbeCommand(): string {
+    return "sh -lc 'cd /root/.hermes && HERMES_DIR=/root/.hermes HOME=/root/.hermes /opt/hermes/hermes-agent/venv/bin/hermes gateway status'";
+  }
+
+  private whatsAppBridgeHealthProbeCommand(): string {
+    return "sh -lc 'curl -sf --max-time 5 http://127.0.0.1:3000/health'";
+  }
+
+  private isWhatsAppBridgeConnected(stdout: string): boolean {
+    const trimmed = stdout.trim();
+    if (!trimmed) {
+      return false;
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as { status?: unknown };
+      return parsed.status === "connected";
+    } catch {
+      return /\"status\"\s*:\s*\"connected\"/.test(trimmed);
+    }
   }
 }

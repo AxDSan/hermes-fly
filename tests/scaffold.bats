@@ -36,6 +36,32 @@ teardown() {
   assert_output --partial "ENTRYPOINT"
 }
 
+@test "templates/Dockerfile.template runs the Hermes WhatsApp bridge patch script" {
+  run cat "${PROJECT_ROOT}/templates/Dockerfile.template"
+  assert_success
+  assert_output --partial "COPY patch-hermes-gateway.py /tmp/hermes-fly-patch-hermes-gateway.py"
+  assert_output --partial "hermes-fly-patch-hermes-gateway.py /opt/hermes/hermes-agent"
+  assert_output --partial "COPY patch-whatsapp-bridge.py /tmp/hermes-fly-patch-whatsapp-bridge.py"
+  assert_output --partial "scripts/whatsapp-bridge/bridge.js"
+  assert_output --partial "hermes-fly-patch-whatsapp-bridge.py"
+}
+
+@test "templates/patch-hermes-gateway.py patches typing metadata compatibility" {
+  run cat "${PROJECT_ROOT}/templates/patch-hermes-gateway.py"
+  assert_success
+  assert_output --partial "metadata=None"
+  assert_output --partial "await self.send_typing(chat_id, metadata=metadata)"
+  assert_output --partial "signal send_typing signature"
+}
+
+@test "templates/patch-whatsapp-bridge.py contains self-chat diagnostics markers" {
+  run cat "${PROJECT_ROOT}/templates/patch-whatsapp-bridge.py"
+  assert_success
+  assert_output --partial "messages.upsert.skipped"
+  assert_output --partial "messages.upsert.accepted"
+  assert_output --partial "messages.poll.drained"
+}
+
 @test "templates/fly.toml.template contains all placeholders" {
   run cat "${PROJECT_ROOT}/templates/fly.toml.template"
   assert_success
@@ -64,7 +90,17 @@ teardown() {
 
 @test "templates/entrypoint.sh execs hermes from /opt/hermes venv" {
   run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
-  assert_output --partial "exec /opt/hermes/hermes-agent/venv/bin/hermes gateway run"
+  assert_output --partial "exec /gateway-supervisor.sh"
+}
+
+@test "templates/gateway-supervisor.sh exists and restarts the gateway child on USR1" {
+  run cat "${PROJECT_ROOT}/templates/gateway-supervisor.sh"
+  assert_success
+  assert_output --partial "gateway-supervisor.pid"
+  assert_output --partial "trap request_restart USR1"
+  assert_output --partial "hermes gateway run --replace"
+  assert_output --partial "/root/.hermes/.env"
+  assert_output --partial "self-chat-identity.json"
 }
 
 @test "templates/entrypoint.sh symlinks node from /opt/hermes" {
@@ -138,6 +174,17 @@ teardown() {
   assert_output --partial "find /root/.hermes/whatsapp/session -mindepth 1"
 }
 
+@test "entrypoint.sh loads persisted WhatsApp self-chat identity from the volume" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "self-chat-identity.json"
+  assert_output --partial "HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER"
+  assert_output --partial "export WHATSAPP_ENABLED=true"
+  assert_output --partial 'export WHATSAPP_MODE="${WHATSAPP_MODE:-self-chat}"'
+  assert_output --partial 'export WHATSAPP_HOME_CHANNEL="${HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER}"'
+  assert_output --partial 'export WHATSAPP_HOME_CONTACT="${HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER}"'
+}
+
 @test "entrypoint.sh patches config.yaml model from LLM_MODEL" {
   run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
   assert_success
@@ -176,6 +223,14 @@ teardown() {
   assert_output --partial "telegram-approved.json"
   assert_output --partial "auto-approved"
   assert_output --partial "TELEGRAM_ALLOWED_USERS"
+}
+
+@test "entrypoint.sh pre-seeds whatsapp-approved.json from the detected self-chat identity" {
+  run cat "${PROJECT_ROOT}/templates/entrypoint.sh"
+  assert_success
+  assert_output --partial "whatsapp-approved.json"
+  assert_output --partial "self_lid"
+  assert_output --partial "auto-approved"
 }
 
 @test "entrypoint.sh only pre-seeds on first boot (no overwrite on restart)" {

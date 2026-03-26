@@ -24,7 +24,7 @@ teardown() {
   assert_success
 }
 
-@test "TS destroy --force with nonexistent app returns exit 4" {
+@test "TS destroy --force treats an already-absent app as cleaned up" {
   run bash -c '
     cd "${PROJECT_ROOT}"
     PATH="tests/mocks:${PATH}" \
@@ -32,9 +32,8 @@ teardown() {
       HERMES_FLY_CONFIG_DIR="${HERMES_FLY_CONFIG_DIR}" \
       node dist/cli.js destroy -a nonexistent-app --force 2>&1
   '
-  assert_failure
-  [ "$status" -eq 4 ]
-  assert_output --partial "not found"
+  assert_success
+  assert_output --partial "already absent"
 }
 
 @test "TS destroy 'no' confirmation aborts" {

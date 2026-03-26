@@ -32,14 +32,35 @@ describe("TemplateWriter", () => {
       const dockerfile = await readFile(join(buildDir, "Dockerfile"), "utf8");
       const flyToml = await readFile(join(buildDir, "fly.toml"), "utf8");
       const entrypoint = await readFile(join(buildDir, "entrypoint.sh"), "utf8");
+      const supervisor = await readFile(join(buildDir, "gateway-supervisor.sh"), "utf8");
       const sitecustomize = await readFile(join(buildDir, "sitecustomize.py"), "utf8");
+      const patchGateway = await readFile(join(buildDir, "patch-hermes-gateway.py"), "utf8");
+      const patchBridge = await readFile(join(buildDir, "patch-whatsapp-bridge.py"), "utf8");
 
       assert.match(dockerfile, /^FROM python:3\.11-slim/m);
       assert.match(dockerfile, /^ARG HERMES_VERSION=8eefbef91cd715cfe410bba8c13cfab4eb3040df$/m);
+      assert.match(dockerfile, /target = Path\("\/tmp\/hermes-git-wrapper\/git"\)/);
+      assert.match(dockerfile, /if \[ "\$#" -eq 3 \] && \[ "\$1" = "pull" \] && \[ "\$2" = "origin" \]/);
+      assert.match(
+        dockerfile,
+        /git clone --recurse-submodules https:\/\/github\.com\/NousResearch\/hermes-agent\.git \/root\/\.hermes\/hermes-agent/
+      );
+      assert.match(dockerfile, /git -C \/root\/\.hermes\/hermes-agent checkout "\$\{HERMES_VERSION\}"/);
+      assert.match(
+        dockerfile,
+        /git -C \/root\/\.hermes\/hermes-agent submodule update --init --recursive/
+      );
       assert.match(dockerfile, /raw\.githubusercontent\.com\/NousResearch\/hermes-agent\/\$\{HERMES_VERSION\}\/scripts\/install\.sh/);
+      assert.match(dockerfile, /PATH="\/tmp\/hermes-git-wrapper:\$\{PATH\}" bash \/tmp\/hermes-agent-install\.sh --skip-setup --dir \/root\/\.hermes\/hermes-agent --branch "\$\{HERMES_VERSION\}"/);
+      assert.doesNotMatch(dockerfile, /unexpected Hermes Agent install\.sh shape/);
       assert.doesNotMatch(dockerfile, /ghcr\.io\/anthropics\/hermes-agent/);
       assert.match(dockerfile, /io\.hermes\.deploy\.channel="stable"/);
       assert.match(dockerfile, /io\.hermes\.compatibility_policy="1\.0\.0"/);
+      assert.match(dockerfile, /COPY gateway-supervisor\.sh \/gateway-supervisor\.sh/);
+      assert.match(dockerfile, /COPY patch-hermes-gateway\.py \/tmp\/hermes-fly-patch-hermes-gateway\.py/);
+      assert.match(dockerfile, /COPY patch-whatsapp-bridge\.py \/tmp\/hermes-fly-patch-whatsapp-bridge\.py/);
+      assert.match(dockerfile, /hermes-fly-patch-hermes-gateway\.py \/opt\/hermes\/hermes-agent/);
+      assert.match(dockerfile, /hermes-fly-patch-whatsapp-bridge\.py \/opt\/hermes\/hermes-agent\/scripts\/whatsapp-bridge\/bridge\.js/);
 
       assert.match(flyToml, /^app = "test-app"$/m);
       assert.match(flyToml, /^primary_region = "fra"$/m);
@@ -51,7 +72,7 @@ describe("TemplateWriter", () => {
       assert.doesNotMatch(flyToml, /^\[http_service\]$/m);
       assert.doesNotMatch(flyToml, /internal_port = 8080/);
 
-      assert.match(entrypoint, /exec \/opt\/hermes\/hermes-agent\/venv\/bin\/hermes gateway run/);
+      assert.match(entrypoint, /exec \/gateway-supervisor\.sh "\$@"/);
       assert.match(entrypoint, /\/root\/\.claude\/\.credentials\.json/);
       assert.match(entrypoint, /claudeAiOauth/);
       assert.match(entrypoint, /GLM_API_KEY/);
@@ -63,12 +84,41 @@ describe("TemplateWriter", () => {
       assert.match(entrypoint, /HERMES_FLY_WHATSAPP_PENDING/);
       assert.match(entrypoint, /HERMES_FLY_WHATSAPP_MODE/);
       assert.match(entrypoint, /HERMES_FLY_WHATSAPP_ALLOWED_USERS/);
+      assert.match(entrypoint, /self-chat-identity\.json/);
+      assert.match(entrypoint, /whatsapp-approved\.json/);
+      assert.match(entrypoint, /export WHATSAPP_ENABLED=true/);
+      assert.match(entrypoint, /export WHATSAPP_MODE="\$\{WHATSAPP_MODE:-self-chat\}"/);
+      assert.match(entrypoint, /export WHATSAPP_HOME_CHANNEL="\$\{HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER\}"/);
+      assert.match(entrypoint, /export WHATSAPP_HOME_CONTACT="\$\{HERMES_FLY_WHATSAPP_SELF_CHAT_NUMBER\}"/);
+      assert.match(entrypoint, /WHATSAPP_HOME_CHANNEL/);
+      assert.match(entrypoint, /WHATSAPP_HOME_CONTACT/);
       assert.match(entrypoint, /find \/root\/\.hermes\/whatsapp\/session -mindepth 1/);
+      assert.match(entrypoint, /if \[\[ -z "\$\{WHATSAPP_ENABLED:-\}" \]\]; then/);
+      assert.match(entrypoint, /sed -i '\/\^WHATSAPP_ENABLED=\/d' \/root\/\.hermes\/\.env/);
+      assert.match(entrypoint, /sed -i '\/\^WHATSAPP_MODE=\/d' \/root\/\.hermes\/\.env/);
+      assert.match(entrypoint, /sed -i '\/\^WHATSAPP_ALLOWED_USERS=\/d' \/root\/\.hermes\/\.env/);
+
+      assert.match(supervisor, /gateway-supervisor\.pid/);
+      assert.match(supervisor, /trap request_restart USR1/);
+      assert.match(supervisor, /hermes gateway run --replace/);
+      assert.match(supervisor, /\/root\/\.hermes\/\.env/);
+      assert.match(supervisor, /self-chat-identity\.json/);
+      assert.match(supervisor, /unset WHATSAPP_ENABLED WHATSAPP_MODE WHATSAPP_ALLOWED_USERS WHATSAPP_HOME_CHANNEL WHATSAPP_HOME_CONTACT/);
 
       assert.match(sitecustomize, /HERMES_ZAI_THINKING/);
       assert.match(sitecustomize, /thinking/);
       assert.match(sitecustomize, /disabled/);
       assert.match(sitecustomize, /run_agent/);
+
+      assert.match(patchGateway, /metadata=None/);
+      assert.match(patchGateway, /await self\.send_typing\(chat_id, metadata=metadata\)/);
+      assert.match(patchGateway, /signal send_typing signature/);
+      assert.match(patchGateway, /WHATSAPP_HOME_CHANNEL/);
+      assert.match(patchGateway, /whatsapp_home = os\.getenv/);
+
+      assert.match(patchBridge, /messages\.upsert\.skipped/);
+      assert.match(patchBridge, /messages\.upsert\.accepted/);
+      assert.match(patchBridge, /messages\.poll\.drained/);
     } finally {
       await rm(buildDir, { recursive: true, force: true });
     }

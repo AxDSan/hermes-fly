@@ -2,6 +2,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { ProcessRunner } from "../../../../adapters/process.js";
+import {
+  renderAdaptiveDeployCopyableSection,
+  renderAdaptiveDeployPanel,
+} from "../../application/presentation/deploy-screen.js";
 import type { DeployPromptPort } from "./deploy-prompts.js";
 
 const CODEX_DEVICE_AUTH_URL = "https://auth.openai.com/codex/device";
@@ -90,17 +94,27 @@ export class OpenAICodexAuthAdapter {
     const userCode = String(deviceCodeResponse.user_code ?? "").trim();
     const deviceAuthId = String(deviceCodeResponse.device_auth_id ?? "").trim();
     const intervalSeconds = Math.max(3, Number(deviceCodeResponse.interval ?? 5) || 5);
+    const width = prompts.columns();
     if (userCode.length === 0 || deviceAuthId.length === 0) {
       throw new Error("OpenAI Codex device login did not return the fields Hermes needs.");
     }
 
-    prompts.write("Hermes can use your ChatGPT subscription through OpenAI Codex.\n");
-    prompts.write("No API key is required for this path.\n\n");
-    prompts.write("To continue, follow these steps:\n\n");
-    prompts.write("  1. Open this URL in your browser:\n");
-    prompts.write(`     ${CODEX_DEVICE_AUTH_URL}\n\n`);
-    prompts.write("  2. Enter this one-time code:\n");
-    prompts.write(`     ${userCode}\n\n`);
+    prompts.write(renderAdaptiveDeployPanel({
+      title: "OpenAI Codex sign-in",
+      lines: [
+        "Hermes can use your ChatGPT subscription through OpenAI Codex.",
+        "No API key is required for this path.",
+        "",
+        "Open the device sign-in page in your browser, then enter the one-time code below.",
+      ],
+      width,
+    }));
+    prompts.write(renderAdaptiveDeployCopyableSection({
+      title: "OpenAI Codex sign-in",
+      question: "Use these values exactly:",
+      lines: [CODEX_DEVICE_AUTH_URL, userCode],
+      width,
+    }));
     prompts.write("Waiting for sign-in...\n");
 
     const authCodeResponse = await this.pollForAuthorizationCode(deviceAuthId, userCode, intervalSeconds);

@@ -1,3 +1,5 @@
+import type { DeployFailure } from "../../domain/deploy-failure.js";
+
 export interface DeployConfig {
   orgSlug: string;
   appName: string;
@@ -39,9 +41,22 @@ export interface DeployConfig {
   whatsappAllowedUsers?: string;
   whatsappUsePairing?: boolean;
   whatsappCompleteAccessDuringSetup?: boolean;
+  whatsappSessionConfirmed?: boolean;
+  whatsappTakeoverAppNames?: string[];
+}
+
+export interface FinalizeMessagingSetupResult {
+  whatsappSessionConfirmed?: boolean;
 }
 
 export type SuccessfulDeploymentAction = "conclude" | "destroy";
+export type DeployRunResult = { ok: true } | { ok: false; failure: DeployFailure };
+
+export interface ExistingAppConfig {
+  region: string;
+  vmSize: string;
+  volumeSize: number;
+}
 
 export interface DeployWizardPort {
   checkPlatform(): Promise<{ ok: boolean; error?: string }>;
@@ -49,12 +64,18 @@ export interface DeployWizardPort {
   checkAuth(): Promise<{ ok: boolean; error?: string }>;
   checkConnectivity(): Promise<{ ok: boolean; error?: string }>;
   collectConfig(opts: { channel: "stable" | "preview" | "edge" }): Promise<DeployConfig>;
-  createBuildContext(config: DeployConfig): Promise<{ buildDir: string }>;
+  fetchExistingConfig(appName: string): Promise<ExistingAppConfig | null>;
+  promptUpdateConfigChoice(existing: ExistingAppConfig): Promise<{ keep: boolean; config?: DeployConfig }>;
+  createBuildContext(config: DeployConfig, opts?: { update?: boolean }): Promise<{ buildDir: string }>;
   provisionResources(config: DeployConfig): Promise<{ ok: boolean; error?: string }>;
-  runDeploy(buildDir: string, config: DeployConfig): Promise<{ ok: boolean; error?: string }>;
+  runDeploy(buildDir: string, config: DeployConfig): Promise<DeployRunResult>;
   postDeployCheck(appName: string): Promise<{ ok: boolean; error?: string }>;
   saveApp(config: DeployConfig): Promise<void>;
-  finalizeMessagingSetup(config: DeployConfig, stdout: { write: (s: string) => void }, stderr: { write: (s: string) => void }): Promise<void>;
+  finalizeMessagingSetup(
+    config: DeployConfig,
+    stdout: { write: (s: string) => void },
+    stderr: { write: (s: string) => void }
+  ): Promise<FinalizeMessagingSetupResult>;
   chooseSuccessfulDeploymentAction(config: DeployConfig): Promise<SuccessfulDeploymentAction>;
   showTelegramBotDeletionGuidance(config: DeployConfig): Promise<void>;
 }

@@ -1,8 +1,20 @@
-import type { DeployConfig, DeployWizardPort } from "../../application/ports/deploy-wizard.port.js";
+import type { DeployConfig, DeployRunResult, DeployWizardPort } from "../../application/ports/deploy-wizard.port.js";
+import {
+  renderAdaptiveDeployChoiceSection,
+  renderAdaptiveDeployCopyableSection,
+  renderAdaptiveDeployHero,
+  renderAdaptiveDeployKeyValuePanel,
+  renderAdaptiveDeployPanel,
+  renderDeployChoiceOptions,
+} from "../../application/presentation/deploy-screen.js";
 import { FlyDeployRunner } from "./fly-deploy-runner.js";
 import { TemplateWriter } from "./template-writer.js";
 import { NodeProcessRunner, type ForegroundProcessRunner } from "../../../../adapters/process.js";
 import { DeploymentIntent } from "../../domain/deployment-intent.js";
+import {
+  listHostingPlatforms,
+  resolveDefaultHostingPlatform,
+} from "../../domain/hosting-platform.js";
 import { ReadlineDeployPrompts, type DeployPromptPort } from "./deploy-prompts.js";
 import { TerminalQrCodeRenderer, type QrCodeRendererPort } from "./qr-code.js";
 import { SystemBrowserOpener, type BrowserOpenerPort } from "./browser-opener.js";
@@ -32,6 +44,9 @@ import {
   type ZaiModelOption,
 } from "./zai-api-key.js";
 import { MessagingPolicy, type MessagingPolicyMode } from "../../../messaging/domain/messaging-policy.js";
+import { DeployFailurePolicy } from "../../domain/deploy-failure.js";
+import { VmSizingPolicy, type VmSizingAdvisory, type VmSizingReason } from "../../domain/vm-sizing-policy.js";
+import { WhatsAppPostPairingPolicy } from "../../domain/whatsapp-post-pairing-policy.js";
 import {
   TELEGRAM_BOTFATHER_DELETEBOT_URL,
   TELEGRAM_BOTFATHER_NEWBOT_URL,
@@ -42,6 +57,7 @@ import {
   type SavedDeploymentEntry,
 } from "../../../runtime/infrastructure/adapters/fly-deployment-registry.js";
 import { resolveFlyCommand } from "../../../../adapters/fly-command.js";
+import { HERMES_FLY_TS_VERSION } from "../../../../version.js";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
@@ -49,7 +65,7 @@ import { dirname, join } from "node:path";
 
 const DEFAULT_APP_NAME_PREFIX = "hermes";
 const DEFAULT_REGION = "iad";
-const DEFAULT_VM_SIZE = "shared-cpu-1x";
+const DEFAULT_VM_SIZE = "shared-cpu-2x";
 const DEFAULT_VOLUME_SIZE = 1;
 const DEFAULT_MODEL = "anthropic/claude-3-5-sonnet";
 const DEFAULT_CHANNEL = "stable";
@@ -61,6 +77,11 @@ const OPENROUTER_MODELS_API_URL = "https://openrouter.ai/api/v1/models";
 const CHATGPT_SECURITY_SETTINGS_URL = "https://chatgpt.com/#settings/Security";
 const DISCORD_DEVELOPER_PORTAL_URL = "https://discord.com/developers/applications";
 const SLACK_APPS_URL = "https://api.slack.com/apps";
+const WHATSAPP_SELF_CHAT_DETECTED_ACCESS_LABEL = "Only me (detected after pairing)";
+const WHATSAPP_SELF_CHAT_IDENTITY_PATH = "/root/.hermes/whatsapp/self-chat-identity.json";
+const WHATSAPP_APPROVED_USERS_PATH = "/root/.hermes/pairing/whatsapp-approved.json";
+const GATEWAY_SUPERVISOR_PID_PATH = "/root/.hermes/runtime/gateway-supervisor.pid";
+const GATEWAY_STARTED_AT_PATH = "/root/.hermes/runtime/gateway-started-at";
 
 type RegionOption = {
   code: string;
@@ -73,6 +94,15 @@ type FlyOrgOption = {
   name: string;
   type?: string;
 };
+
+type SelectableChoiceOption<T> = {
+  value: T;
+  label: string;
+  description?: string;
+  disabled?: boolean;
+};
+
+const SINGLE_SELECT_INTERACTION_HINT = "Use ↑/↓ or j/k to move, then Enter to confirm.";
 
 type VmOption = {
   value: string;
@@ -109,6 +139,12 @@ type ProviderOption = {
   description: string;
 };
 
+type AppRestartResult = {
+  ok: boolean;
+  error?: string;
+  strategy?: "process" | "machine";
+};
+
 type ReasoningPolicy = {
   allowedEfforts: string[];
   defaultEffort: string;
@@ -119,6 +155,15 @@ type ReasoningSupport = {
   allowedEfforts: string[];
   defaultEffort?: string;
   unsupportedMessage?: string;
+};
+
+type WhatsAppBridgeHealth = {
+  status?: string;
+  queueLength?: number;
+  uptime?: number;
+  selfJid?: string;
+  selfNumber?: string;
+  selfLid?: string;
 };
 
 type TelegramSetup = {
@@ -166,6 +211,7 @@ type WhatsAppSetup = {
   usePairing?: boolean;
   completeAccessDuringSetup?: boolean;
   allowAllUsers?: boolean;
+  takeoverAppNames?: string[];
 };
 
 type MessagingSetup = {
@@ -214,25 +260,18 @@ const REGION_AREA_ORDER = ["Americas", "Europe", "Asia-Pacific", "Oceania", "Sou
 
 const STATIC_VM_OPTIONS: VmOption[] = [
   {
-    value: "shared-cpu-1x",
-    tier: "Starter",
-    ramLabel: "256 MB",
-    costLabel: "~$2/mo",
-    bestFor: "Trying it out. Lowest cost.",
-  },
-  {
     value: "shared-cpu-2x",
     tier: "Standard",
     ramLabel: "512 MB",
     costLabel: "~$4/mo",
-    bestFor: "Most users. Better under everyday load.",
+    bestFor: "Minimum recommended. Good for lighter everyday use.",
   },
   {
     value: "performance-1x",
     tier: "Pro",
     ramLabel: "2 GB",
     costLabel: "~$32/mo",
-    bestFor: "Heavy use or larger agents.",
+    bestFor: "Safer default for messaging or heavier use.",
   },
   {
     value: "performance-2x",
@@ -321,6 +360,9 @@ export interface FlyDeployWizardDeps {
   anthropicAuth?: AnthropicAuthAdapter;
   nousAuth?: NousPortalAuthAdapter;
   zaiAuth?: ZaiApiKeyAdapter;
+  stdout?: { write: (chunk: string) => void };
+  stderr?: { write: (chunk: string) => void };
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export class FlyDeployWizard implements DeployWizardPort {
@@ -335,11 +377,14 @@ export class FlyDeployWizard implements DeployWizardPort {
   private readonly anthropicAuth: AnthropicAuthAdapter;
   private readonly nousAuth: NousPortalAuthAdapter;
   private readonly zaiAuth: ZaiApiKeyAdapter;
+  private readonly stdout: { write: (chunk: string) => void };
+  private readonly stderr: { write: (chunk: string) => void };
   private readonly env: NodeJS.ProcessEnv;
+  private readonly sleep: (ms: number) => Promise<void>;
   private readonly defaultAppName: string;
   private readonly modelLabels = new Map<string, string>();
   private readonly modelOptionsById = new Map<string, ModelOption>();
-  private readonly whatsappAllowedUsersCache = new Map<string, string | null>();
+  private readonly whatsappBindingCache = new Map<string, { hasSession: boolean; allowedUsers: string | null }>();
   private reasoningPolicies?: Map<string, ReasoningPolicy>;
 
   constructor(env?: NodeJS.ProcessEnv, deps: FlyDeployWizardDeps = {}) {
@@ -355,8 +400,71 @@ export class FlyDeployWizard implements DeployWizardPort {
     this.anthropicAuth = deps.anthropicAuth ?? new AnthropicAuthAdapter(this.process, this.env);
     this.nousAuth = deps.nousAuth ?? new NousPortalAuthAdapter(this.process, this.env);
     this.zaiAuth = deps.zaiAuth ?? new ZaiApiKeyAdapter(this.process, this.env);
+    this.stdout = deps.stdout ?? process.stdout;
+    this.stderr = deps.stderr ?? process.stderr;
+    this.sleep = deps.sleep ?? (async (ms: number) => { await new Promise((resolve) => setTimeout(resolve, ms)); });
     this.defaultAppName = this.buildDefaultAppName();
     this.rememberModelOptions(STATIC_MODEL_OPTIONS);
+  }
+
+  private promptWidth(): number | undefined {
+    return this.prompts.columns();
+  }
+
+  private writeHero(): void {
+    this.prompts.write(renderAdaptiveDeployHero({
+      version: HERMES_FLY_TS_VERSION,
+      title: "Hermes Fly deploy",
+      eyebrow: "Starting deploy",
+      subtitle: "I'll walk you through the deployment setup step by step. Press Enter to accept a suggested option whenever one is shown.",
+      width: this.promptWidth(),
+    }));
+  }
+
+  private writePanel(title: string, lines: string[]): void {
+    this.prompts.write(renderAdaptiveDeployPanel({
+      title,
+      lines,
+      width: this.promptWidth(),
+    }));
+  }
+
+  private writeChoiceSection(
+    title: string,
+    question: string,
+    options: string[],
+    details: string[] = []
+  ): void {
+    this.prompts.write(renderAdaptiveDeployChoiceSection({
+      title,
+      question,
+      details,
+      options,
+      width: this.promptWidth(),
+    }));
+  }
+
+  private writeKeyValuePanel(title: string, entries: Array<[string, string]>): void {
+    this.prompts.write(renderAdaptiveDeployKeyValuePanel({
+      title,
+      entries,
+      width: this.promptWidth(),
+    }));
+  }
+
+  private writeCopyableSection(
+    title: string,
+    question: string,
+    lines: string[],
+    details: string[] = []
+  ): void {
+    this.prompts.write(renderAdaptiveDeployCopyableSection({
+      title,
+      question,
+      details,
+      lines,
+      width: this.promptWidth(),
+    }));
   }
 
   async checkPlatform(): Promise<{ ok: boolean; error?: string }> {
@@ -433,9 +541,7 @@ export class FlyDeployWizard implements DeployWizardPort {
   async collectConfig(opts: { channel: "stable" | "preview" | "edge" }): Promise<DeployConfig> {
     const env = this.env;
     if (this.prompts.isInteractive()) {
-      this.prompts.write("\nHermes Agent Guided Setup\n");
-      this.prompts.write("I'll walk you through the deployment setup step by step.\n");
-      this.prompts.write("You can press Enter to accept a suggested option whenever one is shown.\n\n");
+      this.writeHero();
     }
 
     const orgSlug = await this.collectOrgSlug(env.HERMES_FLY_ORG ?? env.DEPLOY_ORG ?? env.FLY_ORG);
@@ -467,12 +573,21 @@ export class FlyDeployWizard implements DeployWizardPort {
       whatsappMode: env.WHATSAPP_MODE ?? env.HERMES_FLY_WHATSAPP_MODE,
       whatsappAllowedUsers: env.WHATSAPP_ALLOWED_USERS ?? env.HERMES_FLY_WHATSAPP_ALLOWED_USERS,
     }, appName);
+    const vmSizingDecision = VmSizingPolicy.resolve({
+      currentVmSize: vmSize,
+      messagingPlatforms: messagingSetup.platforms,
+    });
+    if (vmSizingDecision.adjusted) {
+      this.writeVmSizingAdjustment(vmSize, vmSizingDecision.vmSize, vmSizingDecision.reason);
+    } else if (vmSizingDecision.advisory) {
+      this.writeVmSizingAdvisory(vmSizingDecision.vmSize, vmSizingDecision.advisory);
+    }
     const hermesRef = this.resolveHermesAgentRef(opts.channel);
 
     const intent = DeploymentIntent.create({
       appName,
       region,
-      vmSize,
+      vmSize: vmSizingDecision.vmSize,
       provider: aiAccess.provider,
       model: aiAccess.model,
       reasoningEffort: aiAccess.reasoningEffort,
@@ -519,6 +634,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       whatsappAllowedUsers: messagingSetup.whatsapp?.allowedUsers,
       whatsappUsePairing: messagingSetup.whatsapp?.usePairing,
       whatsappCompleteAccessDuringSetup: messagingSetup.whatsapp?.completeAccessDuringSetup,
+      whatsappTakeoverAppNames: messagingSetup.whatsapp?.takeoverAppNames,
     };
 
     if (this.prompts.isInteractive()) {
@@ -528,9 +644,9 @@ export class FlyDeployWizard implements DeployWizardPort {
     return config;
   }
 
-  async createBuildContext(config: DeployConfig): Promise<{ buildDir: string }> {
+  async createBuildContext(config: DeployConfig, opts?: { update?: boolean }): Promise<{ buildDir: string }> {
     const buildDir = join(tmpdir(), `hermes-deploy-${config.appName}-${Date.now()}`);
-    await this.templateWriter.createBuildContext(config, buildDir);
+    await this.templateWriter.createBuildContext(config, buildDir, opts);
     return { buildDir };
   }
 
@@ -611,18 +727,37 @@ export class FlyDeployWizard implements DeployWizardPort {
     return this.runner.setSecrets(config.appName, secrets);
   }
 
-  async runDeploy(buildDir: string, config: DeployConfig): Promise<{ ok: boolean; error?: string }> {
+  async runDeploy(buildDir: string, config: DeployConfig): Promise<DeployRunResult> {
+    let stdout = "";
+    let stderr = "";
     const deployArgs = ["deploy", "--app", config.appName, "--config", "fly.toml", "--dockerfile", "Dockerfile", "--wait-timeout", "5m0s"];
     if (config.noCache) {
       deployArgs.push("--no-cache");
     }
-    const result = await this.process.runForeground(
+    const result = await this.process.runStreaming(
       "fly",
       deployArgs,
-      { env: this.env, cwd: buildDir }
+      {
+        env: this.env,
+        cwd: buildDir,
+        onStdoutChunk: (chunk) => {
+          stdout += chunk;
+          this.stdout.write(chunk);
+        },
+        onStderrChunk: (chunk) => {
+          stderr += chunk;
+          this.stderr.write(chunk);
+        }
+      }
     );
     if (result.exitCode !== 0) {
-      return { ok: false, error: "fly deploy failed" };
+      return {
+        ok: false,
+        failure: DeployFailurePolicy.classify({
+          rawOutput: `${stdout}\n${stderr}`,
+          vmSize: config.vmSize,
+        })
+      };
     }
     return { ok: true };
   }
@@ -638,11 +773,20 @@ export class FlyDeployWizard implements DeployWizardPort {
 
       const state = this.readPrimaryMachineState(result.stdout);
       if (state === "started") {
+        const deployFailure = await this.readRecentDeployFailure(appName);
+        if (deployFailure) {
+          return { ok: false, error: deployFailure };
+        }
         return { ok: true };
       }
       if (state) {
         lastState = state;
       }
+    }
+
+    const deployFailure = await this.readRecentDeployFailure(appName);
+    if (deployFailure) {
+      return { ok: false, error: deployFailure };
     }
 
     return { ok: false, error: `machine not running after deploy (${lastState})` };
@@ -695,7 +839,7 @@ export class FlyDeployWizard implements DeployWizardPort {
     if ((config.telegramBotUsername ?? "").trim().length > 0) {
       entryLines.push(`    telegram_bot_username: ${config.telegramBotUsername?.trim()}`);
     }
-    if (config.whatsappEnabled) {
+    if (config.whatsappEnabled && config.whatsappSessionConfirmed) {
       if ((config.whatsappMode ?? "").trim().length > 0) {
         entryLines.push(`    whatsapp_mode: ${config.whatsappMode?.trim()}`);
       }
@@ -715,13 +859,71 @@ export class FlyDeployWizard implements DeployWizardPort {
     await writeFile(configPath, newLines.join("\n") + "\n", "utf8");
   }
 
+  private async clearSavedWhatsAppBinding(appName: string): Promise<void> {
+    const { readFile, writeFile, mkdir } = await import("node:fs/promises");
+    const { join: pathJoin } = await import("node:path");
+    const configDir = this.env.HERMES_FLY_CONFIG_DIR
+      ?? `${this.env.HOME ?? process.env.HOME}/.hermes-fly`;
+    try {
+      await mkdir(configDir, { recursive: true });
+    } catch {
+      return;
+    }
+    const configPath = pathJoin(configDir, "config.yaml");
+
+    let existing = "";
+    try {
+      existing = await readFile(configPath, "utf8");
+    } catch {
+      return;
+    }
+
+    const lines = existing.split(/\r?\n/);
+    const updated: string[] = [];
+    let inTargetEntry = false;
+
+    for (const line of lines) {
+      const nameMatch = line.match(/^  - name:[ \t]*(.+)$/);
+      if (nameMatch) {
+        inTargetEntry = nameMatch[1].trim() === appName;
+        updated.push(line);
+        continue;
+      }
+
+      if (inTargetEntry) {
+        if (/^    whatsapp_mode:/.test(line) || /^    whatsapp_allowed_users:/.test(line)) {
+          continue;
+        }
+        const platformMatch = line.match(/^    platform:[ \t]*(.*)$/);
+        if (platformMatch) {
+          const platforms = platformMatch[1]
+            .split(",")
+            .map((value) => value.trim())
+            .filter((value) => value.length > 0 && value !== "whatsapp");
+          if (platforms.length > 0) {
+            updated.push(`    platform: ${platforms.join(",")}`);
+          }
+          continue;
+        }
+      }
+
+      updated.push(line);
+    }
+
+    try {
+      await writeFile(configPath, updated.join("\n"), "utf8");
+    } catch {
+      // Updating the local deployment cache is best-effort during takeover cleanup.
+    }
+  }
+
   async finalizeMessagingSetup(
     config: DeployConfig,
     stdout: { write: (s: string) => void },
     stderr: { write: (s: string) => void }
-  ): Promise<void> {
+  ): Promise<{ whatsappSessionConfirmed?: boolean }> {
     if (!this.prompts.isInteractive()) {
-      return;
+      return {};
     }
 
     if (config.discordBotToken && config.discordUsePairing && !config.gatewayAllowAllUsers) {
@@ -760,6 +962,15 @@ export class FlyDeployWizard implements DeployWizardPort {
         true
       );
       if (shouldPair) {
+        if ((config.whatsappTakeoverAppNames?.length ?? 0) > 0) {
+          const takeover = await this.takeOverWhatsAppSelfChat(config.whatsappTakeoverAppNames ?? [], stdout);
+          if (!takeover.ok) {
+            stderr.write(`[warn] WhatsApp pairing did not start cleanly: ${takeover.error ?? "could not disconnect the older deployment"}\n`);
+            stderr.write(`Tip: disconnect WhatsApp from ${config.whatsappTakeoverAppNames?.join(", ")} and retry the deploy pairing step.\n`);
+            return {};
+          }
+        }
+
         stdout.write("\nOpening WhatsApp setup on the deployed agent...\n");
         stdout.write("Scan the QR code with WhatsApp on your phone.\n");
         stdout.write("hermes-fly will finish setup here and restart the deployed app automatically when pairing succeeds.\n\n");
@@ -767,26 +978,67 @@ export class FlyDeployWizard implements DeployWizardPort {
         if (!paired.ok) {
           stderr.write(`[warn] WhatsApp pairing did not complete cleanly: ${paired.error ?? "unknown error"}\n`);
           stderr.write(`Tip: run 'hermes-fly agent -a ${config.appName} whatsapp' to retry pairing.\n`);
-          return;
+          return {};
         }
 
-        stdout.write("\nRestarting the deployed app so WhatsApp comes online...\n");
-        const restarted = await this.restartAppAfterWhatsAppPairing(config.appName);
-        if (!restarted.ok) {
-          stderr.write(`[warn] WhatsApp paired, but the deployed app did not restart cleanly: ${restarted.error ?? "unknown error"}\n`);
-          stderr.write(`Tip: run 'hermes-fly status -a ${config.appName}' and 'hermes-fly logs -a ${config.appName}' before testing WhatsApp.\n`);
-          return;
+        stdout.write("\nWhatsApp pairing credentials were saved on the deployed agent.\n");
+        stdout.write("WhatsApp may still briefly show 'Logging in...' or 'Syncing messages...' while the linked device finishes connecting.\n");
+        stdout.write("Applying the paired WhatsApp session to the deployed Hermes app...\n");
+        const bridgeReady = await this.restartWhatsAppAndWaitForBridge(config.appName, {
+          requireSelfNumber: config.whatsappMode === "self-chat",
+        });
+        if (!bridgeReady.ok) {
+          stderr.write(`[warn] WhatsApp paired, but ${bridgeReady.error ?? "the WhatsApp bridge did not come online cleanly"}\n`);
+          stderr.write(`Tip: run 'hermes-fly doctor -a ${config.appName}' and 'hermes-fly logs -a ${config.appName}' before testing WhatsApp.\n`);
+          return {};
         }
 
-        stdout.write("WhatsApp setup completed on the deployed agent.\n");
         if (config.whatsappMode === "self-chat") {
-          stdout.write("Next step: open WhatsApp, go to Message yourself, and send a test message.\n");
+          stdout.write("Configuring the paired WhatsApp account for Hermes self-chat...\n");
+          const adoptedIdentity = await this.adoptWhatsAppSelfChatIdentity(config, bridgeReady.health, stdout);
+          if (!adoptedIdentity.ok) {
+            stderr.write(`[warn] WhatsApp paired, but ${adoptedIdentity.error ?? "hermes-fly could not adopt the paired WhatsApp account for self-chat"}\n`);
+            stderr.write(`Tip: run 'hermes-fly logs -a ${config.appName}' and 'hermes-fly doctor -a ${config.appName}' before retrying self-chat.\n`);
+            return {};
+          }
+          const approvalSeeded = await this.seedWhatsAppSelfChatApproval(config.appName, adoptedIdentity.health ?? bridgeReady.health);
+          if (!approvalSeeded.ok) {
+            stderr.write(`[warn] WhatsApp paired, but ${approvalSeeded.error ?? "hermes-fly could not auto-approve the paired WhatsApp self-chat identity"}\n`);
+            stderr.write(`Tip: run 'hermes-fly logs -a ${config.appName}' and then approve the WhatsApp pairing code manually if Hermes asks for one.\n`);
+            return {};
+          }
+          const approvalVerified = await this.verifyWhatsAppSelfChatApproval(config.appName, adoptedIdentity.health ?? bridgeReady.health);
+          if (!approvalVerified.ok) {
+            stderr.write(`[warn] WhatsApp paired, but ${approvalVerified.error ?? "Hermes did not accept the auto-approved WhatsApp self-chat identity yet"}\n`);
+            stderr.write(`Tip: run 'hermes-fly logs -a ${config.appName}' and then approve the WhatsApp pairing code manually if Hermes still asks for one.\n`);
+            return {};
+          }
+          if (WhatsAppPostPairingPolicy.shouldAutomaticallyVerifySelfChat(config.whatsappMode)) {
+            stdout.write("Starting automatic Hermes self-chat verification now.\n");
+            stdout.write("To finish verification, send a short message to Message yourself now.\n");
+            stdout.write("hermes-fly is watching the deployed logs for that message automatically.\n");
+            const selfChatTest = await this.verifyWhatsAppSelfChatTest(config.appName);
+            if (!selfChatTest.ok) {
+              stderr.write(`[warn] WhatsApp paired, but ${selfChatTest.error ?? "the self-chat test did not complete cleanly"}\n`);
+              stderr.write(`Tip: run 'hermes-fly logs -a ${config.appName}' and 'hermes-fly doctor -a ${config.appName}' for more detail.\n`);
+              return {};
+            }
+            stdout.write("Hermes self-chat verification passed. Hermes received the message and started responding.\n");
+          }
+        }
+
+        stdout.write("WhatsApp pairing completed on the deployed agent.\n");
+        if (config.whatsappMode === "self-chat") {
+          stdout.write("Next step: open WhatsApp, go to Message yourself, and keep chatting.\n");
         } else {
           stdout.write("Next step: send a test message to the WhatsApp number linked to Hermes.\n");
         }
         stdout.write("If Linked Devices still shows 'Logging in...' or 'Syncing messages...' briefly after pairing, wait a moment and then try again.\n");
+        return { whatsappSessionConfirmed: true };
       }
     }
+
+    return {};
   }
 
   async chooseSuccessfulDeploymentAction(config: DeployConfig): Promise<"conclude" | "destroy"> {
@@ -794,13 +1046,22 @@ export class FlyDeployWizard implements DeployWizardPort {
       return "conclude";
     }
 
-    this.prompts.write("\nWhat would you like to do next?\n\n");
-    this.prompts.write("   1  Conclude and keep it  Finish here and leave the new deployment running.\n");
-    if (config.botToken) {
-      this.prompts.write("   2  Destroy it now        Remove the Fly deployment now and hand off Telegram bot deletion to BotFather.\n\n");
-    } else {
-      this.prompts.write("   2  Destroy it now        Remove the Fly deployment and attached Fly resources now.\n\n");
-    }
+    this.writeChoiceSection(
+      "Deployment ready",
+      "What would you like to do next?",
+      renderDeployChoiceOptions([
+        {
+          label: "Conclude and keep it",
+          description: "Finish here and leave the new deployment running.",
+        },
+        {
+          label: "Destroy it now",
+          description: config.botToken
+            ? "Remove the Fly deployment now and hand off Telegram bot deletion to BotFather."
+            : "Remove the Fly deployment and attached Fly resources now.",
+        },
+      ], 1)
+    );
 
     const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
     if (choice === 1) {
@@ -821,52 +1082,166 @@ export class FlyDeployWizard implements DeployWizardPort {
       return;
     }
 
-    this.prompts.write("\nTelegram bot cleanup\n");
-    this.prompts.write("Telegram does not document any Bot API method that permanently deletes a bot.\n");
-    this.prompts.write("The Fly deployment has been destroyed.\n");
-    if (config.telegramBotUsername) {
-      this.prompts.write(`To finish deleting @${config.telegramBotUsername}, open BotFather with /deletebot prefilled:\n`);
-    } else {
-      this.prompts.write("To finish deleting the Telegram bot itself, open BotFather with /deletebot prefilled:\n");
-    }
-    this.prompts.write(`${TELEGRAM_BOTFATHER_DELETEBOT_URL}\n`);
-    this.prompts.write("Scan this QR code with your phone to open BotFather with /deletebot ready to send:\n\n");
+    this.writePanel("Telegram bot cleanup", [
+      "Telegram does not document any Bot API method that permanently deletes a bot.",
+      "The Fly deployment has been destroyed.",
+      config.telegramBotUsername
+        ? `To finish deleting @${config.telegramBotUsername}, open BotFather with /deletebot prefilled:`
+        : "To finish deleting the Telegram bot itself, open BotFather with /deletebot prefilled:",
+      TELEGRAM_BOTFATHER_DELETEBOT_URL,
+      "Scan this QR code with your phone to open BotFather with /deletebot ready to send:",
+    ]);
     try {
       const qr = await this.qrRenderer.render(TELEGRAM_BOTFATHER_DELETEBOT_URL);
       this.prompts.write(`${qr}\n`);
     } catch {
       this.prompts.write("(QR code unavailable in this terminal. Use the direct link above.)\n\n");
     }
-    this.prompts.write("If Telegram opens the chat without sending anything, tap Send to submit /deletebot.\n");
-    if (config.telegramBotUsername) {
-      this.prompts.write(`When BotFather asks which bot to delete, choose @${config.telegramBotUsername}.\n`);
-    }
-    this.prompts.write("Guide: https://core.telegram.org/bots#6-botfather\n");
+    this.writePanel("Telegram bot cleanup follow-up", [
+      "If Telegram opens the chat without sending anything, tap Send to submit /deletebot.",
+      ...(config.telegramBotUsername
+        ? [`When BotFather asks which bot to delete, choose @${config.telegramBotUsername}.`]
+        : []),
+      "Guide: https://core.telegram.org/bots#6-botfather",
+    ]);
   }
 
   private async collectAppName(envValue: string | undefined): Promise<string> {
+    const liveAppNames = await this.fetchOwnedFlyAppNames();
     const preset = envValue?.trim();
     if (preset && preset.length > 0) {
-      return this.validateAppName(preset);
+      return this.requireAvailableAppName(this.validateAppName(preset), liveAppNames);
     }
+    const suggestedAppName = this.resolveSuggestedAppName(liveAppNames);
     if (!this.prompts.isInteractive()) {
-      return this.defaultAppName;
+      return suggestedAppName;
     }
 
-    this.prompts.write("Each deployment needs a unique name on Fly.io.\n");
-    this.prompts.write("This name is only for the server setup. People chatting with your agent will not see it.\n\n");
-    this.prompts.write(`Suggested: ${this.defaultAppName}\n`);
-    this.prompts.write("Press Enter to use it, or type your own.\n\n");
+    this.writePanel("Deployment name", [
+      "Each deployment needs a unique name on Fly.io.",
+      "This name is only for the server setup. People chatting with your agent will not see it.",
+      "",
+      `Suggested: ${suggestedAppName}`,
+      "Press Enter to use it, or type your own.",
+    ]);
 
     while (true) {
-      const answer = await this.prompts.ask(`Deployment name [${this.defaultAppName}]: `);
-      const value = answer.length > 0 ? answer : this.defaultAppName;
+      const answer = await this.prompts.ask(`Deployment name [${suggestedAppName}]: `);
+      const value = answer.length > 0 ? answer : suggestedAppName;
       try {
-        return this.validateAppName(value);
+        return this.requireAvailableAppName(this.validateAppName(value), liveAppNames);
       } catch (error) {
         this.prompts.write(`${error instanceof Error ? error.message : "Deployment name is invalid."}\n`);
       }
     }
+  }
+
+  private async fetchOwnedFlyAppNames(): Promise<Set<string> | null> {
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      const result = await this.process.run(
+        flyCommand,
+        ["apps", "list", "--json"],
+        { env: this.env, timeoutMs: 10_000 }
+      );
+      if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
+        return null;
+      }
+      return this.parseLiveAppNames(result.stdout);
+    } catch {
+      return null;
+    }
+  }
+
+  private parseLiveAppNames(stdout: string): Set<string> | null {
+    try {
+      const parsed = JSON.parse(stdout) as Array<Record<string, unknown>>;
+      if (!Array.isArray(parsed)) {
+        return null;
+      }
+
+      const names = parsed
+        .map((entry) => {
+          const direct = entry.name ?? entry.Name;
+          if (typeof direct === "string" && direct.trim().length > 0) {
+            return direct.trim().toLowerCase();
+          }
+
+          const app = entry.app;
+          if (app && typeof app === "object") {
+            const nested = (app as Record<string, unknown>).name;
+            if (typeof nested === "string" && nested.trim().length > 0) {
+              return nested.trim().toLowerCase();
+            }
+          }
+
+          return "";
+        })
+        .filter((value) => value.length > 0);
+
+      return new Set(names);
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveSuggestedAppName(liveAppNames: Set<string> | null): string {
+    if (liveAppNames === null || !liveAppNames.has(this.defaultAppName)) {
+      return this.defaultAppName;
+    }
+
+    let candidate = this.defaultAppName;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      candidate = this.buildAlternateAppName(candidate);
+      if (!liveAppNames.has(candidate)) {
+        return candidate;
+      }
+    }
+    return candidate;
+  }
+
+  private buildAlternateAppName(base: string): string {
+    const suffix = randomBytes(2).toString("hex");
+    const strippedBase = base.replace(/-[0-9a-f]{4}$/i, "");
+    const maxBaseLength = Math.max(2, 63 - suffix.length - 1);
+    const normalizedBase = strippedBase.slice(0, maxBaseLength).replace(/-+$/g, "");
+    return this.validateAppName(`${normalizedBase}-${suffix}`);
+  }
+
+  private requireAvailableAppName(value: string, liveAppNames: Set<string> | null): string {
+    if (liveAppNames !== null && liveAppNames.has(value)) {
+      throw new Error(`Deployment name '${value}' is already used by one of your Fly apps. Choose another name.`);
+    }
+    return value;
+  }
+
+  private writeVmSizingAdjustment(previousVmSize: string, nextVmSize: string, reason?: VmSizingReason): void {
+    if (!this.prompts.isInteractive()) {
+      return;
+    }
+
+    if (reason === "messaging-gateway") {
+      this.prompts.write("\n");
+      this.prompts.write("Starter (256 MB) is not reliable once Hermes is keeping messaging gateways online.\n");
+      this.prompts.write(`Switching this deployment to ${this.describeVmSize(nextVmSize)} automatically.\n\n`);
+      return;
+    }
+
+    if (previousVmSize !== nextVmSize) {
+      this.prompts.write(`\nAdjusting server size to ${this.describeVmSize(nextVmSize)}.\n\n`);
+    }
+  }
+
+  private writeVmSizingAdvisory(vmSize: string, advisory?: VmSizingAdvisory): void {
+    if (!this.prompts.isInteractive()) {
+      return;
+    }
+    if (advisory !== "messaging-minimum" || vmSize !== "shared-cpu-2x") {
+      return;
+    }
+    this.prompts.write("\n");
+    this.prompts.write("Standard (512 MB) is the minimum recommended size once Hermes is keeping messaging gateways online.\n");
+    this.prompts.write("If you want a safer default for busier use or tight Fly.io regions, choose Pro (2 GB).\n\n");
   }
 
   private readPrimaryMachineState(stdout: string): string | undefined {
@@ -885,6 +1260,52 @@ export class FlyDeployWizard implements DeployWizardPort {
     } catch {
       return undefined;
     }
+  }
+
+  private readPrimaryMachineId(stdout: string): string | undefined {
+    try {
+      const parsed = JSON.parse(stdout) as Array<{ id?: unknown; ID?: unknown; state?: unknown; State?: unknown }>;
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        return undefined;
+      }
+
+      const startedMachine = parsed.find((machine) => {
+        const state = machine.state ?? machine.State;
+        return state === "started";
+      });
+      const preferredMachine = startedMachine ?? parsed[0];
+      const machineId = preferredMachine?.id ?? preferredMachine?.ID;
+      return typeof machineId === "string" && machineId.trim().length > 0 ? machineId.trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async readRecentDeployFailure(appName: string): Promise<string | undefined> {
+    const result = await this.process.run(
+      "fly",
+      ["logs", "--app", appName],
+      { env: this.env, timeoutMs: 4_000 }
+    );
+    const combined = `${result.stdout}\n${result.stderr}`;
+    if (combined.trim().length === 0) {
+      return undefined;
+    }
+    if (this.containsOutOfMemorySignal(combined)) {
+      return "recent logs show the app was OOM-killed. Choose Standard (512 MB) or larger for Hermes deployments with messaging gateways.";
+    }
+    if (this.containsGatewayRestartLoopSignal(combined)) {
+      return "recent logs show Hermes is in a restart-loop because the gateway was already marked as running after a crash.";
+    }
+    return undefined;
+  }
+
+  private containsOutOfMemorySignal(text: string): boolean {
+    return /Out of memory: Killed process|OOM killed|Process appears to have been OOM killed/i.test(text);
+  }
+
+  private containsGatewayRestartLoopSignal(text: string): boolean {
+    return /Another gateway instance is already running|Gateway already running/i.test(text);
   }
 
   private resolveHermesAgentRef(channel: "stable" | "preview" | "edge"): string {
@@ -916,7 +1337,9 @@ export class FlyDeployWizard implements DeployWizardPort {
 
     if (orgs.length === 1) {
       if (this.prompts.isInteractive()) {
-        this.prompts.write(`Fly.io organization: ${orgs[0].name} (${orgs[0].slug})\n\n`);
+        this.writePanel("Fly organization", [
+          `Fly.io organization: ${orgs[0].name} (${orgs[0].slug})`,
+        ]);
       }
       return orgs[0].slug;
     }
@@ -927,17 +1350,262 @@ export class FlyDeployWizard implements DeployWizardPort {
       );
     }
 
-    this.prompts.write("Which Fly.io organization should own this deployment?\n");
-    this.prompts.write("If you only use Fly personally, the Personal organization is usually the right choice.\n\n");
-    this.prompts.write("  #  Organization                Slug\n");
-    orgs.forEach((org, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${org.name.padEnd(26, " ")} ${org.slug}\n`);
-    });
-    this.prompts.write("\n");
-
     const defaultIndex = Math.max(0, orgs.findIndex((org) => org.type?.toUpperCase() === "PERSONAL"));
+    if (this.prompts.selectChoice) {
+      const selectedSlug = await this.prompts.selectChoice({
+        options: orgs.map((org) => ({ value: org.slug })),
+        initialIndex: defaultIndex + 1,
+        render: (activeIndex) => this.renderFlyOrganizationSection(orgs, activeIndex, {
+          includeInteractionHint: true,
+        }),
+        renderFallback: (activeIndex) => this.renderFlyOrganizationSection(orgs, activeIndex, {
+          numbered: true,
+        }),
+        fallbackPrompt: `Choose an organization [${defaultIndex + 1}]: `,
+      });
+      return selectedSlug;
+    }
+
+    this.prompts.write(this.renderFlyOrganizationSection(orgs, defaultIndex + 1, {
+      numbered: true,
+    }));
     const selected = orgs[await this.chooseNumber(`Choose an organization [${defaultIndex + 1}]: `, orgs.length, defaultIndex + 1) - 1];
     return selected.slug;
+  }
+
+  private renderFlyOrganizationSection(
+    orgs: FlyOrgOption[],
+    activeIndex: number,
+    params: { numbered?: boolean; includeInteractionHint?: boolean } = {}
+  ): string {
+    return renderAdaptiveDeployChoiceSection({
+      title: "Fly organization",
+      question: "Which Fly.io organization should own this deployment?",
+      details: [
+        "",
+        "If you only use Fly personally, the Personal organization is usually the right choice.",
+        ...(params.includeInteractionHint ? [SINGLE_SELECT_INTERACTION_HINT] : []),
+      ],
+      options: [
+        ...renderDeployChoiceOptions(
+          orgs.map((org) => ({ label: `${org.name.padEnd(26, " ")} ${org.slug}` })),
+          activeIndex,
+          { numbered: params.numbered ?? false }
+        ),
+        "",
+      ],
+      width: this.promptWidth(),
+    });
+  }
+
+  private renderSelectableChoiceSection<T>(params: {
+    title: string;
+    question: string;
+    details?: string[];
+    options: SelectableChoiceOption<T>[];
+    activeIndex: number;
+    numbered?: boolean;
+    includeInteractionHint?: boolean;
+  }): string {
+    return renderAdaptiveDeployChoiceSection({
+      title: params.title,
+      question: params.question,
+      details: [
+        ...(params.details ?? []),
+        ...(params.includeInteractionHint ? [SINGLE_SELECT_INTERACTION_HINT] : []),
+      ],
+      options: [
+        ...renderDeployChoiceOptions(
+          params.options.map((option) => ({
+            label: option.label,
+            description: option.description,
+            disabled: option.disabled,
+          })),
+          params.activeIndex,
+          { numbered: params.numbered ?? false }
+        ),
+        "",
+      ],
+      width: this.promptWidth(),
+    });
+  }
+
+  private async selectFromChoiceSection<T>(params: {
+    title: string;
+    question: string;
+    details?: string[];
+    options: SelectableChoiceOption<T>[];
+    defaultIndex: number;
+    fallbackPrompt: string;
+  }): Promise<T> {
+    const defaultIndex = Math.max(1, Math.min(params.defaultIndex, params.options.length));
+    if (this.prompts.selectChoice) {
+      return await this.prompts.selectChoice({
+        options: params.options.map((option) => ({ value: option.value, disabled: option.disabled })),
+        initialIndex: defaultIndex,
+        render: (activeIndex) => this.renderSelectableChoiceSection({
+          title: params.title,
+          question: params.question,
+          details: params.details,
+          options: params.options,
+          activeIndex,
+          includeInteractionHint: true,
+        }),
+        renderFallback: (activeIndex) => this.renderSelectableChoiceSection({
+          title: params.title,
+          question: params.question,
+          details: params.details,
+          options: params.options,
+          activeIndex,
+          numbered: true,
+        }),
+        fallbackPrompt: params.fallbackPrompt,
+      });
+    }
+
+    this.prompts.write(this.renderSelectableChoiceSection({
+      title: params.title,
+      question: params.question,
+      details: params.details,
+      options: params.options,
+      activeIndex: defaultIndex,
+      numbered: true,
+    }));
+    const selectedIndex = await this.chooseNumber(params.fallbackPrompt, params.options.length, defaultIndex);
+    return params.options[selectedIndex - 1].value;
+  }
+
+  private renderMultiSelectableChoiceSection<T>(params: {
+    title: string;
+    question: string;
+    details?: string[];
+    options: SelectableChoiceOption<T>[];
+    activeIndex: number;
+    selectedIndices: number[];
+    numbered?: boolean;
+  }): string {
+    const selectedIndexSet = new Set(params.selectedIndices);
+    const labelWidth = params.options.reduce((max, option) => Math.max(max, option.label.length), 0);
+    return renderAdaptiveDeployChoiceSection({
+      title: params.title,
+      question: params.question,
+      details: params.details,
+      options: [
+        ...params.options.map((option, index) => {
+          const currentIndex = index + 1;
+          const marker = selectedIndexSet.has(currentIndex) ? "●" : "○";
+          const paddedLabel = option.description ? option.label.padEnd(labelWidth) : option.label;
+          const label = option.description ? `${paddedLabel} ${option.description}` : paddedLabel;
+          if (params.numbered) {
+            return `${String(currentIndex).padStart(2, " ")}  ${marker} ${label}`;
+          }
+          const prefix = currentIndex === params.activeIndex ? "› " : "  ";
+          return `${prefix}${marker} ${label}`;
+        }),
+        "",
+      ],
+      width: this.promptWidth(),
+    });
+  }
+
+  private async selectManyFromChoiceSection<T>(params: {
+    title: string;
+    question: string;
+    details?: string[];
+    options: SelectableChoiceOption<T>[];
+    defaultIndex: number;
+    initialSelectedIndices: number[];
+    fallbackPrompt: string;
+    interactionHint?: string;
+    fallbackDetails?: string[];
+    normalizeSelectedIndices?: (selectedIndices: number[], activeIndex: number) => number[];
+    validateSelectedIndices?: (selectedIndices: number[]) => string | undefined;
+  }): Promise<T[]> {
+    const defaultIndex = Math.max(1, Math.min(params.defaultIndex, params.options.length));
+    const initialSelectedIndices = params.initialSelectedIndices
+      .filter((index) => index >= 1 && index <= params.options.length);
+    const normalizedInitialSelectedIndices = params.normalizeSelectedIndices
+      ? params.normalizeSelectedIndices(initialSelectedIndices, defaultIndex)
+      : initialSelectedIndices;
+
+    if (this.prompts.selectManyChoices) {
+      return await this.prompts.selectManyChoices({
+        options: params.options.map((option) => ({ value: option.value, disabled: option.disabled })),
+        initialIndex: defaultIndex,
+        initialSelectedIndices: normalizedInitialSelectedIndices,
+        normalizeSelectedIndices: params.normalizeSelectedIndices,
+        validateSelectedIndices: params.validateSelectedIndices,
+        render: (activeIndex, selectedIndices) => this.renderMultiSelectableChoiceSection({
+          title: params.title,
+          question: params.question,
+          details: [
+            ...(params.details ?? []),
+            ...(params.interactionHint ? [params.interactionHint] : []),
+          ],
+          options: params.options,
+          activeIndex,
+          selectedIndices,
+        }),
+        renderFallback: (activeIndex, selectedIndices) => this.renderMultiSelectableChoiceSection({
+          title: params.title,
+          question: params.question,
+          details: [
+            ...(params.details ?? []),
+            ...(params.fallbackDetails ?? []),
+          ],
+          options: params.options,
+          activeIndex,
+          selectedIndices,
+          numbered: true,
+        }),
+        fallbackPrompt: params.fallbackPrompt,
+      });
+    }
+
+    this.prompts.write(this.renderMultiSelectableChoiceSection({
+      title: params.title,
+      question: params.question,
+      details: [
+        ...(params.details ?? []),
+        ...(params.fallbackDetails ?? []),
+      ],
+      options: params.options,
+      activeIndex: defaultIndex,
+      selectedIndices: normalizedInitialSelectedIndices,
+      numbered: true,
+    }));
+
+    while (true) {
+      const answer = (await this.prompts.ask(params.fallbackPrompt)).trim();
+      if (answer.length === 0) {
+        return normalizedInitialSelectedIndices.map((index) => params.options[index - 1].value);
+      }
+
+      const choices = answer.split(",").map((value) => value.trim()).filter(Boolean);
+      const uniqueChoices = [...new Set(choices)];
+      if (uniqueChoices.some((value) => !/^[1-9][0-9]*$/.test(value))) {
+        this.prompts.write(`Enter one or more numbers from 1 to ${params.options.length}, separated by commas.\n`);
+        continue;
+      }
+
+      const numericChoices = uniqueChoices.map((value) => Number(value));
+      if (numericChoices.some((value) => value < 1 || value > params.options.length)) {
+        this.prompts.write(`Enter one or more numbers from 1 to ${params.options.length}, separated by commas.\n`);
+        continue;
+      }
+
+      const validationError = params.validateSelectedIndices?.(numericChoices);
+      if (validationError) {
+        this.prompts.write(`${validationError}\n`);
+        continue;
+      }
+
+      const normalizedChoices = params.normalizeSelectedIndices
+        ? params.normalizeSelectedIndices(numericChoices, numericChoices.at(-1) ?? defaultIndex)
+        : numericChoices;
+
+      return normalizedChoices.map((index) => params.options[index - 1].value);
+    }
   }
 
   private async collectRegion(envValue: string | undefined): Promise<string> {
@@ -954,26 +1622,30 @@ export class FlyDeployWizard implements DeployWizardPort {
       .map((area) => ({ area, options: regions.filter((region) => region.area === area) }))
       .filter((row) => row.options.length > 0);
 
-    this.prompts.write("Where are you (or most of your users) located?\n");
-    this.prompts.write("Choosing a closer server usually means faster responses.\n\n");
-    this.prompts.write("  #  Area            Locations\n");
-    areaRows.forEach((row, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${row.area.padEnd(15, " ")} ${String(row.options.length).padStart(2, " ")}\n`);
-    });
-    this.prompts.write("\n");
-
     const defaultAreaIndex = Math.max(0, areaRows.findIndex((row) => row.options.some((option) => option.code === DEFAULT_REGION)));
-    const selectedArea = areaRows[await this.chooseNumber(`Choose an area [${defaultAreaIndex + 1}]: `, areaRows.length, defaultAreaIndex + 1) - 1];
-
-    this.prompts.write(`\n${selectedArea.area} locations:\n\n`);
-    this.prompts.write("  #  Location                          Code\n");
-    selectedArea.options.forEach((region, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${region.name.padEnd(32, " ")} ${region.code}\n`);
+    const selectedArea = await this.selectFromChoiceSection({
+      title: "Region",
+      question: "Where are you (or most of your users) located?",
+      details: ["Choosing a closer server usually means faster responses."],
+      options: areaRows.map((row) => ({
+        value: row,
+        label: `${row.area.padEnd(15, " ")} ${String(row.options.length).padStart(2, " ")} locations`,
+      })),
+      defaultIndex: defaultAreaIndex + 1,
+      fallbackPrompt: `Choose an area [${defaultAreaIndex + 1}]: `,
     });
-    this.prompts.write("\n");
 
     const defaultLocationIndex = Math.max(0, selectedArea.options.findIndex((region) => region.code === DEFAULT_REGION));
-    const selectedLocation = selectedArea.options[await this.chooseNumber(`Choose a location [${defaultLocationIndex + 1}]: `, selectedArea.options.length, defaultLocationIndex + 1) - 1];
+    const selectedLocation = await this.selectFromChoiceSection({
+      title: `${selectedArea.area} locations`,
+      question: `${selectedArea.area} locations:`,
+      options: selectedArea.options.map((region) => ({
+        value: region,
+        label: `${region.name.padEnd(32, " ")} ${region.code}`,
+      })),
+      defaultIndex: defaultLocationIndex + 1,
+      fallbackPrompt: `Choose a location [${defaultLocationIndex + 1}]: `,
+    });
     return selectedLocation.code;
   }
 
@@ -1030,16 +1702,18 @@ export class FlyDeployWizard implements DeployWizardPort {
 
     const options = await this.fetchVmOptions();
     const defaultIndex = Math.max(0, options.findIndex((option) => option.value === DEFAULT_VM_SIZE));
-
-    this.prompts.write("How powerful should your agent's server be?\n\n");
-    this.prompts.write("  #  Tier       Specs           Est. cost  Best for\n");
-    options.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.tier.padEnd(10, " ")} ${option.ramLabel.padEnd(14, " ")} ${option.costLabel.padEnd(10, " ")} ${option.bestFor}\n`);
+    return await this.selectFromChoiceSection({
+      title: "Server size",
+      question: "How powerful should your agent's server be?",
+      details: ["Prices are estimates. Check current rates: https://fly.io/calculator"],
+      options: options.map((option) => ({
+        value: option.value,
+        label: `${option.tier.padEnd(10, " ")} ${option.ramLabel.padEnd(14, " ")} ${option.costLabel.padEnd(10, " ")}`,
+        description: option.bestFor,
+      })),
+      defaultIndex: defaultIndex + 1,
+      fallbackPrompt: `Choose a tier [${defaultIndex + 1}]: `,
     });
-    this.prompts.write("\nPrices are estimates. Check current rates: https://fly.io/calculator\n\n");
-
-    const selected = options[await this.chooseNumber(`Choose a tier [${defaultIndex + 1}]: `, options.length, defaultIndex + 1) - 1];
-    return selected.value;
   }
 
   private async collectVolumeSize(envValue: string | undefined): Promise<number> {
@@ -1052,17 +1726,21 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     const defaultIndex = Math.max(0, STATIC_VOLUME_OPTIONS.findIndex((option) => option.value === DEFAULT_VOLUME_SIZE));
-
-    this.prompts.write("How much storage should your agent have?\n");
-    this.prompts.write("This is where your agent saves conversations, memories, and files.\n\n");
-    this.prompts.write("  #  Size   Est. cost   Best for\n");
-    STATIC_VOLUME_OPTIONS.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${String(option.value).padStart(2, " ")} GB  ${option.costLabel.padEnd(10, " ")} ${option.bestFor}\n`);
+    return await this.selectFromChoiceSection({
+      title: "Storage",
+      question: "How much storage should your agent have?",
+      details: [
+        "This is where your agent saves conversations, memories, and files.",
+        "Prices are estimates. Check current rates: https://fly.io/calculator",
+      ],
+      options: STATIC_VOLUME_OPTIONS.map((option) => ({
+        value: option.value,
+        label: `${String(option.value).padStart(2, " ")} GB  ${option.costLabel.padEnd(10, " ")}`,
+        description: option.bestFor,
+      })),
+      defaultIndex: defaultIndex + 1,
+      fallbackPrompt: `Choose a size [${defaultIndex + 1}]: `,
     });
-    this.prompts.write("\nPrices are estimates. Check current rates: https://fly.io/calculator\n\n");
-
-    const selected = STATIC_VOLUME_OPTIONS[await this.chooseNumber(`Choose a size [${defaultIndex + 1}]: `, STATIC_VOLUME_OPTIONS.length, defaultIndex + 1) - 1];
-    return selected.value;
   }
 
   private async collectAiAccess(input: {
@@ -1145,16 +1823,44 @@ export class FlyDeployWizard implements DeployWizardPort {
       return this.collectOpenRouterAccess(input.model, input.reasoningEffort, input.sttProvider, input.sttModel);
     }
 
-    this.prompts.write("How should Hermes access AI models?\n");
-    this.prompts.write("You can use your own OpenRouter API key, sign in with your ChatGPT subscription through OpenAI Codex, use your Nous Portal subscription, sign in with Anthropic OAuth, or use your Z.AI GLM API key.\n\n");
-    this.prompts.write("   1  OpenRouter API key         Bring your own API key and choose from OpenRouter's model catalog\n");
-    this.prompts.write("   2  ChatGPT subscription       Sign in with ChatGPT / OpenAI through OpenAI Codex\n\n");
-    this.prompts.write("   3  Nous Portal subscription   Sign in with your Nous Portal account and use Portal models\n\n");
-    this.prompts.write("   4  Anthropic subscription    Sign in with Claude / Anthropic through OAuth\n\n");
-    this.prompts.write("   5  Z.AI GLM API key          Use your Z.AI key and detect the matching GLM endpoint, including Coding Plan\n\n");
+    const selection = await this.selectFromChoiceSection({
+      title: "AI access",
+      question: "How should Hermes access AI models?",
+      details: [
+        "You can use your own OpenRouter API key, sign in with your ChatGPT subscription through OpenAI Codex, use your Nous Portal subscription, sign in with Anthropic OAuth, or use your Z.AI GLM API key.",
+      ],
+      options: [
+        {
+          value: "openrouter" as const,
+          label: "OpenRouter API key",
+          description: "Bring your own API key and choose from OpenRouter's model catalog",
+        },
+        {
+          value: "openai-codex" as const,
+          label: "ChatGPT subscription",
+          description: "Sign in with ChatGPT / OpenAI through OpenAI Codex",
+        },
+        {
+          value: "nous" as const,
+          label: "Nous Portal subscription",
+          description: "Sign in with your Nous Portal account and use Portal models",
+        },
+        {
+          value: "anthropic" as const,
+          label: "Anthropic subscription",
+          description: "Sign in with Claude / Anthropic through OAuth",
+        },
+        {
+          value: "zai" as const,
+          label: "Z.AI GLM API key",
+          description: "Use your Z.AI key and detect the matching GLM endpoint, including Coding Plan",
+        },
+      ],
+      defaultIndex: 1,
+      fallbackPrompt: "Choose an option [1]: ",
+    });
 
-    const selection = await this.chooseNumber("Choose an option [1]: ", 5, 1);
-    if (selection === 2) {
+    if (selection === "openai-codex") {
       return this.collectOpenAICodexAccess(
         input.model,
         input.reasoningEffort,
@@ -1163,7 +1869,7 @@ export class FlyDeployWizard implements DeployWizardPort {
         input.sttModel
       );
     }
-    if (selection === 3) {
+    if (selection === "nous") {
       return this.collectNousPortalAccess(
         input.model,
         input.reasoningEffort,
@@ -1172,7 +1878,7 @@ export class FlyDeployWizard implements DeployWizardPort {
         input.sttModel
       );
     }
-    if (selection === 4) {
+    if (selection === "anthropic") {
       return this.collectAnthropicAccess(
         input.model,
         input.reasoningEffort,
@@ -1181,7 +1887,7 @@ export class FlyDeployWizard implements DeployWizardPort {
         input.sttModel
       );
     }
-    if (selection === 5) {
+    if (selection === "zai") {
       return this.collectZaiAccess(
         input.model,
         input.apiBaseUrl,
@@ -1345,9 +2051,15 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     if (stored.source === "hermes") {
-      this.prompts.write("I found an existing Hermes OpenAI Codex login on this machine.\n\n");
-      this.prompts.write("   1  Reuse it        Use the saved ChatGPT subscription login for this deployment\n");
-      this.prompts.write("   2  Sign in again   Start a fresh OpenAI Codex login now\n\n");
+      this.writeChoiceSection(
+        "OpenAI Codex login",
+        "Reuse the saved login or start a fresh sign-in?",
+        renderDeployChoiceOptions([
+          { label: "Reuse it", description: "Use the saved ChatGPT subscription login for this deployment" },
+          { label: "Sign in again", description: "Start a fresh OpenAI Codex login now" },
+        ], 1),
+        ["I found an existing Hermes OpenAI Codex login on this machine."]
+      );
       const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
       if (choice === 1) {
         return stored;
@@ -1355,10 +2067,18 @@ export class FlyDeployWizard implements DeployWizardPort {
       return this.runCodexDeviceCodeLoginWithRetry();
     }
 
-    this.prompts.write("I found an existing Codex login on this machine.\n");
-    this.prompts.write("Hermes can import it into its own auth store for this deployment.\n\n");
-    this.prompts.write("   1  Import and use it   Reuse the saved Codex login\n");
-    this.prompts.write("   2  Sign in again       Start a fresh OpenAI Codex login now\n\n");
+    this.writeChoiceSection(
+      "OpenAI Codex login",
+      "Import the saved login or start a fresh sign-in?",
+      renderDeployChoiceOptions([
+        { label: "Import and use it", description: "Reuse the saved Codex login" },
+        { label: "Sign in again", description: "Start a fresh OpenAI Codex login now" },
+      ], 1),
+      [
+        "I found an existing Codex login on this machine.",
+        "Hermes can import it into its own auth store for this deployment.",
+      ]
+    );
     const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
     if (choice === 1) {
       return stored;
@@ -1384,9 +2104,15 @@ export class FlyDeployWizard implements DeployWizardPort {
       return this.runNousDeviceCodeLoginWithRetry();
     }
 
-    this.prompts.write("I found an existing Hermes Nous Portal login on this machine.\n\n");
-    this.prompts.write("   1  Reuse it        Use the saved Nous Portal login for this deployment\n");
-    this.prompts.write("   2  Sign in again   Start a fresh Nous Portal login now\n\n");
+    this.writeChoiceSection(
+      "Nous Portal login",
+      "Reuse the saved login or start a fresh sign-in?",
+      renderDeployChoiceOptions([
+        { label: "Reuse it", description: "Use the saved Nous Portal login for this deployment" },
+        { label: "Sign in again", description: "Start a fresh Nous Portal login now" },
+      ], 1),
+      ["I found an existing Hermes Nous Portal login on this machine."]
+    );
     const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
     if (choice === 1) {
       return stored;
@@ -1413,9 +2139,15 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     if (stored.source === "hermes") {
-      this.prompts.write("I found an existing Hermes Anthropic OAuth login on this machine.\n\n");
-      this.prompts.write("   1  Reuse it        Use the saved Anthropic OAuth login for this deployment\n");
-      this.prompts.write("   2  Sign in again   Start a fresh Anthropic OAuth login now\n\n");
+      this.writeChoiceSection(
+        "Anthropic login",
+        "Reuse the saved login or start a fresh sign-in?",
+        renderDeployChoiceOptions([
+          { label: "Reuse it", description: "Use the saved Anthropic OAuth login for this deployment" },
+          { label: "Sign in again", description: "Start a fresh Anthropic OAuth login now" },
+        ], 1),
+        ["I found an existing Hermes Anthropic OAuth login on this machine."]
+      );
       const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
       if (choice === 1) {
         return stored;
@@ -1423,10 +2155,18 @@ export class FlyDeployWizard implements DeployWizardPort {
       return this.runAnthropicOauthLoginWithRetry();
     }
 
-    this.prompts.write("I found existing Claude Code credentials on this machine.\n");
-    this.prompts.write("Hermes can reuse them for this deployment without asking for an API key.\n\n");
-    this.prompts.write("   1  Reuse them      Import the saved Claude Code login\n");
-    this.prompts.write("   2  Sign in again   Start a fresh Anthropic OAuth login now\n\n");
+    this.writeChoiceSection(
+      "Anthropic login",
+      "Reuse the saved login or start a fresh sign-in?",
+      renderDeployChoiceOptions([
+        { label: "Reuse them", description: "Import the saved Claude Code login" },
+        { label: "Sign in again", description: "Start a fresh Anthropic OAuth login now" },
+      ], 1),
+      [
+        "I found existing Claude Code credentials on this machine.",
+        "Hermes can reuse them for this deployment without asking for an API key.",
+      ]
+    );
     const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
     if (choice === 1) {
       return stored;
@@ -1436,18 +2176,29 @@ export class FlyDeployWizard implements DeployWizardPort {
 
   private async runCodexDeviceCodeLoginWithRetry(): Promise<ResolvedCodexAuth> {
     while (true) {
-      this.prompts.write("If device-code sign-in has trouble in a remote or headless terminal, open:\n");
-      this.prompts.write(`${CHATGPT_SECURITY_SETTINGS_URL}\n`);
-      this.prompts.write("Then enable \"Enable device code authorization for Codex\" under Secure sign in with ChatGPT.\n\n");
+      this.writeCopyableSection(
+        "OpenAI Codex sign-in help",
+        "If device-code sign-in has trouble in a remote or headless terminal, open:",
+        [CHATGPT_SECURITY_SETTINGS_URL],
+        ['Then enable "Enable device code authorization for Codex" under Secure sign in with ChatGPT.']
+      );
 
       try {
         return await this.codexAuth.runDeviceCodeLogin(this.prompts);
       } catch (error) {
         const message = error instanceof Error ? error.message : "OpenAI Codex sign-in failed.";
-        this.prompts.write(`${message}\n`);
-        this.prompts.write("If you're using ChatGPT OAuth here, check the ChatGPT security settings link above and retry.\n\n");
-        this.prompts.write("   1  Retry sign-in   Start the OpenAI Codex device-code flow again\n");
-        this.prompts.write("   2  Cancel setup    Stop this deployment wizard\n\n");
+        this.writeChoiceSection(
+          "OpenAI Codex sign-in failed",
+          "What should Hermes do next?",
+          renderDeployChoiceOptions([
+            { label: "Retry sign-in", description: "Start the OpenAI Codex device-code flow again" },
+            { label: "Cancel setup", description: "Stop this deployment wizard" },
+          ], 1),
+          [
+            message,
+            "If you're using ChatGPT OAuth here, check the ChatGPT security settings link above and retry.",
+          ]
+        );
 
         const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
         if (choice === 2) {
@@ -1463,9 +2214,15 @@ export class FlyDeployWizard implements DeployWizardPort {
         return await this.nousAuth.runDeviceCodeLogin(this.prompts);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Nous Portal sign-in failed.";
-        this.prompts.write(`${message}\n\n`);
-        this.prompts.write("   1  Retry sign-in   Start the Nous Portal device-code flow again\n");
-        this.prompts.write("   2  Cancel setup    Stop this deployment wizard\n\n");
+        this.writeChoiceSection(
+          "Nous Portal sign-in failed",
+          "What should Hermes do next?",
+          renderDeployChoiceOptions([
+            { label: "Retry sign-in", description: "Start the Nous Portal device-code flow again" },
+            { label: "Cancel setup", description: "Stop this deployment wizard" },
+          ], 1),
+          [message]
+        );
 
         const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
         if (choice === 2) {
@@ -1481,9 +2238,15 @@ export class FlyDeployWizard implements DeployWizardPort {
         return await this.anthropicAuth.runOauthLogin(this.prompts);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Anthropic OAuth sign-in failed.";
-        this.prompts.write(`${message}\n\n`);
-        this.prompts.write("   1  Retry sign-in   Start the Anthropic OAuth flow again\n");
-        this.prompts.write("   2  Cancel setup    Stop this deployment wizard\n\n");
+        this.writeChoiceSection(
+          "Anthropic sign-in failed",
+          "What should Hermes do next?",
+          renderDeployChoiceOptions([
+            { label: "Retry sign-in", description: "Start the Anthropic OAuth flow again" },
+            { label: "Cancel setup", description: "Stop this deployment wizard" },
+          ], 1),
+          [message]
+        );
 
         const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
         if (choice === 2) {
@@ -1503,15 +2266,26 @@ export class FlyDeployWizard implements DeployWizardPort {
       return models[0]?.value ?? "gpt-5.3-codex";
     }
 
-    this.prompts.write("Which OpenAI Codex model should your agent use?\n\n");
-    models.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}\n`);
+    const selectedModel = await this.selectFromChoiceSection({
+      title: "OpenAI Codex model",
+      question: "Which OpenAI Codex model should your agent use?",
+      options: [
+        ...models.map((option) => ({
+          value: option.value,
+          label: option.label.padEnd(24, " "),
+          description: option.bestFor,
+        })),
+        {
+          value: "__manual__" as const,
+          label: "Bring my own model",
+          description: "Enter a model ID manually",
+        },
+      ],
+      defaultIndex: 1,
+      fallbackPrompt: "Choose a model [1]: ",
     });
-    const manualIndex = models.length + 1;
-    this.prompts.write(`  ${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually\n\n`);
 
-    const selectedIndex = await this.chooseNumber("Choose a model [1]: ", manualIndex, 1);
-    if (selectedIndex === manualIndex) {
+    if (selectedModel === "__manual__") {
       this.prompts.write("Model IDs come from the OpenAI Codex catalog. Example: gpt-5.3-codex\n\n");
       while (true) {
         const answer = (await this.prompts.ask("Model ID: ")).trim();
@@ -1522,7 +2296,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    return models[selectedIndex - 1].value;
+    return selectedModel;
   }
 
   private async collectNousModel(envValue: string | undefined, auth: ResolvedNousPortalAuth): Promise<string> {
@@ -1550,15 +2324,26 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    this.prompts.write("Which Nous Portal model should your agent use?\n\n");
-    models.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}\n`);
+    const selectedModel = await this.selectFromChoiceSection({
+      title: "Nous Portal model",
+      question: "Which Nous Portal model should your agent use?",
+      options: [
+        ...models.map((option) => ({
+          value: option.value,
+          label: option.label.padEnd(24, " "),
+          description: option.bestFor,
+        })),
+        {
+          value: "__manual__" as const,
+          label: "Bring my own model",
+          description: "Enter a model ID manually",
+        },
+      ],
+      defaultIndex: 1,
+      fallbackPrompt: "Choose a model [1]: ",
     });
-    const manualIndex = models.length + 1;
-    this.prompts.write(`  ${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually\n\n`);
 
-    const selectedIndex = await this.chooseNumber("Choose a model [1]: ", manualIndex, 1);
-    if (selectedIndex === manualIndex) {
+    if (selectedModel === "__manual__") {
       while (true) {
         const answer = (await this.prompts.ask("Model ID: ")).trim();
         if (answer.length > 0) {
@@ -1568,7 +2353,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    return models[selectedIndex - 1].value;
+    return selectedModel;
   }
 
   private async collectAnthropicModel(envValue: string | undefined): Promise<string> {
@@ -1581,15 +2366,26 @@ export class FlyDeployWizard implements DeployWizardPort {
       return models[0]?.value ?? "claude-sonnet-4-6";
     }
 
-    this.prompts.write("Which Anthropic model should your agent use?\n\n");
-    models.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}\n`);
+    const selectedModel = await this.selectFromChoiceSection({
+      title: "Anthropic model",
+      question: "Which Anthropic model should your agent use?",
+      options: [
+        ...models.map((option) => ({
+          value: option.value,
+          label: option.label.padEnd(24, " "),
+          description: option.bestFor,
+        })),
+        {
+          value: "__manual__" as const,
+          label: "Bring my own model",
+          description: "Enter a model ID manually",
+        },
+      ],
+      defaultIndex: 1,
+      fallbackPrompt: "Choose a model [1]: ",
     });
-    const manualIndex = models.length + 1;
-    this.prompts.write(`  ${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually\n\n`);
 
-    const selectedIndex = await this.chooseNumber("Choose a model [1]: ", manualIndex, 1);
-    if (selectedIndex === manualIndex) {
+    if (selectedModel === "__manual__") {
       this.prompts.write("Anthropic model IDs look like claude-sonnet-4-6.\n\n");
       while (true) {
         const answer = (await this.prompts.ask("Model ID: ")).trim();
@@ -1600,7 +2396,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    return models[selectedIndex - 1].value;
+    return selectedModel;
   }
 
   private async collectZaiModel(envValue: string | undefined, endpoint: ZaiEndpointResolution): Promise<string> {
@@ -1613,16 +2409,27 @@ export class FlyDeployWizard implements DeployWizardPort {
       return endpoint.defaultModel || models[0]?.value || "glm-4.7";
     }
 
-    this.prompts.write("Which Z.AI GLM model should your agent use?\n\n");
-    models.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}\n`);
-    });
     const manualIndex = models.length + 1;
-    this.prompts.write(`  ${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually\n\n`);
-
     const defaultIndex = Math.max(0, models.findIndex((option) => option.value === endpoint.defaultModel)) + 1;
-    const selectedIndex = await this.chooseNumber(`Choose a model [${defaultIndex}]: `, manualIndex, defaultIndex);
-    if (selectedIndex === manualIndex) {
+    const selectedModel = await this.selectFromChoiceSection({
+      title: "Z.AI GLM model",
+      question: "Which Z.AI GLM model should your agent use?",
+      options: [
+        ...models.map((option) => ({
+          value: option.value,
+          label: option.label.padEnd(24, " "),
+          description: option.bestFor,
+        })),
+        {
+          value: "__manual__",
+          label: "Bring my own model",
+          description: "Enter a model ID manually",
+        },
+      ],
+      defaultIndex,
+      fallbackPrompt: `Choose a model [${defaultIndex}]: `,
+    });
+    if (selectedModel === "__manual__") {
       this.prompts.write("GLM model IDs look like glm-4.7 or glm-5.\n\n");
       while (true) {
         const answer = (await this.prompts.ask("Model ID: ")).trim();
@@ -1633,7 +2440,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    return models[selectedIndex - 1].value;
+    return selectedModel;
   }
 
   private fetchAnthropicModels(): AnthropicModelOption[] {
@@ -1809,8 +2616,10 @@ export class FlyDeployWizard implements DeployWizardPort {
       throw new Error(`${envKey} is required in non-interactive mode. Run from a terminal to use the guided wizard or export ${envKey} first.`);
     }
 
-    this.prompts.write(`Get your OpenRouter API key at: ${OPENROUTER_KEY_URL}\n`);
-    this.prompts.write("This key lets your deployed agent call the AI model you choose.\n\n");
+    this.writePanel("OpenRouter API key", [
+      `Get your OpenRouter API key at: ${OPENROUTER_KEY_URL}`,
+      "This key lets your deployed agent call the AI model you choose.",
+    ]);
     while (true) {
       const answer = await this.prompts.askSecret("OpenRouter API key (required): ");
       const apiKey = answer.trim();
@@ -1851,8 +2660,10 @@ export class FlyDeployWizard implements DeployWizardPort {
       throw new Error("GLM_API_KEY is required in non-interactive mode. Run from a terminal to use the guided wizard or export GLM_API_KEY first.");
     }
 
-    this.prompts.write("Get your Z.AI API key through your GLM plan.\n");
-    this.prompts.write("Hermes will detect the matching Z.AI GLM endpoint for this key, including Coding Plan endpoints.\n\n");
+    this.writePanel("Z.AI GLM API key", [
+      "Get your Z.AI API key through your GLM plan.",
+      "Hermes will detect the matching Z.AI GLM endpoint for this key, including Coding Plan endpoints.",
+    ]);
     while (true) {
       const answer = await this.prompts.askSecret("Z.AI GLM API key (required): ");
       const apiKey = answer.trim();
@@ -1962,12 +2773,12 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     const defaultIndex = Math.max(0, support.allowedEfforts.findIndex((effort) => effort === support.defaultEffort));
-    this.prompts.write("How much extra reasoning effort should Hermes use with this model?\n");
-    this.prompts.write("Higher effort can help on harder tasks, but it may respond slower and cost more.\n\n");
-    support.allowedEfforts.forEach((effort, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${this.describeReasoningEffort(effort)}\n`);
-    });
-    this.prompts.write("\n");
+    this.writeChoiceSection(
+      "Reasoning",
+      "How much extra reasoning effort should Hermes use with this model?",
+      support.allowedEfforts.map((effort, index) => `${String(index + 1).padStart(2, " ")}  ${this.describeReasoningEffort(effort)}`),
+      ["Higher effort can help on harder tasks, but it may respond slower and cost more."]
+    );
 
     const selectedIndex = await this.chooseNumber(
       `Choose a reasoning level [${defaultIndex + 1}]: `,
@@ -1980,28 +2791,40 @@ export class FlyDeployWizard implements DeployWizardPort {
   private async collectProviderChoice(catalog: ModelOption[]): Promise<ProviderOption> {
     const providers = this.buildProviderOptions(catalog);
     const defaultIndex = Math.max(0, providers.findIndex((provider) => provider.key === "anthropic"));
-
-    this.prompts.write("Which AI provider do you want to use through OpenRouter?\n");
-    this.prompts.write("You'll pick a specific model from that provider next.\n\n");
-    providers.forEach((provider, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${provider.label.padEnd(12, " ")} ${provider.description}\n`);
+    return await this.selectFromChoiceSection({
+      title: "OpenRouter provider",
+      question: "Which AI provider do you want to use through OpenRouter?",
+      details: ["You'll pick a specific model from that provider next."],
+      options: providers.map((provider) => ({
+        value: provider,
+        label: provider.label.padEnd(12, " "),
+        description: provider.description,
+      })),
+      defaultIndex: defaultIndex + 1,
+      fallbackPrompt: `Choose a provider [${defaultIndex + 1}]: `,
     });
-    this.prompts.write("\n");
-
-    const selectedIndex = await this.chooseNumber(`Choose a provider [${defaultIndex + 1}]: `, providers.length, defaultIndex + 1);
-    return providers[selectedIndex - 1];
   }
 
   private async collectProviderModelChoice(provider: ProviderOption, models: ModelOption[]): Promise<string> {
-    this.prompts.write(`Which ${provider.label} model should your agent use?\n\n`);
-    models.forEach((option, index) => {
-      this.prompts.write(`  ${String(index + 1).padStart(2, " ")}  ${option.label.padEnd(24, " ")} ${option.bestFor}\n`);
+    const selectedModel = await this.selectFromChoiceSection({
+      title: `${provider.label} model`,
+      question: `Which ${provider.label} model should your agent use?`,
+      options: [
+        ...models.map((option) => ({
+          value: option.value,
+          label: option.label.padEnd(24, " "),
+          description: option.bestFor,
+        })),
+        {
+          value: "__manual__" as const,
+          label: "Bring my own model",
+          description: "Enter a model ID manually",
+        },
+      ],
+      defaultIndex: 1,
+      fallbackPrompt: "Choose a model [1]: ",
     });
-    const manualIndex = models.length + 1;
-    this.prompts.write(`  ${String(manualIndex).padStart(2, " ")}  Bring my own model        Enter a model ID manually\n\n`);
-
-    const selectedIndex = await this.chooseNumber(`Choose a model [1]: `, manualIndex, 1);
-    if (selectedIndex === manualIndex) {
+    if (selectedModel === "__manual__") {
       this.prompts.write(`Find model IDs at ${OPENROUTER_MODELS_URL}\n`);
       this.prompts.write("Example: anthropic/claude-3-5-sonnet\n\n");
       while (true) {
@@ -2013,7 +2836,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
     }
 
-    return models[selectedIndex - 1].value;
+    return selectedModel;
   }
 
   private async collectMessagingSetup(input: {
@@ -2097,43 +2920,26 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private async collectMessagingPlatformsChoice(): Promise<string[]> {
-    this.prompts.write("Which messaging platforms do you want to connect now?\n");
-    this.prompts.write("You can connect more than one. Enter numbers separated by commas.\n\n");
-    this.prompts.write("   1  Telegram   Chat with your agent in Telegram\n");
-    this.prompts.write("   2  Discord    Chat with your agent in Discord\n");
-    this.prompts.write("   3  Slack      Chat with your agent in Slack\n");
-    this.prompts.write("   4  WhatsApp   Chat with your agent in WhatsApp\n");
-    this.prompts.write("   5  Skip for now\n\n");
+    const selection = await this.selectFromChoiceSection({
+      title: "Messaging",
+      question: "Which messaging platforms do you want to connect now?",
+      details: ["You can connect the others later if you prefer."],
+      options: [
+        { value: "telegram", label: "Telegram", description: "Chat with your agent in Telegram" },
+        { value: "discord", label: "Discord", description: "Chat with your agent in Discord" },
+        { value: "slack", label: "Slack", description: "Chat with your agent in Slack" },
+        { value: "whatsapp", label: "WhatsApp", description: "Chat with your agent in WhatsApp" },
+        { value: "skip", label: "Skip for now" },
+      ],
+      defaultIndex: 5,
+      fallbackPrompt: "Choose a platform [5]: ",
+    });
 
-    while (true) {
-      const answer = (await this.prompts.ask("Choose platform numbers [5]: ")).trim();
-      if (answer.length === 0 || answer === "5") {
-        return [];
-      }
-
-      const choices = answer.split(",").map((value) => value.trim()).filter(Boolean);
-      const uniqueChoices = [...new Set(choices)];
-      if (uniqueChoices.some((value) => !/^[1-5]$/.test(value))) {
-        this.prompts.write("Enter one or more numbers from 1 to 5, separated by commas.\n");
-        continue;
-      }
-      if (uniqueChoices.includes("5")) {
-        if (uniqueChoices.length > 1) {
-          this.prompts.write("Choose either specific platforms or 5 to skip.\n");
-          continue;
-        }
-        return [];
-      }
-
-      return uniqueChoices
-        .map((value) => ({
-          "1": "telegram",
-          "2": "discord",
-          "3": "slack",
-          "4": "whatsapp",
-        }[value]))
-        .filter((value): value is string => typeof value === "string");
+    if (selection === "skip") {
+      return [];
     }
+
+    return [selection];
   }
 
   private async collectTelegramSetup(input: {
@@ -2162,19 +2968,26 @@ export class FlyDeployWizard implements DeployWizardPort {
       return { botToken: "" };
     }
 
-    this.prompts.write("Do you want to connect Telegram now?\n");
-    this.prompts.write("You can skip this and set it up later if you prefer.\n\n");
-    this.prompts.write("   1  Telegram now   Chat with your agent in Telegram\n");
-    this.prompts.write("   2  Skip for now   Finish deployment first\n\n");
+    this.writeChoiceSection(
+      "Telegram",
+      "Do you want to connect Telegram now?",
+      renderDeployChoiceOptions([
+        { label: "Telegram now", description: "Chat with your agent in Telegram" },
+        { label: "Skip for now", description: "Finish deployment first" },
+      ], 2),
+      ["You can skip this and set it up later if you prefer."]
+    );
 
     const choice = await this.chooseNumber("Choose an option [2]: ", 2, 2);
     if (choice === 2) {
       return { botToken: "" };
     }
 
-    this.prompts.write("Create your Telegram bot with BotFather, then paste the bot token here.\n");
-    this.prompts.write(`Open BotFather directly with /newbot prefilled: ${TELEGRAM_BOTFATHER_NEWBOT_URL}\n`);
-    this.prompts.write("Scan this QR code with your phone to open BotFather with /newbot ready to send:\n\n");
+    this.writePanel("Telegram setup", [
+      "Create your Telegram bot with BotFather, then paste the bot token here.",
+      `Open BotFather directly with /newbot prefilled: ${TELEGRAM_BOTFATHER_NEWBOT_URL}`,
+      "Scan this QR code with your phone to open BotFather with /newbot ready to send:",
+    ]);
     try {
       const qr = await this.qrRenderer.render(TELEGRAM_BOTFATHER_NEWBOT_URL);
       this.prompts.write(`${qr}\n`);
@@ -2246,12 +3059,19 @@ export class FlyDeployWizard implements DeployWizardPort {
       return { botToken: "" };
     }
 
-    this.prompts.write("\nConnect Discord\n");
-    this.prompts.write("Hermes needs your own Discord bot token.\n");
-    this.prompts.write("If you already have a Discord bot token, you can paste it now.\n");
-    this.prompts.write("If not, hermes-fly can walk you through creating one in the Discord Developer Portal.\n\n");
-    this.prompts.write("   1  I already have a bot token  Paste it now\n");
-    this.prompts.write("   2  Help me create one          Open the Developer Portal and walk me through it\n\n");
+    this.writeChoiceSection(
+      "Discord",
+      "Connect Discord",
+      renderDeployChoiceOptions([
+        { label: "I already have a bot token", description: "Paste it now" },
+        { label: "Help me create one", description: "Open the Developer Portal and walk me through it" },
+      ], 2),
+      [
+        "Hermes needs your own Discord bot token.",
+        "If you already have a Discord bot token, you can paste it now.",
+        "If not, hermes-fly can walk you through creating one in the Discord Developer Portal.",
+      ]
+    );
 
     const setupPath = await this.chooseNumber("Choose an option [2]: ", 2, 2);
     if (setupPath === 2) {
@@ -2321,10 +3141,11 @@ export class FlyDeployWizard implements DeployWizardPort {
       return { botToken: "", appToken: "" };
     }
 
-    this.prompts.write("\nConnect Slack\n");
-    this.prompts.write("Open your Slack app and copy both the bot token and the app token.\n");
-    this.prompts.write("Hermes uses Socket Mode for Slack, so the app token is required.\n");
-    this.prompts.write(`Slack Apps: ${SLACK_APPS_URL}\n\n`);
+    this.writePanel("Slack", [
+      "Open your Slack app and copy both the bot token and the app token.",
+      "Hermes uses Socket Mode for Slack, so the app token is required.",
+      `Slack Apps: ${SLACK_APPS_URL}`,
+    ]);
 
     while (true) {
       const botToken = (await this.prompts.askSecret("Slack bot token (required): ")).trim();
@@ -2390,24 +3211,39 @@ export class FlyDeployWizard implements DeployWizardPort {
       return { enabled: false, mode: "bot" };
     }
 
-    this.prompts.write("\nConnect WhatsApp\n");
-    this.prompts.write("WhatsApp has two setup styles.\n");
-    this.prompts.write("Bot mode gives Hermes its own WhatsApp number, so other people can message that number like a normal contact.\n");
-    this.prompts.write("Self-chat uses your own WhatsApp account only in the built-in 'Message yourself' chat.\n");
-    this.prompts.write("Hermes will reply there as you, and it will not message your other contacts.\n\n");
-    this.prompts.write("If you are just testing for yourself, pick Self-chat.\n");
-    this.prompts.write("If you want other people to talk to Hermes, pick Bot mode.\n");
-    this.prompts.write("For Bot mode, a dedicated WhatsApp number is the recommended setup.\n");
-    this.prompts.write("Hermes will finish WhatsApp pairing after deploy by opening the remote WhatsApp setup flow in this terminal.\n\n");
-    this.prompts.write("   1  Bot mode      Recommended when other people should message Hermes through its own number\n");
-    this.prompts.write("   2  Self-chat     Recommended for safe personal testing in your own Message yourself chat\n\n");
+    this.writeChoiceSection(
+      "WhatsApp",
+      "Connect WhatsApp",
+      renderDeployChoiceOptions([
+        {
+          label: "Bot mode",
+          description: "Recommended when other people should message Hermes through its own number",
+        },
+        {
+          label: "Self-chat",
+          description: "Recommended for safe personal testing in your own Message yourself chat",
+        },
+      ], 1),
+      [
+        "WhatsApp has two setup styles.",
+        "Bot mode gives Hermes its own WhatsApp number, so other people can message that number like a normal contact.",
+        "Self-chat uses your own WhatsApp account only in the built-in 'Message yourself' chat.",
+        "Hermes will reply there as you, and it will not message your other contacts.",
+        "If you are just testing for yourself, pick Self-chat.",
+        "If you want other people to talk to Hermes, pick Bot mode.",
+        "For Bot mode, a dedicated WhatsApp number is the recommended setup.",
+        "Hermes will finish WhatsApp pairing after deploy by opening the remote WhatsApp setup flow in this terminal.",
+      ]
+    );
 
     const modeChoice = await this.chooseNumber("Choose a mode [1]: ", 2, 1);
     const mode: "bot" | "self-chat" = modeChoice === 2 ? "self-chat" : "bot";
-    const access = await this.collectWhatsAppAccessPolicy({
-      ...options,
-      mode,
-    });
+    const access = mode === "self-chat"
+      ? await this.collectWhatsAppSelfChatAccessPolicy()
+      : await this.collectWhatsAppAccessPolicy({
+          ...options,
+          mode,
+        });
     if (access.skipSetup) {
       return { enabled: false, mode };
     }
@@ -2417,20 +3253,45 @@ export class FlyDeployWizard implements DeployWizardPort {
       mode,
       allowedUsers: access.allowedUsers,
       completeAccessDuringSetup: access.completeAccessDuringSetup,
+      takeoverAppNames: access.takeoverAppNames,
+    };
+  }
+
+  private async collectWhatsAppSelfChatAccessPolicy(): Promise<{
+    allowedUsers?: string;
+    completeAccessDuringSetup?: boolean;
+    skipSetup?: boolean;
+    takeoverAppNames?: string[];
+  }> {
+    this.writePanel("WhatsApp self-chat", [
+      "Self-chat only works in your own built-in Message yourself chat.",
+      "hermes-fly will detect the linked WhatsApp account from the QR pairing step and use that as the self-chat identity.",
+      "You do not need to enter your phone number here.",
+    ]);
+    return {
+      completeAccessDuringSetup: true,
     };
   }
 
   private async collectWhatsAppAccessPolicy(
     options: { allowAnyone: boolean; appName: string; mode: "bot" | "self-chat" }
-  ): Promise<{ allowedUsers?: string; completeAccessDuringSetup?: boolean; skipSetup?: boolean }> {
+  ): Promise<{ allowedUsers?: string; completeAccessDuringSetup?: boolean; skipSetup?: boolean; takeoverAppNames?: string[] }> {
     while (true) {
-      this.prompts.write("\nWho should be able to talk to your WhatsApp setup?\n\n");
-      this.prompts.write("   1  Only me          Enter your own WhatsApp number now. Hermes will use it after pairing.\n");
-      this.prompts.write("   2  Specific people  Enter the phone numbers that should be allowed.\n\n");
+      this.writeChoiceSection(
+        "WhatsApp access",
+        "Who should be able to talk to your WhatsApp setup?",
+        renderDeployChoiceOptions([
+          { label: "Only me", description: "Enter your own WhatsApp number now. Hermes will use it after pairing." },
+          { label: "Specific people", description: "Enter the phone numbers that should be allowed." },
+        ], 1),
+      );
 
       const choice = await this.chooseNumber("Choose an option [1]: ", 2, 1);
       if (choice === 1) {
-        this.prompts.write("Enter your own WhatsApp number now. You can paste it with +, spaces, or dashes — hermes-fly will normalize it.\n");
+        this.writePanel("WhatsApp number", [
+          "Enter your own WhatsApp number now.",
+          "You can paste it with +, spaces, or dashes - hermes-fly will normalize it.",
+        ]);
         while (true) {
           const answer = (await this.prompts.ask("Your WhatsApp number: ")).trim();
           try {
@@ -2438,12 +3299,17 @@ export class FlyDeployWizard implements DeployWizardPort {
             const conflicts = await this.findWhatsAppConflicts(options.appName, normalized, options.mode);
             if (conflicts.length > 0) {
               const resolution = await this.resolveWhatsAppConflict(conflicts);
-              if (resolution === "retry") {
+              if (resolution.action === "retry") {
                 continue;
               }
-              if (resolution === "skip") {
+              if (resolution.action === "skip") {
                 return { skipSetup: true };
               }
+              return {
+                allowedUsers: normalized,
+                completeAccessDuringSetup: true,
+                takeoverAppNames: resolution.appNames,
+              };
             }
             return {
               allowedUsers: normalized,
@@ -2500,10 +3366,11 @@ export class FlyDeployWizard implements DeployWizardPort {
         continue;
       }
 
-      let existingAllowedUsers = entry.whatsappAllowedUsers;
-      if (!existingAllowedUsers) {
-        existingAllowedUsers = await this.readRemoteWhatsAppAllowedUsers(entry.name);
+      const binding = await this.readRemoteWhatsAppBinding(entry.name);
+      if (!binding.hasSession) {
+        continue;
       }
+      const existingAllowedUsers = binding.allowedUsers ?? entry.whatsappAllowedUsers;
       if (!existingAllowedUsers) {
         continue;
       }
@@ -2521,25 +3388,33 @@ export class FlyDeployWizard implements DeployWizardPort {
 
   private async resolveWhatsAppConflict(
     conflicts: SavedDeploymentEntry[]
-  ): Promise<"retry" | "skip" | "continue"> {
-    this.prompts.write("\nThis WhatsApp number is already configured on another Hermes deployment:\n");
-    conflicts.forEach((entry) => {
-      this.prompts.write(`  - ${entry.name}\n`);
-    });
-    this.prompts.write("\nUsing the same personal WhatsApp number in more than one Hermes deployment can make setup stall or move the linked session away from the older deployment.\n");
-    this.prompts.write("If you want this new deployment to own the number, destroy the older deployment first.\n\n");
-    this.prompts.write("   1  Use a different number   Go back and enter another WhatsApp number\n");
-    this.prompts.write("   2  Skip WhatsApp for now    Finish this deployment without WhatsApp\n");
-    this.prompts.write("   3  Continue anyway          Not recommended\n\n");
+  ): Promise<{ action: "retry" | "skip" | "takeover"; appNames: string[] }> {
+    this.writeChoiceSection(
+      "WhatsApp number conflict",
+      conflicts.length === 1
+        ? `This phone number still appears tied with deployment ${conflicts[0]?.name}:`
+        : "This phone number still appears tied with these deployments:",
+      renderDeployChoiceOptions([
+        { label: "Use a different number", description: "Go back and enter another WhatsApp number" },
+        { label: "Skip WhatsApp for now", description: "Finish this deployment without WhatsApp" },
+        { label: "Take over this number", description: "Disconnect WhatsApp from the deployment above, then pair here" },
+      ], 1),
+      [
+        ...conflicts.map((entry) => `- ${entry.name}`),
+        "",
+        "Using the same personal WhatsApp number in more than one Hermes deployment can make setup stall or move the linked session away from the older deployment.",
+        "If you want this new deployment to own the number, hermes-fly can disconnect WhatsApp from the deployment above before pairing.",
+      ]
+    );
 
     const choice = await this.chooseNumber("Choose an option [1]: ", 3, 1);
     if (choice === 1) {
-      return "retry";
+      return { action: "retry", appNames: [] };
     }
     if (choice === 2) {
-      return "skip";
+      return { action: "skip", appNames: [] };
     }
-    return "continue";
+    return { action: "takeover", appNames: conflicts.map((entry) => entry.name) };
   }
 
   private async readLiveFlyAppNames(): Promise<Set<string> | null> {
@@ -2567,35 +3442,53 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   }
 
-  private async readRemoteWhatsAppAllowedUsers(appName: string): Promise<string | null> {
-    if (this.whatsappAllowedUsersCache.has(appName)) {
-      return this.whatsappAllowedUsersCache.get(appName) ?? null;
+  private async readRemoteWhatsAppBinding(appName: string): Promise<{ hasSession: boolean; allowedUsers: string | null }> {
+    if (this.whatsappBindingCache.has(appName)) {
+      return this.whatsappBindingCache.get(appName) ?? { hasSession: false, allowedUsers: null };
     }
 
     try {
-      const flyCommand = await resolveFlyCommand(this.env);
-      const result = await this.process.run(
-        flyCommand,
+      const result = await this.runRemoteShell(
+        appName,
         [
-          "ssh",
-          "console",
-          "-a",
-          appName,
-          "-C",
-          "sh -lc 'printf %s \"${WHATSAPP_ALLOWED_USERS:-${HERMES_FLY_WHATSAPP_ALLOWED_USERS:-}}\"'"
-        ],
-        { env: this.env, timeoutMs: 8_000 }
+          "users=\"${WHATSAPP_ALLOWED_USERS:-${HERMES_FLY_WHATSAPP_ALLOWED_USERS:-}}\"",
+          `state_file=${this.shellEscape(WHATSAPP_SELF_CHAT_IDENTITY_PATH)}`,
+          "if [ -f \"$state_file\" ]; then",
+          "  state_users=\"$(python3 - <<'PYEOF'\nimport json\nfrom pathlib import Path\nstate_path = Path('"
+            + WHATSAPP_SELF_CHAT_IDENTITY_PATH
+            + "')\ntry:\n    state = json.loads(state_path.read_text(encoding='utf-8'))\nexcept Exception:\n    raise SystemExit(0)\nprint(str(state.get('self_number', '')).strip())\nPYEOF\n  )\"",
+          "  if [ -n \"$state_users\" ]; then users=\"$state_users\"; fi",
+          "fi",
+          "if find /root/.hermes/whatsapp/session -mindepth 1 -print -quit 2>/dev/null | grep -q .; then",
+          "  printf 'has_session\\n%s' \"$users\"",
+          "else",
+          "  printf 'empty_session\\n%s' \"$users\"",
+          "fi",
+        ].join("\n"),
+        { timeoutMs: 8_000 }
       );
       if (result.exitCode !== 0) {
-        this.whatsappAllowedUsersCache.set(appName, null);
-        return null;
+        const fallback = { hasSession: false, allowedUsers: null };
+        this.whatsappBindingCache.set(appName, fallback);
+        return fallback;
       }
-      const value = result.stdout.trim();
-      this.whatsappAllowedUsersCache.set(appName, value.length > 0 ? value : null);
-      return value.length > 0 ? value : null;
+      const lines = result.stdout.replaceAll("\r", "").split("\n");
+      const status = lines[0]?.trim() ?? "";
+      let allowedUsers = lines.slice(1).join("\n").trim();
+      if (status === "has_session" && allowedUsers.length === 0) {
+        const health = await this.readWhatsAppBridgeHealth(appName);
+        allowedUsers = (health.health?.selfNumber ?? "").trim();
+      }
+      const binding = {
+        hasSession: status === "has_session",
+        allowedUsers: allowedUsers.length > 0 ? allowedUsers : null,
+      };
+      this.whatsappBindingCache.set(appName, binding);
+      return binding;
     } catch {
-      this.whatsappAllowedUsersCache.set(appName, null);
-      return null;
+      const fallback = { hasSession: false, allowedUsers: null };
+      this.whatsappBindingCache.set(appName, fallback);
+      return fallback;
     }
   }
 
@@ -2610,15 +3503,19 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   ): Promise<{ allowedUsers?: string; usePairing?: boolean; allowAllUsers?: boolean }> {
     while (true) {
-      this.prompts.write(`\nWho should be able to talk to your ${platformLabel} bot?\n\n`);
-      this.prompts.write("   1  Only me          Just you. Hermes will use DM pairing after deploy.\n");
-      this.prompts.write("   2  Specific people  You and other approved users.\n");
       const canOfferAnyone = options.allowAnyone && input.allowOpen;
+      const choiceOptions = [
+        { label: "Only me", description: "Just you. Hermes will use DM pairing after deploy." },
+        { label: "Specific people", description: "You and other approved users." },
+      ];
       if (canOfferAnyone) {
-        this.prompts.write("   3  Anyone           No restrictions. Not recommended for most setups.\n\n");
-      } else {
-        this.prompts.write("\n");
+        choiceOptions.push({ label: "Anyone", description: "No restrictions. Not recommended for most setups." });
       }
+      this.writeChoiceSection(
+        `${platformLabel} access`,
+        `Who should be able to talk to your ${platformLabel} bot?`,
+        renderDeployChoiceOptions(choiceOptions, 1),
+      );
 
       const choice = await this.chooseNumber("Choose an option [1]: ", canOfferAnyone ? 3 : 2, 1);
       if (choice === 1) {
@@ -2641,43 +3538,47 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private async guideDiscordBotCreation(): Promise<void> {
-    this.prompts.write("Discord Developer Portal\n");
-    this.prompts.write(`${DISCORD_DEVELOPER_PORTAL_URL}\n\n`);
-    this.prompts.write("Do these steps in order:\n");
-    this.prompts.write("  1. Click New Application\n");
-    this.prompts.write("  2. Give it a name you will recognize\n");
-    this.prompts.write("  3. Open Bot in the left sidebar\n");
-    this.prompts.write("  4. Click Add Bot\n");
-    this.prompts.write("  5. Click Reset Token, then Copy\n\n");
+    this.writePanel("Discord Developer Portal", [
+      DISCORD_DEVELOPER_PORTAL_URL,
+      "Do these steps in order:",
+      "1. Click New Application",
+      "2. Give it a name you will recognize",
+      "3. Open Bot in the left sidebar",
+      "4. Click Add Bot",
+      "5. Click Reset Token, then Copy",
+    ]);
     await this.tryOpenBrowser(DISCORD_DEVELOPER_PORTAL_URL);
     await this.prompts.pause("Press Enter after you have copied the Discord bot token. ");
   }
 
   private writeDiscordTokenTroubleshooting(validation: { reason: string; error?: string }): void {
-    this.prompts.write("Discord could not log in with that bot token.\n");
-    this.prompts.write("Common causes:\n");
-    this.prompts.write("  - you copied Client Secret instead of Bot Token\n");
-    this.prompts.write("  - the bot has not been added yet in the Bot tab\n");
-    this.prompts.write("  - the token was regenerated and the old one no longer works\n");
-    this.prompts.write("  - extra spaces or line breaks were pasted\n");
-    if (validation.reason === "network") {
-      this.prompts.write("  - your internet connection or Discord was temporarily unavailable\n");
-    }
-    this.prompts.write(`Discord Developer Portal: ${DISCORD_DEVELOPER_PORTAL_URL}\n`);
-    if (validation.error) {
-      this.prompts.write(`Details: ${validation.error}\n`);
-    }
+    this.writePanel("Discord token troubleshooting", [
+      "Discord could not log in with that bot token.",
+      "Common causes:",
+      "- you copied Client Secret instead of Bot Token",
+      "- the bot has not been added yet in the Bot tab",
+      "- the token was regenerated and the old one no longer works",
+      "- extra spaces or line breaks were pasted",
+      ...(validation.reason === "network"
+        ? ["- your internet connection or Discord was temporarily unavailable"]
+        : []),
+      `Discord Developer Portal: ${DISCORD_DEVELOPER_PORTAL_URL}`,
+      ...(validation.error ? [`Details: ${validation.error}`] : []),
+    ]);
   }
 
   private async showDiscordInvite(inviteUrl: string): Promise<void> {
-    this.prompts.write("Invite the bot to the Discord server where you want to chat with Hermes.\n");
-    this.prompts.write(`Invite URL: ${inviteUrl}\n`);
     const opened = await this.tryOpenBrowser(inviteUrl);
-    if (opened) {
-      this.prompts.write("I opened the Discord invite link in your browser.\n");
-    } else {
-      this.prompts.write("If the browser did not open, copy the invite URL above.\n");
-    }
+    this.writeCopyableSection(
+      "Discord invite",
+      "Invite the bot to the Discord server where you want to chat with Hermes.",
+      [`Invite URL: ${inviteUrl}`],
+      [
+        opened
+          ? "I opened the Discord invite link in your browser."
+          : "If the browser did not open, copy the invite URL above.",
+      ]
+    );
     try {
       const qr = await this.qrRenderer.render(inviteUrl);
       this.prompts.write("Scan this QR code to open the Discord invite on another device:\n\n");
@@ -2839,42 +3740,43 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private async confirmConfig(config: DeployConfig, messagingSetup: MessagingSetup): Promise<void> {
-    this.prompts.write("\nReview your setup\n");
-    this.prompts.write(`  Fly organization: ${config.orgSlug}\n`);
-    this.prompts.write(`  Deployment name: ${config.appName}\n`);
-    this.prompts.write(`  Location:        ${config.region}\n`);
-    this.prompts.write(`  Server size:     ${this.describeVmSize(config.vmSize)}\n`);
-    this.prompts.write(`  Storage:         ${config.volumeSize} GB\n`);
-    this.prompts.write(`  AI access:       ${this.describeAiAccess(config.provider)}\n`);
-    this.prompts.write(`  AI model:        ${this.describeModel(config.model)}\n`);
+    const entries: Array<[string, string]> = [
+      ["Fly organization", config.orgSlug],
+      ["Deployment name", config.appName],
+      ["Location", config.region],
+      ["Server size", this.describeVmSize(config.vmSize)],
+      ["Storage", `${config.volumeSize} GB`],
+      ["AI access", this.describeAiAccess(config.provider)],
+      ["AI model", this.describeModel(config.model)],
+    ];
     if (config.reasoningEffort) {
-      this.prompts.write(`  Reasoning:       ${config.reasoningEffort}\n`);
+      entries.push(["Reasoning", config.reasoningEffort]);
     }
-    if (messagingSetup.platforms.length > 0) {
-      this.prompts.write(`  Messaging:       ${messagingSetup.platforms.join(", ")}\n`);
-    } else {
-      this.prompts.write("  Messaging:       skip for now\n");
-    }
+    entries.push([
+      "Messaging",
+      messagingSetup.platforms.length > 0 ? messagingSetup.platforms.join(", ") : "skip for now",
+    ]);
     if (config.botToken) {
-      this.prompts.write(`  Telegram:        ${this.describeTelegramBot(messagingSetup.telegram ?? { botToken: config.botToken })}\n`);
-      this.prompts.write(`  Telegram access: ${this.describeTelegramAccess(config)}\n`);
+      entries.push(["Telegram", this.describeTelegramBot(messagingSetup.telegram ?? { botToken: config.botToken })]);
+      entries.push(["Telegram access", this.describeTelegramAccess(config)]);
       if (config.telegramHomeChannel) {
-        this.prompts.write(`  Home channel:    ${config.telegramHomeChannel}\n`);
+        entries.push(["Home channel", config.telegramHomeChannel]);
       }
     }
     if (config.discordBotToken) {
-      this.prompts.write(`  Discord:         ${this.describeDiscordBot(messagingSetup.discord)}\n`);
-      this.prompts.write(`  Discord access:  ${this.describeDiscordAccessSummary(config)}\n`);
+      entries.push(["Discord", this.describeDiscordBot(messagingSetup.discord)]);
+      entries.push(["Discord access", this.describeDiscordAccessSummary(config)]);
     }
     if (config.slackBotToken && config.slackAppToken) {
-      this.prompts.write(`  Slack:           ${this.describeSlackBot(messagingSetup.slack)}\n`);
-      this.prompts.write(`  Slack access:    ${this.describeSlackAccessSummary(config)}\n`);
+      entries.push(["Slack", this.describeSlackBot(messagingSetup.slack)]);
+      entries.push(["Slack access", this.describeSlackAccessSummary(config)]);
     }
     if (config.whatsappEnabled) {
-      this.prompts.write(`  WhatsApp:        ${this.describeWhatsAppSetup(messagingSetup.whatsapp)}\n`);
-      this.prompts.write(`  WhatsApp access: ${this.describeWhatsAppAccessSummary(config)}\n`);
+      entries.push(["WhatsApp", this.describeWhatsAppSetup(messagingSetup.whatsapp)]);
+      entries.push(["WhatsApp access", this.describeWhatsAppAccessSummary(config)]);
     }
-    this.prompts.write(`  Release channel: ${config.channel || DEFAULT_CHANNEL}\n\n`);
+    entries.push(["Release channel", config.channel || DEFAULT_CHANNEL]);
+    this.writeKeyValuePanel("Review your setup", entries);
 
     while (true) {
       const answer = (await this.prompts.ask("Continue with deployment? [Y/n]: ")).trim().toLowerCase();
@@ -2962,14 +3864,18 @@ export class FlyDeployWizard implements DeployWizardPort {
     options: { allowAnyone: boolean } = { allowAnyone: true }
   ): Promise<MessagingPolicy> {
     while (true) {
-      this.prompts.write("\nWho should be able to talk to this bot?\n\n");
-      this.prompts.write("   1  Only me          Just you. Hermes will detect your Telegram user ID automatically.\n");
-      this.prompts.write("   2  Specific people  You and other approved users.\n");
+      const choiceOptions = [
+        { label: "Only me", description: "Just you. Hermes will detect your Telegram user ID automatically." },
+        { label: "Specific people", description: "You and other approved users." },
+      ];
       if (options.allowAnyone) {
-        this.prompts.write("   3  Anyone           No restrictions. Not recommended for most setups.\n\n");
-      } else {
-        this.prompts.write("\n");
+        choiceOptions.push({ label: "Anyone", description: "No restrictions. Not recommended for most setups." });
       }
+      this.writeChoiceSection(
+        "Telegram access",
+        "Who should be able to talk to this bot?",
+        renderDeployChoiceOptions(choiceOptions, 1),
+      );
 
       const maxChoice = options.allowAnyone ? 3 : 2;
       const choice = await this.chooseNumber("Choose an option [1]: ", maxChoice, 1);
@@ -2977,8 +3883,10 @@ export class FlyDeployWizard implements DeployWizardPort {
         return await this.collectTelegramOnlyMePolicy(botToken, identity.username);
       }
       if (choice === 2) {
-        this.prompts.write("Enter the numeric Telegram user IDs for the people who should be allowed.\n");
-        this.prompts.write("Use commas to separate multiple users.\n\n");
+        this.writePanel("Telegram access", [
+          "Enter the numeric Telegram user IDs for the people who should be allowed.",
+          "Use commas to separate multiple users.",
+        ]);
         return await this.collectTelegramUserIds("specific_users", "Telegram user IDs (comma-separated): ");
       }
       if (options.allowAnyone && await this.confirmYesNo("Allow anyone to use this bot? This is not recommended for most setups. [y/N]: ", false)) {
@@ -3003,9 +3911,12 @@ export class FlyDeployWizard implements DeployWizardPort {
     botUsername: string
   ): Promise<MessagingPolicy> {
     const directLink = telegramBotLink(botUsername);
-    this.prompts.write(`Open your bot directly: ${directLink}\n`);
-    this.prompts.write("Send /start from the Telegram account that should be allowed.\n");
-    this.prompts.write("After that, press Enter here and Hermes will detect your Telegram user ID automatically.\n\n");
+    this.writeCopyableSection(
+      "Telegram direct chat",
+      "Open your bot directly and send /start from the account that should be allowed.",
+      [`Open your bot directly: ${directLink}`],
+      ["After that, press Enter here and Hermes will detect your Telegram user ID automatically."]
+    );
 
     while (true) {
       await this.prompts.ask("Press Enter after sending /start: ");
@@ -3087,7 +3998,9 @@ export class FlyDeployWizard implements DeployWizardPort {
   }
 
   private async collectTelegramHomeChannel(defaultUserId: number): Promise<string | undefined> {
-    this.prompts.write("\nHermes can also use Telegram for its own status updates.\n");
+    this.writePanel("Telegram home channel", [
+      "Hermes can also use Telegram for its own status updates.",
+    ]);
     const useDefault = await this.confirmYesNo(
       `Use ${defaultUserId} as the home channel for bot status messages? [y/N]: `,
       false
@@ -3254,6 +4167,9 @@ export class FlyDeployWizard implements DeployWizardPort {
       return "Anyone";
     }
     if (config.whatsappCompleteAccessDuringSetup) {
+      if (config.whatsappMode === "self-chat" && !config.whatsappAllowedUsers) {
+        return WHATSAPP_SELF_CHAT_DETECTED_ACCESS_LABEL;
+      }
       if (config.whatsappAllowedUsers) {
         const ownNumber = config.whatsappAllowedUsers.split(",").map((value) => value.trim()).filter(Boolean)[0];
         if (ownNumber) {
@@ -3317,6 +4233,24 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
   }
 
+  private async runRemoteShell(
+    appName: string,
+    shellCommand: string,
+    options: { timeoutMs?: number } = {}
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    const flyCommand = await resolveFlyCommand(this.env);
+    const result = await this.process.run(
+      flyCommand,
+      ["ssh", "console", "-a", appName, "-C", `sh -lc ${this.shellEscape(shellCommand)}`],
+      { env: this.env, timeoutMs: options.timeoutMs }
+    );
+    return {
+      exitCode: result.exitCode,
+      stdout: result.stdout || "",
+      stderr: result.stderr || "",
+    };
+  }
+
   private async runRemoteHermesCommand(appName: string, hermesArgs: string[]): Promise<{ ok: boolean; error?: string }> {
     try {
       const result = await this.process.run(
@@ -3358,6 +4292,9 @@ export class FlyDeployWizard implements DeployWizardPort {
       stdoutBuffer: "",
       stderrBuffer: "",
       suppressNextSteps: false,
+      rawQrPassthrough: false,
+      qrStream: null as "stdout" | "stderr" | null,
+      qrRecentText: "",
     };
 
     const flush = (kind: "stdout" | "stderr") => {
@@ -3368,16 +4305,57 @@ export class FlyDeployWizard implements DeployWizardPort {
         return;
       }
       state[key] = "";
-      const filtered = this.filterWhatsAppSetupLine(remainder, state);
+      if (state.rawQrPassthrough && state.qrStream === kind) {
+        sink.write(remainder);
+        return;
+      }
+      const filtered = this.filterWhatsAppSetupLine(remainder.replaceAll("\r", "\n"), state);
       if (filtered) {
         sink.write(filtered);
       }
     };
 
+    const handleRawQrChunk = (kind: "stdout" | "stderr", chunk: string) => {
+      const sink = kind === "stdout" ? stdout : stderr;
+
+      if (this.shouldSuppressWhatsAppQrChunk(chunk)) {
+        return;
+      }
+
+      const endMarker = this.findWhatsAppQrPassthroughEnd(chunk);
+      if (endMarker) {
+        const rawPrefix = chunk.slice(0, endMarker.index);
+        if (rawPrefix.length > 0) {
+          sink.write(rawPrefix);
+        }
+        state.rawQrPassthrough = false;
+        state.qrStream = null;
+        state.qrRecentText = "";
+        const remainder = chunk.slice(endMarker.index + endMarker.marker.length);
+        if (remainder.length > 0) {
+          handleChunk(kind, remainder);
+        }
+        return;
+      }
+
+      sink.write(chunk);
+      state.qrRecentText = (state.qrRecentText + chunk).slice(-4096);
+      if (this.shouldEndWhatsAppQrPassthrough(state.qrRecentText)) {
+        state.rawQrPassthrough = false;
+        state.qrStream = null;
+        state.qrRecentText = "";
+      }
+    };
+
     const handleChunk = (kind: "stdout" | "stderr", chunk: string) => {
+      if (state.rawQrPassthrough && state.qrStream === kind) {
+        handleRawQrChunk(kind, chunk);
+        return;
+      }
+
       const key = kind === "stdout" ? "stdoutBuffer" : "stderrBuffer";
       const sink = kind === "stdout" ? stdout : stderr;
-      state[key] += chunk.replaceAll("\r", "\n");
+      state[key] += chunk;
       while (true) {
         const newlineIndex = state[key].indexOf("\n");
         if (newlineIndex === -1) {
@@ -3385,9 +4363,21 @@ export class FlyDeployWizard implements DeployWizardPort {
         }
         const line = state[key].slice(0, newlineIndex + 1);
         state[key] = state[key].slice(newlineIndex + 1);
-        const filtered = this.filterWhatsAppSetupLine(line, state);
+        const normalizedLine = line.replaceAll("\r", "\n");
+        const filtered = this.filterWhatsAppSetupLine(normalizedLine, state);
         if (filtered) {
           sink.write(filtered);
+        }
+        if (this.shouldStartWhatsAppQrPassthrough(line)) {
+          state.rawQrPassthrough = true;
+          state.qrStream = kind;
+          state.qrRecentText = "";
+          const remainder = state[key];
+          state[key] = "";
+          if (remainder.length > 0) {
+            handleRawQrChunk(kind, remainder);
+          }
+          break;
         }
       }
     };
@@ -3405,6 +4395,8 @@ export class FlyDeployWizard implements DeployWizardPort {
       }
 
       const flyCommand = await resolveFlyCommand(this.env);
+      const initialAllowedUsers = this.resolveInitialWhatsAppAllowedUsers(config);
+      const stdinText = this.resolveInitialWhatsAppSetupStdin(config, initialAllowedUsers);
       const result = await this.process.runStreaming(
         flyCommand,
         [
@@ -3417,12 +4409,9 @@ export class FlyDeployWizard implements DeployWizardPort {
           this.buildRemoteHermesCommand(["whatsapp"], {
             WHATSAPP_ENABLED: "true",
             WHATSAPP_MODE: config.whatsappMode,
-            WHATSAPP_ALLOWED_USERS: config.whatsappAllowedUsers,
+            WHATSAPP_ALLOWED_USERS: initialAllowedUsers,
           }, {
-            // The wizard already collected the allowed users locally, so
-            // answer Hermes' follow-up "Update allowed users?" prompt
-            // non-interactively and proceed straight to QR pairing.
-            stdinText: "n\n",
+            stdinText,
           })
         ],
         {
@@ -3443,6 +4432,33 @@ export class FlyDeployWizard implements DeployWizardPort {
       flush("stderr");
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  private shouldStartWhatsAppQrPassthrough(line: string): boolean {
+    return /Scan this QR code with WhatsApp on your phone:/i.test(line);
+  }
+
+  private shouldEndWhatsAppQrPassthrough(text: string): boolean {
+    return this.findWhatsAppQrPassthroughEnd(text) !== null;
+  }
+
+  private findWhatsAppQrPassthroughEnd(text: string): { index: number; marker: string } | null {
+    const markers = [
+      "✅ Pairing complete. Credentials saved.",
+      "✓ WhatsApp paired successfully!",
+    ];
+    for (const marker of markers) {
+      const index = text.indexOf(marker);
+      if (index !== -1) {
+        return { index, marker };
+      }
+    }
+    return null;
+  }
+
+  private shouldSuppressWhatsAppQrChunk(chunk: string): boolean {
+    const trimmed = chunk.trim();
+    return /^\{"level":\d+.*\}$/.test(trimmed);
   }
 
   private async checkRemoteWhatsAppSessionState(
@@ -3501,10 +4517,21 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     if (
+      trimmed === "✅ Pairing complete. Credentials saved."
+      || trimmed === "✓ WhatsApp paired successfully!"
+      || trimmed.startsWith("WhatsApp paired successfully!")
+    ) {
+      return null;
+    }
+
+    if (
       /Start the gateway:/i.test(trimmed)
       || /install as a service/i.test(trimmed)
       || /Agent responses are prefixed/i.test(trimmed)
+      || /tell them apart from your own messages/i.test(trimmed)
       || /Update allowed users\?\s*\[y\/N\]/i.test(trimmed)
+      || /Your phone number \(e\.g\.\s*[0-9]+\):/i.test(trimmed)
+      || /No allowlist\s+— the agent will respond to ALL incoming messages/i.test(trimmed)
     ) {
       return null;
     }
@@ -3512,43 +4539,1090 @@ export class FlyDeployWizard implements DeployWizardPort {
     return line;
   }
 
-  private async restartAppAfterWhatsAppPairing(appName: string): Promise<{ ok: boolean; error?: string }> {
+  private async restartAppAfterWhatsAppPairing(appName: string): Promise<AppRestartResult> {
     try {
-      const flyCommand = await resolveFlyCommand(this.env);
-      const restart = await this.process.run(
-        flyCommand,
-        ["machine", "restart", "-a", appName],
-        { env: this.env, timeoutMs: 60_000 }
+      const processRestart = await this.requestGatewayProcessRestart(appName);
+      if (processRestart.ok) {
+        return { ok: true, strategy: "process" };
+      }
+      if (!processRestart.unavailable) {
+        return { ok: false, error: processRestart.error, strategy: "process" };
+      }
+      const machineRestart = await this.restartPrimaryAppMachine(
+        appName,
+        "could not determine which Fly machine to restart after WhatsApp pairing",
+        "machine not running after WhatsApp restart"
       );
-      if (restart.exitCode !== 0) {
-        return { ok: false, error: restart.stderr || restart.stdout || "app restart failed" };
-      }
-
-      let lastState = "unknown";
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        const result = await this.process.run(
-          flyCommand,
-          ["machine", "list", "-a", appName, "--json"],
-          { env: this.env, timeoutMs: 4_000 }
-        );
-        if (result.exitCode === 0) {
-          const state = this.readPrimaryMachineState(result.stdout);
-          if (state === "started") {
-            return { ok: true };
-          }
-          if (state) {
-            lastState = state;
-          }
-        }
-        if (attempt < 19) {
-          await new Promise((resolve) => setTimeout(resolve, 1_500));
-        }
-      }
-
-      return { ok: false, error: `machine not running after WhatsApp restart (${lastState})` };
+      return {
+        ...machineRestart,
+        strategy: machineRestart.ok ? "machine" : undefined,
+      };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  private async restartWhatsAppAndWaitForBridge(
+    appName: string,
+    options?: { requireSelfNumber?: boolean }
+  ): Promise<{ ok: boolean; error?: string; health?: WhatsAppBridgeHealth }> {
+    const restarted = await this.restartAppAfterWhatsAppPairing(appName);
+    if (!restarted.ok) {
+      return {
+        ok: false,
+        error: `the deployed app did not restart cleanly: ${restarted.error ?? "unknown error"}`,
+      };
+    }
+
+    const bridgeReady = await this.waitForWhatsAppBridgeConnectedAfterPairing(appName, options);
+    if (bridgeReady.ok || restarted.strategy !== "process") {
+      return bridgeReady;
+    }
+
+    const fallbackRestart = await this.restartPrimaryAppMachine(
+      appName,
+      "could not determine which Fly machine to restart after the Hermes gateway restart left WhatsApp offline",
+      "machine not running after the WhatsApp fallback restart"
+    );
+    if (!fallbackRestart.ok) {
+      return {
+        ok: false,
+        error: `the Hermes gateway restart did not bring WhatsApp back, and the fallback machine restart also failed: ${fallbackRestart.error ?? bridgeReady.error ?? "unknown error"}`,
+      };
+    }
+
+    const fallbackBridgeReady = await this.waitForWhatsAppBridgeConnectedAfterPairing(appName, options);
+    if (!fallbackBridgeReady.ok) {
+      return {
+        ok: false,
+        error: `the Hermes gateway restart did not bring WhatsApp back, and the fallback machine restart still left WhatsApp unavailable: ${fallbackBridgeReady.error ?? bridgeReady.error ?? "unknown error"}`,
+      };
+    }
+
+    return fallbackBridgeReady;
+  }
+
+  private async readGatewaySupervisorState(
+    appName: string
+  ): Promise<{ available: boolean; startedAt?: string; error?: string }> {
+    try {
+      const result = await this.runRemoteShell(
+        appName,
+        [
+          `pid_file=${this.shellEscape(GATEWAY_SUPERVISOR_PID_PATH)}`,
+          `started_at_file=${this.shellEscape(GATEWAY_STARTED_AT_PATH)}`,
+          "if [ -f \"$pid_file\" ]; then",
+          "  pid=\"$(cat \"$pid_file\" 2>/dev/null || true)\"",
+          "  if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then",
+          "    printf 'available\\n'",
+          "    cat \"$started_at_file\" 2>/dev/null || true",
+          "    exit 0",
+          "  fi",
+          "fi",
+          "printf 'missing\\n'",
+        ].join("\n"),
+        { timeoutMs: 8_000 }
+      );
+      if (result.exitCode !== 0) {
+        return { available: false, error: result.stderr || result.stdout || "supervisor state check failed" };
+      }
+
+      const lines = result.stdout.replaceAll("\r", "").split("\n");
+      const status = (lines[0] ?? "").trim();
+      const startedAt = lines.slice(1).join("\n").trim();
+      return {
+        available: status === "available",
+        startedAt: startedAt.length > 0 ? startedAt : undefined,
+      };
+    } catch (error) {
+      return { available: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async waitForGatewayProcessRestart(
+    appName: string,
+    previousStartedAt?: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    let lastStartedAt = previousStartedAt ?? "";
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const state = await this.readGatewaySupervisorState(appName);
+      if (!state.available) {
+        if (attempt < 19) {
+          await this.sleep(500);
+          continue;
+        }
+        return { ok: false, error: state.error ?? "gateway supervisor did not come back after restart" };
+      }
+
+      const startedAt = (state.startedAt ?? "").trim();
+      if (startedAt.length > 0 && startedAt !== lastStartedAt) {
+        return { ok: true };
+      }
+
+      if (startedAt.length > 0) {
+        lastStartedAt = startedAt;
+      }
+      if (attempt < 19) {
+        await this.sleep(500);
+      }
+    }
+
+    return { ok: false, error: "gateway process did not report a new start time after restart" };
+  }
+
+  private async requestGatewayProcessRestart(
+    appName: string
+  ): Promise<{ ok: boolean; unavailable?: boolean; error?: string }> {
+    try {
+      const before = await this.readGatewaySupervisorState(appName);
+      if (!before.available) {
+        return { ok: false, unavailable: true, error: before.error };
+      }
+
+      const result = await this.runRemoteShell(
+        appName,
+        [
+          `pid_file=${this.shellEscape(GATEWAY_SUPERVISOR_PID_PATH)}`,
+          "if [ ! -f \"$pid_file\" ]; then exit 42; fi",
+          "pid=\"$(cat \"$pid_file\" 2>/dev/null || true)\"",
+          "if [ -z \"$pid\" ] || ! kill -0 \"$pid\" 2>/dev/null; then exit 42; fi",
+          "kill -USR1 \"$pid\"",
+        ].join("\n"),
+        { timeoutMs: 8_000 }
+      );
+      if (result.exitCode === 42) {
+        return { ok: false, unavailable: true };
+      }
+      if (result.exitCode !== 0) {
+        return { ok: false, error: result.stderr || result.stdout || "gateway supervisor restart failed" };
+      }
+
+      return await this.waitForGatewayProcessRestart(appName, before.startedAt);
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async takeOverWhatsAppSelfChat(
+    appNames: string[],
+    stdout: { write: (s: string) => void }
+  ): Promise<{ ok: boolean; error?: string }> {
+    const uniqueAppNames = [...new Set(appNames.map((value) => value.trim()).filter(Boolean))];
+    for (const appName of uniqueAppNames) {
+      stdout.write(`Taking over WhatsApp from deployment ${appName}...\n`);
+      const detached = await this.disconnectWhatsAppFromDeployment(appName);
+      if (!detached.ok) {
+        return detached;
+      }
+      await this.clearSavedWhatsAppBinding(appName);
+      this.whatsappBindingCache.set(appName, { hasSession: false, allowedUsers: null });
+    }
+    return { ok: true };
+  }
+
+  private async disconnectWhatsAppFromDeployment(appName: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      const unsetSecrets = await this.process.run(
+        flyCommand,
+        [
+          "secrets",
+          "unset",
+          "WHATSAPP_ENABLED",
+          "WHATSAPP_MODE",
+          "WHATSAPP_ALLOWED_USERS",
+          "WHATSAPP_HOME_CHANNEL",
+          "WHATSAPP_HOME_CONTACT",
+          "HERMES_FLY_WHATSAPP_PENDING",
+          "HERMES_FLY_WHATSAPP_MODE",
+          "HERMES_FLY_WHATSAPP_ALLOWED_USERS",
+          "--stage",
+          "-a",
+          appName,
+        ],
+        { env: this.env, timeoutMs: 60_000 }
+      );
+      if (unsetSecrets.exitCode !== 0) {
+        return {
+          ok: false,
+          error: `could not disconnect WhatsApp from deployment ${appName}: ${unsetSecrets.stderr || unsetSecrets.stdout || "secrets unset failed"}`,
+        };
+      }
+
+      const clearSession = await this.runRemoteShell(
+        appName,
+        [
+          "rm -rf /root/.hermes/whatsapp/session",
+          "mkdir -p /root/.hermes/whatsapp/session",
+          "chmod 700 /root/.hermes/whatsapp/session",
+          `rm -f ${this.shellEscape(WHATSAPP_SELF_CHAT_IDENTITY_PATH)} ${this.shellEscape(WHATSAPP_APPROVED_USERS_PATH)}`,
+          "if [ -f /root/.hermes/.env ]; then",
+          "  sed -i '/^WHATSAPP_ENABLED=/d' /root/.hermes/.env",
+          "  sed -i '/^WHATSAPP_MODE=/d' /root/.hermes/.env",
+          "  sed -i '/^WHATSAPP_ALLOWED_USERS=/d' /root/.hermes/.env",
+          "  sed -i '/^WHATSAPP_HOME_CHANNEL=/d' /root/.hermes/.env",
+          "  sed -i '/^WHATSAPP_HOME_CONTACT=/d' /root/.hermes/.env",
+          "fi",
+        ].join("\n"),
+        { timeoutMs: 20_000 }
+      );
+      if (clearSession.exitCode !== 0) {
+        return {
+          ok: false,
+          error: `could not clear WhatsApp session data on deployment ${appName}: ${clearSession.stderr || clearSession.stdout || "session clear failed"}`,
+        };
+      }
+
+      const processRestart = await this.requestGatewayProcessRestart(appName);
+      if (processRestart.ok) {
+        return { ok: true };
+      }
+      if (!processRestart.unavailable) {
+        return { ok: false, error: processRestart.error };
+      }
+
+      const recycled = await this.recyclePrimaryAppMachine(
+        appName,
+        `could not determine which Fly machine to recycle after disconnecting WhatsApp from ${appName}`,
+        `machine not running after disconnecting WhatsApp from ${appName}`
+      );
+      if (!recycled.ok) {
+        return recycled;
+      }
+
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async restartPrimaryAppMachine(
+    appName: string,
+    missingMachineError: string,
+    notRunningPrefix: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const flyCommand = await resolveFlyCommand(this.env);
+    const machines = await this.process.run(
+      flyCommand,
+      ["machine", "list", "-a", appName, "--json"],
+      { env: this.env, timeoutMs: 4_000 }
+    );
+    if (machines.exitCode !== 0) {
+      return { ok: false, error: machines.stderr || machines.stdout || "machine status check failed before restart" };
+    }
+
+    const machineId = this.readPrimaryMachineId(machines.stdout);
+    if (!machineId) {
+      return { ok: false, error: missingMachineError };
+    }
+
+    const restart = await this.process.run(
+      flyCommand,
+      ["machine", "restart", machineId, "-a", appName],
+      { env: this.env, timeoutMs: 60_000 }
+    );
+    if (restart.exitCode !== 0) {
+      return { ok: false, error: restart.stderr || restart.stdout || "app restart failed" };
+    }
+
+    return this.waitForPrimaryAppMachineStarted(appName, notRunningPrefix);
+  }
+
+  private async recyclePrimaryAppMachine(
+    appName: string,
+    missingMachineError: string,
+    notRunningPrefix: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const flyCommand = await resolveFlyCommand(this.env);
+    const machines = await this.process.run(
+      flyCommand,
+      ["machine", "list", "-a", appName, "--json"],
+      { env: this.env, timeoutMs: 4_000 }
+    );
+    if (machines.exitCode !== 0) {
+      return { ok: false, error: machines.stderr || machines.stdout || "machine status check failed before recycling" };
+    }
+
+    const machineId = this.readPrimaryMachineId(machines.stdout);
+    if (!machineId) {
+      return { ok: false, error: missingMachineError };
+    }
+
+    const machineState = this.readPrimaryMachineState(machines.stdout);
+    if (machineState === "started") {
+      const stop = await this.process.run(
+        flyCommand,
+        ["machine", "stop", machineId, "-a", appName, "--wait-timeout", "60s"],
+        { env: this.env, timeoutMs: 60_000 }
+      );
+      if (stop.exitCode !== 0) {
+        return { ok: false, error: stop.stderr || stop.stdout || `failed to stop machine ${machineId}` };
+      }
+    }
+
+    const start = await this.process.run(
+      flyCommand,
+      ["machine", "start", machineId, "-a", appName],
+      { env: this.env, timeoutMs: 60_000 }
+    );
+    if (start.exitCode !== 0) {
+      return { ok: false, error: start.stderr || start.stdout || `failed to start machine ${machineId}` };
+    }
+
+    return this.waitForPrimaryAppMachineStarted(appName, notRunningPrefix);
+  }
+
+  private async waitForPrimaryAppMachineStarted(
+    appName: string,
+    notRunningPrefix: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const flyCommand = await resolveFlyCommand(this.env);
+
+    let lastState = "unknown";
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const result = await this.process.run(
+        flyCommand,
+        ["machine", "list", "-a", appName, "--json"],
+        { env: this.env, timeoutMs: 4_000 }
+      );
+      if (result.exitCode === 0) {
+        const state = this.readPrimaryMachineState(result.stdout);
+        if (state === "started") {
+          return { ok: true };
+        }
+        if (state) {
+          lastState = state;
+        }
+      }
+      if (attempt < 19) {
+        await this.sleep(1_500);
+      }
+    }
+
+    return { ok: false, error: `${notRunningPrefix} (${lastState})` };
+  }
+
+  private async waitForWhatsAppBridgeConnectedAfterPairing(
+    appName: string,
+    options?: { requireSelfNumber?: boolean }
+  ): Promise<{ ok: boolean; error?: string; health?: WhatsAppBridgeHealth }> {
+    try {
+      let lastOutput = "";
+      let lastHealth: WhatsAppBridgeHealth | undefined;
+      const requireSelfNumber = options?.requireSelfNumber === true;
+
+      for (let attempt = 0; attempt < WhatsAppPostPairingPolicy.bridgeReconnectAttemptLimit; attempt += 1) {
+        const result = await this.readWhatsAppBridgeHealth(appName);
+        lastHealth = result.health;
+        if (
+          result.health?.status === "connected"
+          && (!requireSelfNumber || ((result.health.selfNumber ?? "").trim().length > 0))
+        ) {
+          return { ok: true, health: result.health };
+        }
+
+        if (
+          result.health?.status === "connected"
+          && requireSelfNumber
+          && ((result.health.selfNumber ?? "").trim().length === 0)
+        ) {
+          const bridgeLog = await this.readRecentWhatsAppBridgeLog(appName);
+          const identity = this.parseWhatsAppBridgeIdentityFromLog(bridgeLog);
+          if ((identity.selfNumber ?? "").trim().length > 0) {
+            return {
+              ok: true,
+              health: {
+                ...result.health,
+                selfJid: identity.selfJid ?? result.health.selfJid,
+                selfNumber: identity.selfNumber,
+                selfLid: identity.selfLid ?? result.health.selfLid,
+              },
+            };
+          }
+        }
+
+        lastOutput = (result.error || result.raw || "").trim();
+        if (
+          WhatsAppPostPairingPolicy.shouldPauseAfterAttempt(
+            attempt,
+            WhatsAppPostPairingPolicy.bridgeReconnectAttemptLimit
+          )
+        ) {
+          await this.sleep(WhatsAppPostPairingPolicy.pollDelayMs);
+        }
+      }
+
+      const logTail = await this.readRecentWhatsAppBridgeLog(appName);
+      const suffix = lastOutput.length > 0 ? `: ${lastOutput}` : "";
+      return {
+        ok: false,
+        error: requireSelfNumber && lastHealth?.status === "connected"
+          ? `the WhatsApp bridge connected after pairing, but it never reported the paired WhatsApp phone number${suffix}${logTail ? `\nRecent bridge log:\n${logTail}` : ""}`
+          : `the WhatsApp bridge did not report a connected session after pairing${suffix}${logTail ? `\nRecent bridge log:\n${logTail}` : ""}`,
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private resolveInitialWhatsAppAllowedUsers(config: DeployConfig): string | undefined {
+    const allowedUsers = (config.whatsappAllowedUsers ?? "").trim();
+    return allowedUsers.length > 0 ? allowedUsers : undefined;
+  }
+
+  private resolveInitialWhatsAppSetupStdin(config: DeployConfig, initialAllowedUsers: string | undefined): string | undefined {
+    if (initialAllowedUsers) {
+      return "n\n";
+    }
+    if (config.whatsappMode === "self-chat") {
+      return "\n";
+    }
+    return undefined;
+  }
+
+  private async adoptWhatsAppSelfChatIdentity(
+    config: DeployConfig,
+    health?: WhatsAppBridgeHealth,
+    stdout?: { write: (s: string) => void }
+  ): Promise<{ ok: boolean; error?: string; health?: WhatsAppBridgeHealth }> {
+    const pairedNumber = (health?.selfNumber ?? "").trim();
+    if (pairedNumber.length === 0) {
+      const bridgeLog = await this.readRecentWhatsAppBridgeLog(config.appName);
+      return {
+        ok: false,
+        error: `hermes-fly could not determine the phone number of the paired WhatsApp account after pairing${bridgeLog ? `.\nRecent bridge log:\n${bridgeLog}` : "."}`,
+      };
+    }
+
+    const previousAllowedUsers = (config.whatsappAllowedUsers ?? "").trim();
+    const conflicts = await this.findWhatsAppConflicts(config.appName, pairedNumber, "self-chat");
+    if (conflicts.length > 0) {
+      const takeover = await this.takeOverWhatsAppSelfChat(conflicts.map((entry) => entry.name), stdout ?? { write: () => {} });
+      if (!takeover.ok) {
+        return {
+          ok: false,
+          error: `the paired WhatsApp account is still tied to ${conflicts.map((entry) => entry.name).join(", ")}, and hermes-fly could not disconnect it cleanly: ${takeover.error ?? "unknown error"}`,
+        };
+      }
+    }
+
+    config.whatsappAllowedUsers = pairedNumber;
+    const persistedState = await this.persistWhatsAppSelfChatRuntimeState(config.appName, health, pairedNumber);
+    if (!persistedState.ok) {
+      return {
+        ok: false,
+        error: `hermes-fly could not persist the paired WhatsApp self-chat identity: ${persistedState.error ?? "runtime state update failed"}`,
+      };
+    }
+
+    const secretsResult = await this.stageWhatsAppSelfChatAllowedUsers(config.appName, pairedNumber);
+    if (!secretsResult.ok) {
+      return {
+        ok: false,
+        error: `hermes-fly could not stage the paired WhatsApp number for future boots: ${secretsResult.error ?? "secret update failed"}`,
+      };
+    }
+
+    this.whatsappBindingCache.set(config.appName, { hasSession: true, allowedUsers: pairedNumber });
+    if (previousAllowedUsers === pairedNumber && conflicts.length === 0) {
+      return { ok: true, health };
+    }
+
+    const bridgeReady = await this.restartWhatsAppAndWaitForBridge(config.appName, {
+      requireSelfNumber: true,
+    });
+    if (!bridgeReady.ok) {
+      return {
+        ok: false,
+        error: `the WhatsApp bridge did not reconnect cleanly after hermes-fly adopted the paired WhatsApp number: ${bridgeReady.error ?? "unknown error"}`,
+      };
+    }
+
+    return { ok: true, health: bridgeReady.health };
+  }
+
+  private async persistWhatsAppSelfChatRuntimeState(
+    appName: string,
+    health: WhatsAppBridgeHealth | undefined,
+    allowedUsers: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const statePayload = JSON.stringify({
+      self_number: allowedUsers,
+      self_jid: (health?.selfJid ?? "").trim(),
+      self_lid: (health?.selfLid ?? "").trim(),
+      detected_at: new Date().toISOString(),
+    });
+    const envPayload = JSON.stringify({
+      WHATSAPP_ENABLED: "true",
+      WHATSAPP_MODE: "self-chat",
+      WHATSAPP_ALLOWED_USERS: allowedUsers,
+      WHATSAPP_HOME_CHANNEL: allowedUsers,
+      WHATSAPP_HOME_CONTACT: allowedUsers,
+    });
+
+    try {
+      const result = await this.runRemoteShell(
+        appName,
+        [
+          "python3 - <<'PYEOF'",
+          "import json",
+          "import os",
+          "from pathlib import Path",
+          `state = ${statePayload}`,
+          `env_values = ${envPayload}`,
+          `state_path = Path(${JSON.stringify(WHATSAPP_SELF_CHAT_IDENTITY_PATH)})`,
+          "state_path.parent.mkdir(parents=True, exist_ok=True)",
+          "tmp_state_path = state_path.with_suffix(state_path.suffix + '.tmp')",
+          "tmp_state_path.write_text(json.dumps(state), encoding='utf-8')",
+          "os.chmod(tmp_state_path, 0o600)",
+          "os.replace(tmp_state_path, state_path)",
+          "env_path = Path('/root/.hermes/.env')",
+          "lines = env_path.read_text(encoding='utf-8').splitlines() if env_path.exists() else []",
+          "managed_keys = set(env_values.keys())",
+          "rendered = [line for line in lines if not any(line.startswith(f'{key}=') for key in managed_keys)]",
+          "for key, value in env_values.items():",
+          "    rendered.append(f'{key}={value}')",
+          "env_path.write_text('\\n'.join(rendered) + ('\\n' if rendered else ''), encoding='utf-8')",
+          "PYEOF",
+        ].join("\n"),
+        { timeoutMs: 15_000 }
+      );
+      if (result.exitCode !== 0) {
+        return { ok: false, error: result.stderr || result.stdout || "failed to persist WhatsApp self-chat state" };
+      }
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async stageWhatsAppSelfChatAllowedUsers(appName: string, allowedUsers: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      const result = await this.process.run(
+        flyCommand,
+        ["secrets", "set", "--app", appName, "--stage", `HERMES_FLY_WHATSAPP_ALLOWED_USERS=${allowedUsers}`],
+        { env: this.env, timeoutMs: 60_000 }
+      );
+      if (result.exitCode !== 0) {
+        return { ok: false, error: result.stderr || result.stdout || "secret update failed" };
+      }
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async seedWhatsAppSelfChatApproval(
+    appName: string,
+    health?: WhatsAppBridgeHealth
+  ): Promise<{ ok: boolean; error?: string }> {
+    const approvedIds = [
+      (health?.selfLid ?? "").trim(),
+      (health?.selfJid ?? "").trim(),
+      (health?.selfNumber ?? "").trim(),
+    ].filter((value, index, list) => value.length > 0 && list.indexOf(value) === index);
+
+    if (approvedIds.length === 0) {
+      return { ok: false, error: "hermes-fly could not determine any WhatsApp identities to auto-approve for self-chat" };
+    }
+
+    const payload = JSON.stringify(
+      Object.fromEntries(
+        approvedIds.map((userId) => [
+          userId,
+          { user_name: "auto-approved", approved_at: Date.now() / 1000 },
+        ])
+      )
+    );
+    const payloadLiteral = JSON.stringify(payload);
+
+    try {
+      const result = await this.runRemoteShell(
+        appName,
+        [
+          "python3 - <<'PYEOF'",
+          "import json",
+          "import os",
+          "from pathlib import Path",
+          `payload = json.loads(${payloadLiteral})`,
+          `approved_path = Path(${JSON.stringify(WHATSAPP_APPROVED_USERS_PATH)})`,
+          "approved_path.parent.mkdir(parents=True, exist_ok=True)",
+          "existing = {}",
+          "if approved_path.exists():",
+          "    try:",
+          "        existing = json.loads(approved_path.read_text(encoding='utf-8'))",
+          "    except Exception:",
+          "        existing = {}",
+          "existing.update(payload)",
+          "tmp_path = approved_path.with_suffix('.json.tmp')",
+          "tmp_path.write_text(json.dumps(existing), encoding='utf-8')",
+          "os.chmod(tmp_path, 0o600)",
+          "os.replace(tmp_path, approved_path)",
+          "PYEOF",
+        ].join("\n"),
+        { timeoutMs: 15_000 }
+      );
+      if (result.exitCode !== 0) {
+        return { ok: false, error: result.stderr || result.stdout || "failed to seed WhatsApp self-chat approval" };
+      }
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async verifyWhatsAppSelfChatApproval(
+    appName: string,
+    health?: WhatsAppBridgeHealth
+  ): Promise<{ ok: boolean; error?: string }> {
+    const approvedIds = [
+      (health?.selfLid ?? "").trim(),
+      (health?.selfJid ?? "").trim(),
+      (health?.selfNumber ?? "").trim(),
+    ].filter((value, index, list) => value.length > 0 && list.indexOf(value) === index);
+    if (approvedIds.length === 0) {
+      return { ok: false, error: "hermes-fly could not determine any WhatsApp identities to verify for self-chat approval" };
+    }
+
+    const idsLiteral = JSON.stringify(approvedIds);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        const result = await this.runRemoteShell(
+          appName,
+          [
+            "cd /opt/hermes/hermes-agent",
+            "/opt/hermes/hermes-agent/venv/bin/python - <<'PYEOF'",
+            "import json",
+            "import sys",
+            "sys.path.insert(0, '/opt/hermes/hermes-agent')",
+            "from gateway.pairing import PairingStore",
+            `ids = ${idsLiteral}`,
+            "store = PairingStore()",
+            "result = {user_id: store.is_approved('whatsapp', user_id) for user_id in ids}",
+            "print(json.dumps(result))",
+            "if not all(result.values()):",
+            "    raise SystemExit(2)",
+            "PYEOF",
+          ].join("\n"),
+          { timeoutMs: 15_000 }
+        );
+        if (result.exitCode === 0) {
+          return { ok: true };
+        }
+        if (attempt === 4) {
+          return {
+            ok: false,
+            error: `Hermes did not recognize the auto-approved WhatsApp self-chat identities yet: ${result.stderr || result.stdout || "approval verification failed"}`,
+          };
+        }
+      } catch (error) {
+        if (attempt === 4) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      }
+      await this.sleep(500);
+    }
+
+    return { ok: false, error: "approval verification timed out" };
+  }
+
+  private async verifyWhatsAppSelfChatTest(appName: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const machine = await this.readPrimaryMachineForApp(appName);
+      const machineId = machine.machineId;
+      let latestAppLogs = await this.readRecentAppLogs(appName, machineId);
+      let latestBridgeLog = (await this.readRecentWhatsAppBridgeLog(appName)) ?? "";
+      let observedAppActivity = "";
+      let observedBridgeActivity = "";
+
+      for (let attempt = 0; attempt < WhatsAppPostPairingPolicy.selfChatVerificationAttemptLimit; attempt += 1) {
+        const logs = await this.readRecentAppLogs(appName, machineId);
+        const newAppActivity = this.extractNewLogActivity(latestAppLogs, logs);
+        latestAppLogs = logs;
+        if (newAppActivity) {
+          observedAppActivity = this.appendObservedLogActivity(observedAppActivity, newAppActivity);
+        }
+
+        const appDiagnosisSource = observedAppActivity || logs;
+        if (appDiagnosisSource.trim().length > 0) {
+          const diagnosis = this.diagnoseWhatsAppSelfChatLogs(appDiagnosisSource);
+          if (diagnosis.kind === "success") {
+            return { ok: true };
+          }
+          if (diagnosis.kind === "unauthorized") {
+            const bridgeLog = await this.readRecentWhatsAppBridgeLog(appName);
+            return {
+              ok: false,
+              error: `the self-chat test message reached Hermes, but it was denied as an unauthorized WhatsApp user.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(appDiagnosisSource)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+            };
+          }
+          if (diagnosis.kind === "send_failed") {
+            const bridgeLog = await this.readRecentWhatsAppBridgeLog(appName);
+            return {
+              ok: false,
+              error: `Hermes received your self-chat message, but failed while sending the reply.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(appDiagnosisSource)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+            };
+          }
+          if (diagnosis.kind === "empty_response") {
+            return {
+              ok: false,
+              error: `Hermes received your self-chat message, but the gateway handler returned an empty response.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(appDiagnosisSource)}`,
+            };
+          }
+        }
+
+        const bridgeLog = (await this.readRecentWhatsAppBridgeLog(appName)) ?? "";
+        const newBridgeActivity = this.extractNewLogActivity(latestBridgeLog, bridgeLog);
+        latestBridgeLog = bridgeLog;
+        if (newBridgeActivity) {
+          observedBridgeActivity = this.appendObservedLogActivity(observedBridgeActivity, newBridgeActivity);
+          const bridgeDiagnosis = this.diagnoseWhatsAppBridgeLog(observedBridgeActivity);
+          if (bridgeDiagnosis.kind === "success") {
+            return { ok: true };
+          }
+        }
+        if (
+          WhatsAppPostPairingPolicy.shouldPauseAfterAttempt(
+            attempt,
+            WhatsAppPostPairingPolicy.selfChatVerificationAttemptLimit
+          )
+        ) {
+          await this.sleep(WhatsAppPostPairingPolicy.pollDelayMs);
+        }
+      }
+
+      const bridgeLog = latestBridgeLog.length > 0 ? latestBridgeLog : await this.readRecentWhatsAppBridgeLog(appName);
+      const diagnosisLog = observedBridgeActivity || bridgeLog || "";
+      const bridgeDiagnosis = diagnosisLog ? this.diagnoseWhatsAppBridgeLog(diagnosisLog) : { kind: "unknown" as const };
+      if (bridgeDiagnosis.kind === "accepted_but_unhandled") {
+        return {
+          ok: false,
+          error: `the self-chat test message reached the WhatsApp bridge, but Hermes did not process or reply before the timeout.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(observedAppActivity || latestAppLogs)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+        };
+      }
+      if (bridgeDiagnosis.kind === "missing_message_payload") {
+        return {
+          ok: false,
+          error: `WhatsApp emitted your self-chat activity, but the bridge only received a message stub without usable content.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(observedAppActivity || latestAppLogs)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+        };
+      }
+      if (bridgeDiagnosis.kind === "protocol_only") {
+        return {
+          ok: false,
+          error: `WhatsApp emitted only protocol-level self-chat events without message content the bridge could queue for Hermes.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(observedAppActivity || latestAppLogs)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+        };
+      }
+      if (bridgeDiagnosis.kind === "not_self_chat") {
+        return {
+          ok: false,
+          error: `WhatsApp emitted your message, but the bridge did not classify it as Message yourself self-chat.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(observedAppActivity || latestAppLogs)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+        };
+      }
+      if (bridgeDiagnosis.kind === "unauthorized_sender") {
+        return {
+          ok: false,
+          error: `WhatsApp emitted your message, but the bridge rejected it against the configured allowed users.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(observedAppActivity || latestAppLogs)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+        };
+      }
+      if (bridgeDiagnosis.kind === "empty_message") {
+        return {
+          ok: false,
+          error: `WhatsApp emitted your message, but the bridge saw no text or supported media to queue for Hermes.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(observedAppActivity || latestAppLogs)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+        };
+      }
+      return {
+        ok: false,
+        error: `no inbound WhatsApp self-chat activity was observed after the test message.\nRecent app log:\n${this.extractRelevantWhatsAppLogLines(observedAppActivity || latestAppLogs)}${bridgeLog ? `\nRecent bridge log:\n${bridgeLog}` : ""}`,
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private parseWhatsAppBridgeHealth(stdout: string): WhatsAppBridgeHealth | undefined {
+    const trimmed = stdout.trim();
+    if (trimmed.length === 0) {
+      return undefined;
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      return {
+        status: typeof parsed.status === "string" ? parsed.status : undefined,
+        queueLength: typeof parsed.queueLength === "number" ? parsed.queueLength : undefined,
+        uptime: typeof parsed.uptime === "number" ? parsed.uptime : undefined,
+        selfJid: typeof parsed.selfJid === "string" ? parsed.selfJid.trim() : undefined,
+        selfNumber: typeof parsed.selfNumber === "string" && /^[0-9]{7,15}$/.test(parsed.selfNumber.trim())
+          ? parsed.selfNumber.trim()
+          : undefined,
+        selfLid: typeof parsed.selfLid === "string" ? parsed.selfLid.trim() : undefined,
+      };
+    } catch {
+      const statusMatch = trimmed.match(/"status"\s*:\s*"([^"]+)"/);
+      const selfJidMatch = trimmed.match(/"selfJid"\s*:\s*"([^"]+)"/);
+      const selfNumberMatch = trimmed.match(/"selfNumber"\s*:\s*"([0-9]{7,15})"/);
+      const selfLidMatch = trimmed.match(/"selfLid"\s*:\s*"([^"]+)"/);
+      return {
+        status: statusMatch?.[1],
+        selfJid: selfJidMatch?.[1],
+        selfNumber: selfNumberMatch?.[1],
+        selfLid: selfLidMatch?.[1],
+      };
+    }
+  }
+
+  private async readWhatsAppBridgeHealth(appName: string): Promise<{ health?: WhatsAppBridgeHealth; raw: string; error?: string }> {
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      const result = await this.process.run(
+        flyCommand,
+        ["ssh", "console", "-a", appName, "-C", "sh -lc 'curl -sf --max-time 5 http://127.0.0.1:3000/health'"],
+        { env: this.env, timeoutMs: 15_000 }
+      );
+      const raw = (result.stdout || "").trim();
+      if (result.exitCode !== 0) {
+        return { raw, error: (result.stderr || result.stdout || "").trim() };
+      }
+      return { raw, health: this.parseWhatsAppBridgeHealth(result.stdout) };
+    } catch (error) {
+      return { raw: "", error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async readRecentWhatsAppBridgeLog(appName: string): Promise<string | undefined> {
+    try {
+      const flyCommand = await resolveFlyCommand(this.env);
+      const result = await this.process.run(
+        flyCommand,
+        ["ssh", "console", "-a", appName, "-C", "sh -lc 'tail -n 80 /root/.hermes/whatsapp/bridge.log 2>/dev/null || true'"],
+        { env: this.env, timeoutMs: 10_000 }
+      );
+      const text = (result.stdout || "").trim();
+      return text.length > 0 ? text : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async readRecentAppLogs(appName: string, machineId?: string): Promise<string> {
+    const flyCommand = await resolveFlyCommand(this.env);
+    const args = ["logs", "-a", appName];
+    if (machineId) {
+      args.push("--machine", machineId);
+    }
+    args.push("--no-tail");
+    const result = await this.process.run(
+      flyCommand,
+      args,
+      { env: this.env, timeoutMs: 15_000 }
+    );
+    return result.stdout || result.stderr || "";
+  }
+
+  private async readPrimaryMachineForApp(appName: string): Promise<{ machineId?: string; state?: string }> {
+    const flyCommand = await resolveFlyCommand(this.env);
+    const machines = await this.process.run(
+      flyCommand,
+      ["machine", "list", "-a", appName, "--json"],
+      { env: this.env, timeoutMs: 4_000 }
+    );
+    if (machines.exitCode !== 0) {
+      return {};
+    }
+    return {
+      machineId: this.readPrimaryMachineId(machines.stdout),
+      state: this.readPrimaryMachineState(machines.stdout),
+    };
+  }
+
+  private diagnoseWhatsAppSelfChatLogs(logs: string): { kind: "success" | "unauthorized" | "send_failed" | "empty_response" | "unknown" } {
+    if (/Sending response \(/i.test(logs)) {
+      return { kind: "success" };
+    }
+    if (/Unauthorized user: .* on whatsapp/i.test(logs)) {
+      return { kind: "unauthorized" };
+    }
+    if (/Failed to send response:/i.test(logs) || /Fallback send also failed:/i.test(logs)) {
+      return { kind: "send_failed" };
+    }
+    if (/Handler returned empty\/None response/i.test(logs)) {
+      return { kind: "empty_response" };
+    }
+    return { kind: "unknown" };
+  }
+
+  private diagnoseWhatsAppBridgeLog(logs: string): { kind: "success" | "accepted_but_unhandled" | "missing_message_payload" | "protocol_only" | "not_self_chat" | "unauthorized_sender" | "empty_message" | "unknown" } {
+    if (this.hasWhatsAppBridgeSelfChatEcho(logs)) {
+      return { kind: "success" };
+    }
+    if (/messages\.poll\.drained/i.test(logs) || /messages\.upsert\.accepted/i.test(logs) || /messages\.upsert\.queued/i.test(logs)) {
+      return { kind: "accepted_but_unhandled" };
+    }
+    if (/"reason":"missing-message-payload"/i.test(logs)) {
+      return { kind: "missing_message_payload" };
+    }
+    if (/"reason":"protocol-message-no-content"/i.test(logs)) {
+      return { kind: "protocol_only" };
+    }
+    if (/"reason":"fromMe-not-self-chat"/i.test(logs) || /"reason":"fromMe-group-or-status"/i.test(logs)) {
+      return { kind: "not_self_chat" };
+    }
+    if (/"reason":"unauthorized-sender"/i.test(logs)) {
+      return { kind: "unauthorized_sender" };
+    }
+    if (/"reason":"empty-body-no-media"/i.test(logs)) {
+      return { kind: "empty_message" };
+    }
+    return { kind: "unknown" };
+  }
+
+  private extractNewLogActivity(previous: string | undefined, current: string | undefined): string {
+    const next = (current ?? "").trim();
+    if (next.length === 0) {
+      return "";
+    }
+
+    const prior = (previous ?? "").trim();
+    if (prior.length === 0) {
+      return next;
+    }
+    if (next === prior) {
+      return "";
+    }
+    if (next.startsWith(prior)) {
+      return next.slice(prior.length).trim();
+    }
+
+    const previousLines = prior.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    const currentLines = next.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    const maxOverlap = Math.min(previousLines.length, currentLines.length);
+    for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+      const previousSuffix = previousLines.slice(-overlap).join("\n");
+      const currentPrefix = currentLines.slice(0, overlap).join("\n");
+      if (previousSuffix === currentPrefix) {
+        return currentLines.slice(overlap).join("\n").trim();
+      }
+    }
+
+    return next;
+  }
+
+  private appendObservedLogActivity(existing: string, next: string): string {
+    const current = existing.trim();
+    const addition = next.trim();
+    if (addition.length === 0) {
+      return current;
+    }
+    if (current.length === 0) {
+      return addition;
+    }
+    return `${current}\n${addition}`;
+  }
+
+  private parseWhatsAppBridgeIdentityFromLog(logs: string | undefined): { selfJid?: string; selfNumber?: string; selfLid?: string } {
+    if (!logs) {
+      return {};
+    }
+
+    const connectionLines = logs
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => /"event":"connection\.open"/.test(line));
+    for (let index = connectionLines.length - 1; index >= 0; index -= 1) {
+      const line = connectionLines[index] ?? "";
+      const selfJidMatch = line.match(/"selfJid":"([^"]+)"/);
+      const selfNumberMatch = line.match(/"selfNumber":"([0-9]{7,15})"/);
+      const selfLidMatch = line.match(/"selfLid":"([^"]+)"/);
+      if (selfJidMatch || selfNumberMatch || selfLidMatch) {
+        return {
+          selfJid: selfJidMatch?.[1],
+          selfNumber: selfNumberMatch?.[1],
+          selfLid: selfLidMatch?.[1],
+        };
+      }
+    }
+
+    return {};
+  }
+
+  private normalizeWhatsAppBridgeChatId(value: string | undefined): string | undefined {
+    const trimmed = value?.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    return trimmed.replace(/:.*@/, "@");
+  }
+
+  private buildWhatsAppBridgeSelfChatIds(identity: { selfJid?: string; selfNumber?: string; selfLid?: string }): Set<string> {
+    const ids = new Set<string>();
+    const add = (value: string | undefined) => {
+      const normalized = this.normalizeWhatsAppBridgeChatId(value);
+      if (!normalized) {
+        return;
+      }
+      ids.add(normalized);
+      const localId = normalized.replace(/@.*/, "");
+      if (localId) {
+        ids.add(localId);
+      }
+    };
+
+    add(identity.selfJid);
+    add(identity.selfLid);
+    add(identity.selfNumber);
+    return ids;
+  }
+
+  private hasWhatsAppBridgeSelfChatEcho(logs: string): boolean {
+    const lines = logs
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && /"reason":"agent-echo"/.test(line));
+    if (lines.length === 0) {
+      return false;
+    }
+
+    const identity = this.parseWhatsAppBridgeIdentityFromLog(logs);
+    const selfChatIds = this.buildWhatsAppBridgeSelfChatIds(identity);
+    if (selfChatIds.size === 0) {
+      return true;
+    }
+
+    return lines.some((line) => {
+      const chatIdMatch = line.match(/"chatId":"([^"]+)"/);
+      const normalizedChatId = this.normalizeWhatsAppBridgeChatId(chatIdMatch?.[1]);
+      if (!normalizedChatId) {
+        return false;
+      }
+      if (
+        normalizedChatId.endsWith("@lid")
+        && !identity.selfLid
+        && Boolean(identity.selfJid || identity.selfNumber)
+        && /"echoType":"edit"/.test(line)
+      ) {
+        return true;
+      }
+      return selfChatIds.has(normalizedChatId) || selfChatIds.has(normalizedChatId.replace(/@.*/, ""));
+    });
+  }
+
+  private extractRelevantWhatsAppLogLines(logs: string): string {
+    const lines = logs
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter((line) =>
+        /whatsapp/i.test(line)
+        || /Sending response \(/i.test(line)
+        || /Failed to send response:/i.test(line)
+        || /Fallback send also failed:/i.test(line)
+        || /Handler returned empty\/None response/i.test(line)
+        || /Unauthorized user:/i.test(line)
+      );
+    if (lines.length === 0) {
+      const trimmed = logs.trim();
+      return trimmed.length > 0 ? trimmed : "(no relevant app log lines captured)";
+    }
+    return lines.slice(-20).join("\n");
   }
 
   private buildRemoteHermesCommand(
@@ -4107,6 +6181,174 @@ export class FlyDeployWizard implements DeployWizardPort {
       ...(env ?? {}),
       LANG: SAFE_PROCESS_LOCALE,
       LC_ALL: SAFE_PROCESS_LOCALE,
+    };
+  }
+
+  async fetchExistingConfig(appName: string): Promise<import("../../application/ports/deploy-wizard.port.js").ExistingAppConfig | null> {
+    const runner = new NodeProcessRunner();
+    const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    
+    // Use fly config save to get the actual deployed config
+    const tempDir = await mkdtemp(join(tmpdir(), "hermes-fly-config-"));
+    try {
+      const result = await runner.run(
+        "fly",
+        ["config", "save", "-a", appName, "-c", join(tempDir, "fly.toml")],
+        { env: this.env }
+      );
+      
+      if (result.exitCode !== 0) {
+        return null;
+      }
+      
+      // Parse the saved fly.toml
+      const tomlContent = await readFile(join(tempDir, "fly.toml"), "utf8");
+      
+      // Extract primary_region
+      const regionMatch = tomlContent.match(/^primary_region\s*=\s*"([^"]+)"/m);
+      const region = regionMatch?.[1] ?? DEFAULT_REGION;
+      
+      // Extract vm size from [[vm]] section
+      const vmSizeMatch = tomlContent.match(/^\[\[vm\]\][\s\S]*?^\s*size\s*=\s*"([^"]+)"/m);
+      const vmSize = vmSizeMatch?.[1] ?? DEFAULT_VM_SIZE;
+      
+      // Get volume size from fly volumes list
+      const volResult = await runner.run("fly", ["volumes", "list", "-a", appName, "--json"], { env: this.env });
+      let volumeSize = DEFAULT_VOLUME_SIZE;
+      if (volResult.exitCode === 0 && volResult.stdout) {
+        try {
+          const volumes = JSON.parse(volResult.stdout) as Array<{ size_gb?: number; SizeGb?: number }>;
+          const vol = volumes[0];
+          if (vol) {
+            volumeSize = vol.size_gb ?? vol.SizeGb ?? DEFAULT_VOLUME_SIZE;
+          }
+        } catch {
+          // use default
+        }
+      }
+      
+      return { region, vmSize, volumeSize };
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  async promptUpdateConfigChoice(
+    existing: import("../../application/ports/deploy-wizard.port.js").ExistingAppConfig
+  ): Promise<{ keep: boolean; config?: import("../../application/ports/deploy-wizard.port.js").DeployConfig }> {
+    if (!this.prompts.isInteractive()) {
+      return { keep: true };
+    }
+
+    this.prompts.write("\nExisting deployment configuration found:\n");
+    this.prompts.write(`  Region:      ${existing.region}\n`);
+    this.prompts.write(`  VM Size:     ${existing.vmSize}\n`);
+    this.prompts.write(`  Volume Size: ${existing.volumeSize} GB\n\n`);
+
+    const choice = await this.chooseNumber(
+      "Choose an option:\n  1. Keep existing configuration\n  2. Quick preset (recommended setups)\n  3. Custom configuration (full wizard)\n\nOption [1]: ",
+      3,
+      1
+    );
+
+    if (choice === 1) {
+      return { keep: true };
+    }
+
+    if (choice === 2) {
+      // Quick preset selection
+      return this.selectVmPreset(existing);
+    }
+
+    // User wants custom config - run full wizard
+    this.prompts.write("\n--- Update Configuration ---\n");
+    const region = await this.collectRegion(this.env.HERMES_FLY_REGION);
+    const vmSize = await this.collectVmSize(this.env.HERMES_FLY_VM_SIZE);
+    const volumeSize = await this.collectVolumeSize(this.env.HERMES_FLY_VOLUME_SIZE);
+
+    return {
+      keep: false,
+      config: {
+        ...existing,
+        region,
+        vmSize,
+        volumeSize,
+      } as import("../../application/ports/deploy-wizard.port.js").DeployConfig,
+    };
+  }
+
+  private async selectVmPreset(
+    existing: import("../../application/ports/deploy-wizard.port.js").ExistingAppConfig
+  ): Promise<{ keep: boolean; config?: import("../../application/ports/deploy-wizard.port.js").DeployConfig }> {
+    const PRESETS = [
+      { 
+        name: "Starter / Low-traffic", 
+        vmSize: "shared-cpu-1x", 
+        memory: "512 MB",
+        bestFor: "Cheap, auto-scales to zero, perfect for 90% of apps" 
+      },
+      { 
+        name: "Production Web/API", 
+        vmSize: "shared-cpu-2x", 
+        memory: "1 GB",
+        bestFor: "Best price/performance balance" 
+      },
+      { 
+        name: "High-traffic / Latency-sensitive", 
+        vmSize: "performance-2x", 
+        memory: "8 GB",
+        bestFor: "Guaranteed CPU, no throttling" 
+      },
+      { 
+        name: "Memory-heavy (caching, ML)", 
+        vmSize: "performance-4x", 
+        memory: "16-32 GB",
+        bestFor: "High RAM limits" 
+      },
+      { 
+        name: "Background Workers / Cron", 
+        vmSize: "shared-cpu-4x", 
+        memory: "2 GB",
+        bestFor: "Cheap burst CPU for batch jobs" 
+      },
+    ];
+
+    this.prompts.write("\n--- Quick Presets (2026 Recommendations) ---\n\n");
+    PRESETS.forEach((preset, index) => {
+      const marker = existing.vmSize === preset.vmSize ? " (current)" : "";
+      this.prompts.write(`  ${index + 1}. ${preset.name}${marker}\n`);
+      this.prompts.write(`     VM: ${preset.vmSize} (${preset.memory})\n`);
+      this.prompts.write(`     ${preset.bestFor}\n\n`);
+    });
+    this.prompts.write(`  ${PRESETS.length + 1}. Back to previous menu\n\n`);
+
+    const selected = await this.chooseNumber(`Choose a preset [1]: `, PRESETS.length + 1, 1);
+    
+    if (selected === PRESETS.length + 1) {
+      // Go back
+      return this.promptUpdateConfigChoice(existing);
+    }
+
+    const preset = PRESETS[selected - 1];
+    
+    // Ask about region (keep or change)
+    this.prompts.write(`\nUsing preset: ${preset.name} (${preset.vmSize})\n`);
+    const regionChoice = await this.chooseNumber(
+      `Region: Keep '${existing.region}' [1] or Change [2]: `,
+      2,
+      1
+    );
+    const region = regionChoice === 1 ? existing.region : await this.collectRegion(this.env.HERMES_FLY_REGION);
+
+    return {
+      keep: false,
+      config: {
+        ...existing,
+        region,
+        vmSize: preset.vmSize,
+      } as import("../../application/ports/deploy-wizard.port.js").DeployConfig,
     };
   }
 }
