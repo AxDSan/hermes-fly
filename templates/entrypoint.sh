@@ -345,6 +345,7 @@ _manifest = {
     'reasoning_effort': os.environ.get('HERMES_REASONING_EFFORT', ''),
     'llm_provider': os.environ.get('HERMES_LLM_PROVIDER', ''),
     'llm_model': os.environ.get('LLM_MODEL', ''),
+    'preinstalled_tools': os.environ.get('HERMES_PREINSTALLED_TOOLS', ''),
     'written_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
 }
 with open('/root/.hermes/deploy-manifest.json', 'w') as _fh:

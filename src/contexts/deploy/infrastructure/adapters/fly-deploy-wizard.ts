@@ -726,6 +726,9 @@ export class FlyDeployWizard implements DeployWizardPort {
     if (config.whatsappAllowedUsers) {
       secrets.HERMES_FLY_WHATSAPP_ALLOWED_USERS = config.whatsappAllowedUsers;
     }
+    if (config.preinstalledTools && config.preinstalledTools.length > 0) {
+      secrets.HERMES_PREINSTALLED_TOOLS = config.preinstalledTools.join(",");
+    }
     return this.runner.setSecrets(config.appName, secrets);
   }
 

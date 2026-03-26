@@ -65,6 +65,13 @@ export class UpdateDeploymentUseCase {
     stdout.write(`Updating '${config.appName}' to ${config.channel} channel...\n`);
     const hermesRef = this.resolveHermesRef(config.channel);
 
+    // Fetch preinstalledTools from deployed manifest
+    const manifest = await this.runner.fetchDeployedManifest(config.appName);
+    const preinstalledTools = manifest?.preinstalledTools ?? [];
+    if (preinstalledTools.length > 0) {
+      stdout.write(`  Preserving pre-installed tools: ${preinstalledTools.join(", ")}\n`);
+    }
+
     const existingConfig = await this.wizard.fetchExistingConfig(config.appName);
     let deployConfig: ExistingAppConfig;
 
@@ -107,6 +114,7 @@ export class UpdateDeploymentUseCase {
           hermesRef,
           botToken: "",
           channel: config.channel,
+          preinstalledTools,
         },
         { update: true }
       );

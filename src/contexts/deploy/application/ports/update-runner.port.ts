@@ -5,4 +5,5 @@
 export interface UpdateRunnerPort {
   checkAppExists(appName: string): Promise<{ exists: boolean; error?: string }>;
   runUpdate(buildDir: string, appName: string): Promise<{ ok: boolean; error?: string }>;
+  fetchDeployedManifest(appName: string): Promise<{ preinstalledTools?: string[] } | null>;
 }

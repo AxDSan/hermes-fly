@@ -48,4 +48,30 @@ export class FlyUpdateRunner implements UpdateRunnerPort {
     }
     return { ok: true };
   }
+
+  async fetchDeployedManifest(appName: string): Promise<{ preinstalledTools?: string[] } | null> {
+    // Read deploy-manifest.json from the running machine via SSH
+    const result = await this.runner.run(
+      "fly",
+      ["ssh", "console", "-a", appName, "-C", "cat /root/.hermes/deploy-manifest.json 2>/dev/null || echo '{}'"],
+      { env: this.env }
+    );
+    if (result.exitCode !== 0 || !result.stdout) {
+      return null;
+    }
+    try {
+      const manifest = JSON.parse(result.stdout) as { preinstalled_tools?: string; preinstalledTools?: string[] };
+      // Handle both snake_case from JSON and camelCase
+      const toolsStr = manifest.preinstalled_tools;
+      if (toolsStr && typeof toolsStr === "string" && toolsStr.length > 0) {
+        return { preinstalledTools: toolsStr.split(",").filter(Boolean) };
+      }
+      if (manifest.preinstalledTools && Array.isArray(manifest.preinstalledTools)) {
+        return { preinstalledTools: manifest.preinstalledTools };
+      }
+      return {};
+    } catch {
+      return null;
+    }
+  }
 }
