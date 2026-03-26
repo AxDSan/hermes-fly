@@ -13,7 +13,7 @@ ARG HERMES_COMPAT_POLICY={{HERMES_COMPAT_POLICY}}
 
 # Install dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl xz-utils ca-certificates \
+    git curl xz-utils ca-certificates npm \
     && rm -rf /var/lib/apt/lists/*
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -52,6 +52,10 @@ COPY patch-whatsapp-bridge.py /tmp/hermes-fly-patch-whatsapp-bridge.py
 RUN /opt/hermes/hermes-agent/venv/bin/python /tmp/hermes-fly-patch-whatsapp-bridge.py /opt/hermes/hermes-agent/scripts/whatsapp-bridge/bridge.js 2>/dev/null || true
 
 RUN chmod +x /entrypoint.sh /gateway-supervisor.sh
+
+# Install pre-selected CLI tools
+{{INSTALL_VERCEL_CMD}}
+{{INSTALL_RAILWAY_CMD}}
 
 WORKDIR /root/.hermes
 ENTRYPOINT ["/entrypoint.sh"]

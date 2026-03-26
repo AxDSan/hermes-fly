@@ -583,6 +583,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       this.writeVmSizingAdvisory(vmSizingDecision.vmSize, vmSizingDecision.advisory);
     }
     const hermesRef = this.resolveHermesAgentRef(opts.channel);
+    const preinstalledTools = await this.collectPreinstalledTools();
 
     const intent = DeploymentIntent.create({
       appName,
@@ -635,6 +636,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       whatsappUsePairing: messagingSetup.whatsapp?.usePairing,
       whatsappCompleteAccessDuringSetup: messagingSetup.whatsapp?.completeAccessDuringSetup,
       whatsappTakeoverAppNames: messagingSetup.whatsapp?.takeoverAppNames,
+      preinstalledTools,
     };
 
     if (this.prompts.isInteractive()) {
@@ -1741,6 +1743,36 @@ export class FlyDeployWizard implements DeployWizardPort {
       defaultIndex: defaultIndex + 1,
       fallbackPrompt: `Choose a size [${defaultIndex + 1}]: `,
     });
+  }
+
+  private async collectPreinstalledTools(): Promise<string[]> {
+    if (!this.prompts.isInteractive()) {
+      return [];
+    }
+
+    const TOOL_OPTIONS = [
+      { value: "vercel", label: "Vercel CLI", description: "Deploy to Vercel (vercel.com)" },
+      { value: "railway", label: "Railway CLI", description: "Deploy to Railway (railway.app)" },
+    ];
+
+    const selected = await this.selectManyFromChoiceSection({
+      title: "Pre-installed Tools",
+      question: "Which deployment CLIs should be pre-installed?",
+      details: [
+        "These tools will be available inside your Fly machine.",
+        "Auth data persists across deploys via symlinks.",
+        "You can always install more later with npm/pnpm.",
+      ],
+      options: TOOL_OPTIONS.map((option) => ({
+        value: option.value,
+        label: option.label,
+        description: option.description,
+      })),
+      defaultSelectedIndices: [],
+      fallbackPrompt: "Select tools (comma-separated numbers, or 'none'): ",
+    });
+
+    return selected;
   }
 
   private async collectAiAccess(input: {

@@ -31,10 +31,13 @@ export class TemplateWriter {
     const compatPolicy = await this.readCompatibilityPolicyVersion();
     const vmMemory = this.resolveVmMemory(config.vmSize);
 
+    const preinstalledTools = config.preinstalledTools ?? [];
     const dockerfile = this.replaceAll(dockerfileTemplate, {
       HERMES_VERSION: config.hermesRef,
       HERMES_CHANNEL: config.channel,
-      HERMES_COMPAT_POLICY: compatPolicy
+      HERMES_COMPAT_POLICY: compatPolicy,
+      INSTALL_VERCEL_CMD: preinstalledTools.includes("vercel") ? "RUN npm install -g vercel@latest" : "# Vercel CLI: not selected",
+      INSTALL_RAILWAY_CMD: preinstalledTools.includes("railway") ? "RUN npm install -g @railway/cli@latest" : "# Railway CLI: not selected",
     });
     await writeFile(join(buildDir, "Dockerfile"), dockerfile, "utf8");
 

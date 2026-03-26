@@ -43,6 +43,7 @@ export interface DeployConfig {
   whatsappCompleteAccessDuringSetup?: boolean;
   whatsappSessionConfirmed?: boolean;
   whatsappTakeoverAppNames?: string[];
+  preinstalledTools?: string[];
 }
 
 export interface FinalizeMessagingSetupResult {
