@@ -36,10 +36,14 @@ export class TemplateWriter {
 
     // JavaScript/TypeScript Runtimes
     const installBun = tools.has("bun")
-      ? "RUN curl -fsSL https://bun.sh/install | bash && ln -sf ~/.bun/bin/bun /usr/local/bin/bun"
+      ? `RUN apt-get update && apt-get install -y --no-install-recommends unzip && \\
+    curl -fsSL https://bun.sh/install | bash && \\
+    ln -sf ~/.bun/bin/bun /usr/local/bin/bun`
       : "# Bun: not selected";
     const installDeno = tools.has("deno")
-      ? "RUN curl -fsSL https://deno.land/install.sh | sh && ln -sf ~/.deno/bin/deno /usr/local/bin/deno"
+      ? `RUN apt-get update && apt-get install -y --no-install-recommends unzip && \\
+    curl -fsSL https://deno.land/install.sh | sh && \\
+    ln -sf ~/.deno/bin/deno /usr/local/bin/deno`
       : "# Deno: not selected";
 
     // Package Managers
