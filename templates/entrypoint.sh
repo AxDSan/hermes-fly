@@ -4,7 +4,20 @@ set -euo pipefail
 ln -sfn /opt/hermes/hermes-agent /root/.hermes/hermes-agent
 ln -sfn /opt/hermes/node /root/.hermes/node
 # All runtime data directories
-mkdir -p /root/.hermes/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,runtime,whatsapp/session}
+mkdir -p /root/.hermes/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,runtime,whatsapp/session,cli_configs}
+
+# Persistent CLI configs — survive deploys/restarts on Fly.io
+# Vercel (legacy ~/.vercel and modern XDG path)
+mkdir -p /root/.hermes/cli_configs/.vercel
+ln -sfn /root/.hermes/cli_configs/.vercel ~/.vercel 2>/dev/null || true
+mkdir -p /root/.hermes/cli_configs/.local/share/com.vercel.cli
+ln -sfn /root/.hermes/cli_configs/.local/share/com.vercel.cli ~/.local/share/com.vercel.cli 2>/dev/null || true
+
+# Railway (covers both old ~/.railway and new ~/.config/railway)
+mkdir -p /root/.hermes/cli_configs/.railway
+ln -sfn /root/.hermes/cli_configs/.railway ~/.railway 2>/dev/null || true
+mkdir -p /root/.hermes/cli_configs/.config/railway
+ln -sfn /root/.hermes/cli_configs/.config/railway ~/.config/railway 2>/dev/null || true
 # Seed default config files on first deploy (never overwrite user customizations)
 for f in .env config.yaml SOUL.md; do
   if [[ ! -f /root/.hermes/$f ]] && [[ -f /opt/hermes/defaults/$f ]]; then
