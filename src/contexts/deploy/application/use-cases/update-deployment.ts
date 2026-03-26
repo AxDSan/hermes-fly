@@ -67,10 +67,13 @@ export class UpdateDeploymentUseCase {
 
     // Fetch preinstalledTools from deployed manifest
     const manifest = await this.runner.fetchDeployedManifest(config.appName);
-    const preinstalledTools = manifest?.preinstalledTools ?? [];
-    if (preinstalledTools.length > 0) {
-      stdout.write(`  Preserving pre-installed tools: ${preinstalledTools.join(", ")}\n`);
+    const existingTools = manifest?.preinstalledTools ?? [];
+    if (existingTools.length > 0) {
+      stdout.write(`  Currently installed tools: ${existingTools.join(", ")}\n`);
     }
+
+    // Allow modifying tools during update
+    const preinstalledTools = await this.wizard.promptUpdateToolsChoice(existingTools);
 
     const existingConfig = await this.wizard.fetchExistingConfig(config.appName);
     let deployConfig: ExistingAppConfig;

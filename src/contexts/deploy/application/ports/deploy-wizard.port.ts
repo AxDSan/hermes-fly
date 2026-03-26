@@ -79,4 +79,5 @@ export interface DeployWizardPort {
   ): Promise<FinalizeMessagingSetupResult>;
   chooseSuccessfulDeploymentAction(config: DeployConfig): Promise<SuccessfulDeploymentAction>;
   showTelegramBotDeletionGuidance(config: DeployConfig): Promise<void>;
+  promptUpdateToolsChoice(existingTools: string[]): Promise<string[]>;
 }

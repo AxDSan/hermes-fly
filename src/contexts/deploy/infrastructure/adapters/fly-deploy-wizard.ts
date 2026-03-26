@@ -6423,4 +6423,61 @@ export class FlyDeployWizard implements DeployWizardPort {
       } as import("../../application/ports/deploy-wizard.port.js").DeployConfig,
     };
   }
+
+  async promptUpdateToolsChoice(existingTools: string[]): Promise<string[]> {
+    if (!this.prompts.isInteractive()) {
+      return existingTools;
+    }
+
+    const TOOL_OPTIONS = [
+      { value: "bun", label: "Bun", category: "Runtime" },
+      { value: "deno", label: "Deno", category: "Runtime" },
+      { value: "pnpm", label: "pnpm", category: "Package Manager" },
+      { value: "yarn", label: "Yarn", category: "Package Manager" },
+      { value: "vercel", label: "Vercel CLI", category: "Deployment" },
+      { value: "railway", label: "Railway CLI", category: "Deployment" },
+      { value: "netlify", label: "Netlify CLI", category: "Deployment" },
+      { value: "awscli", label: "AWS CLI", category: "Cloud" },
+      { value: "gcloud", label: "Google Cloud SDK", category: "Cloud" },
+      { value: "azurecli", label: "Azure CLI", category: "Cloud" },
+      { value: "docker", label: "Docker CLI", category: "Containers" },
+      { value: "kubectl", label: "kubectl", category: "Containers" },
+      { value: "helm", label: "Helm", category: "Containers" },
+      { value: "terraform", label: "Terraform", category: "IaC" },
+      { value: "pulumi", label: "Pulumi", category: "IaC" },
+      { value: "packer", label: "Packer", category: "IaC" },
+      { value: "ansible", label: "Ansible", category: "IaC" },
+      { value: "gh", label: "GitHub CLI", category: "VCS" },
+      { value: "glab", label: "GitLab CLI", category: "VCS" },
+      { value: "fzf", label: "fzf", category: "Utility" },
+      { value: "httpie", label: "HTTPie", category: "Utility" },
+      { value: "jq", label: "jq", category: "Utility" },
+      { value: "yq", label: "yq", category: "Utility" },
+    ];
+
+    // Show current selection
+    if (existingTools.length > 0) {
+      this.prompts.write("\nCurrently installed tools:\n");
+      existingTools.forEach(tool => {
+        const info = TOOL_OPTIONS.find(o => o.value === tool);
+        this.prompts.write(`  ✓ ${info?.label ?? tool}${info ? ` (${info.category})` : ""}\n`);
+      });
+    } else {
+      this.prompts.write("\nNo additional tools currently installed.\n");
+    }
+
+    const choice = await this.chooseNumber(
+      "\nTool management:\n  1. Keep current tools\n  2. Modify tool selection\n\nOption [1]: ",
+      2,
+      1
+    );
+
+    if (choice === 1) {
+      return existingTools;
+    }
+
+    // User wants to modify - run full tool selection
+    this.prompts.write("\n--- Modify Tool Selection ---\n");
+    return this.collectPreinstalledTools();
+  }
 }
