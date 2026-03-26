@@ -189,6 +189,16 @@ export class TemplateWriter {
     await copyFile(entrypointTemplate, join(buildDir, "entrypoint.sh"));
     await copyFile(supervisorTemplate, join(buildDir, "gateway-supervisor.sh"));
     await copyFile(sitecustomizeTemplate, join(buildDir, "sitecustomize.py"));
+
+    // Copy additional files needed for update builds
+    if (isUpdate) {
+      const patchWhatsappTemplate = join(templateDir, "patch-whatsapp-bridge.py");
+      try {
+        await copyFile(patchWhatsappTemplate, join(buildDir, "patch-whatsapp-bridge.py"));
+      } catch {
+        // Patch file is optional for updates
+      }
+    }
   }
 
   private replaceAll(template: string, replacements: Record<string, string>): string {
