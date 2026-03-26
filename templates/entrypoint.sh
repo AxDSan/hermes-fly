@@ -7,17 +7,96 @@ ln -sfn /opt/hermes/node /root/.hermes/node
 mkdir -p /root/.hermes/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,runtime,whatsapp/session,cli_configs}
 
 # Persistent CLI configs — survive deploys/restarts on Fly.io
+PERSISTENT_DIR="/root/.hermes/cli_configs"
+mkdir -p "$PERSISTENT_DIR"
+
+# JavaScript/TypeScript Runtimes & Package Managers
+# Bun
+mkdir -p "$PERSISTENT_DIR/.bun"
+ln -sfn "$PERSISTENT_DIR/.bun" ~/.bun 2>/dev/null || true
+
+# Deno
+mkdir -p "$PERSISTENT_DIR/.deno"
+ln -sfn "$PERSISTENT_DIR/.deno" ~/.deno 2>/dev/null || true
+
+# Yarn
+mkdir -p "$PERSISTENT_DIR/.yarn"
+ln -sfn "$PERSISTENT_DIR/.yarn" ~/.yarn 2>/dev/null || true
+
+# pnpm
+mkdir -p "$PERSISTENT_DIR/.local/share/pnpm"
+ln -sfn "$PERSISTENT_DIR/.local/share/pnpm" ~/.local/share/pnpm 2>/dev/null || true
+mkdir -p "$PERSISTENT_DIR/.pnpm-store"
+ln -sfn "$PERSISTENT_DIR/.pnpm-store" ~/.pnpm-store 2>/dev/null || true
+
+# Deployment Platforms
 # Vercel (legacy ~/.vercel and modern XDG path)
-mkdir -p /root/.hermes/cli_configs/.vercel
-ln -sfn /root/.hermes/cli_configs/.vercel ~/.vercel 2>/dev/null || true
-mkdir -p /root/.hermes/cli_configs/.local/share/com.vercel.cli
-ln -sfn /root/.hermes/cli_configs/.local/share/com.vercel.cli ~/.local/share/com.vercel.cli 2>/dev/null || true
+mkdir -p "$PERSISTENT_DIR/.vercel"
+ln -sfn "$PERSISTENT_DIR/.vercel" ~/.vercel 2>/dev/null || true
+mkdir -p "$PERSISTENT_DIR/.local/share/com.vercel.cli"
+ln -sfn "$PERSISTENT_DIR/.local/share/com.vercel.cli" ~/.local/share/com.vercel.cli 2>/dev/null || true
 
 # Railway (covers both old ~/.railway and new ~/.config/railway)
-mkdir -p /root/.hermes/cli_configs/.railway
-ln -sfn /root/.hermes/cli_configs/.railway ~/.railway 2>/dev/null || true
-mkdir -p /root/.hermes/cli_configs/.config/railway
-ln -sfn /root/.hermes/cli_configs/.config/railway ~/.config/railway 2>/dev/null || true
+mkdir -p "$PERSISTENT_DIR/.railway"
+ln -sfn "$PERSISTENT_DIR/.railway" ~/.railway 2>/dev/null || true
+mkdir -p "$PERSISTENT_DIR/.config/railway"
+ln -sfn "$PERSISTENT_DIR/.config/railway" ~/.config/railway 2>/dev/null || true
+
+# Netlify
+mkdir -p "$PERSISTENT_DIR/.netlify"
+ln -sfn "$PERSISTENT_DIR/.netlify" ~/.netlify 2>/dev/null || true
+mkdir -p "$PERSISTENT_DIR/.config/netlify"
+ln -sfn "$PERSISTENT_DIR/.config/netlify" ~/.config/netlify 2>/dev/null || true
+
+# Cloud CLIs
+# AWS CLI
+mkdir -p "$PERSISTENT_DIR/.aws"
+ln -sfn "$PERSISTENT_DIR/.aws" ~/.aws 2>/dev/null || true
+
+# Google Cloud SDK
+mkdir -p "$PERSISTENT_DIR/.config/gcloud"
+ln -sfn "$PERSISTENT_DIR/.config/gcloud" ~/.config/gcloud 2>/dev/null || true
+
+# Azure CLI
+mkdir -p "$PERSISTENT_DIR/.azure"
+ln -sfn "$PERSISTENT_DIR/.azure" ~/.azure 2>/dev/null || true
+
+# Container & Kubernetes
+# Docker
+mkdir -p "$PERSISTENT_DIR/.docker"
+ln -sfn "$PERSISTENT_DIR/.docker" ~/.docker 2>/dev/null || true
+
+# kubectl (kubeconfig)
+mkdir -p "$PERSISTENT_DIR/.kube"
+ln -sfn "$PERSISTENT_DIR/.kube" ~/.kube 2>/dev/null || true
+
+# Helm
+mkdir -p "$PERSISTENT_DIR/.config/helm"
+ln -sfn "$PERSISTENT_DIR/.config/helm" ~/.config/helm 2>/dev/null || true
+mkdir -p "$PERSISTENT_DIR/.cache/helm"
+ln -sfn "$PERSISTENT_DIR/.cache/helm" ~/.cache/helm 2>/dev/null || true
+
+# Infrastructure as Code
+# Terraform
+mkdir -p "$PERSISTENT_DIR/.terraform.d"
+ln -sfn "$PERSISTENT_DIR/.terraform.d" ~/.terraform.d 2>/dev/null || true
+
+# Pulumi
+mkdir -p "$PERSISTENT_DIR/.pulumi"
+ln -sfn "$PERSISTENT_DIR/.pulumi" ~/.pulumi 2>/dev/null || true
+
+# Packer
+mkdir -p "$PERSISTENT_DIR/.packer.d"
+ln -sfn "$PERSISTENT_DIR/.packer.d" ~/.packer.d 2>/dev/null || true
+
+# Version Control
+# GitHub CLI
+mkdir -p "$PERSISTENT_DIR/.config/gh"
+ln -sfn "$PERSISTENT_DIR/.config/gh" ~/.config/gh 2>/dev/null || true
+
+# GitLab CLI
+mkdir -p "$PERSISTENT_DIR/.config/glab-cli"
+ln -sfn "$PERSISTENT_DIR/.config/glab-cli" ~/.config/glab-cli 2>/dev/null || true
 # Seed default config files on first deploy (never overwrite user customizations)
 for f in .env config.yaml SOUL.md; do
   if [[ ! -f /root/.hermes/$f ]] && [[ -f /opt/hermes/defaults/$f ]]; then

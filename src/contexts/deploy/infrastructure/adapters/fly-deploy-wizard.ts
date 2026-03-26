@@ -1754,17 +1754,54 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     const TOOL_OPTIONS = [
+      // JavaScript/TypeScript Runtimes
+      { value: "bun", label: "Bun", description: "Fast JavaScript runtime, bundler, and package manager" },
+      { value: "deno", label: "Deno", description: "Secure-by-default JavaScript/TypeScript runtime" },
+
+      // Package Managers
+      { value: "pnpm", label: "pnpm", description: "Fast, disk-efficient package manager" },
+      { value: "yarn", label: "Yarn", description: "Modern package manager with workspaces" },
+
+      // Deployment Platforms
       { value: "vercel", label: "Vercel CLI", description: "Deploy to Vercel (vercel.com)" },
       { value: "railway", label: "Railway CLI", description: "Deploy to Railway (railway.app)" },
+      { value: "netlify", label: "Netlify CLI", description: "Deploy to Netlify (netlify.com)" },
+
+      // Cloud CLIs
+      { value: "awscli", label: "AWS CLI", description: "Amazon Web Services command line" },
+      { value: "gcloud", label: "Google Cloud SDK", description: "Google Cloud Platform tools" },
+      { value: "azurecli", label: "Azure CLI", description: "Microsoft Azure command line" },
+
+      // Container & Kubernetes
+      { value: "docker", label: "Docker CLI", description: "Container management" },
+      { value: "kubectl", label: "kubectl", description: "Kubernetes cluster management" },
+      { value: "helm", label: "Helm", description: "Kubernetes package manager" },
+
+      // Infrastructure as Code
+      { value: "terraform", label: "Terraform", description: "Infrastructure as code by HashiCorp" },
+      { value: "pulumi", label: "Pulumi", description: "Infrastructure as code in TypeScript/Python/Go" },
+      { value: "packer", label: "Packer", description: "Machine image builder by HashiCorp" },
+      { value: "ansible", label: "Ansible", description: "Automation and configuration management" },
+
+      // Version Control
+      { value: "gh", label: "GitHub CLI", description: "GitHub command line tool" },
+      { value: "glab", label: "GitLab CLI", description: "GitLab command line tool" },
+
+      // Utilities
+      { value: "fzf", label: "fzf", description: "Command-line fuzzy finder" },
+      { value: "httpie", label: "HTTPie", description: "User-friendly HTTP client" },
+      { value: "jq", label: "jq", description: "JSON processor" },
+      { value: "yq", label: "yq", description: "YAML/XML/TOML processor" },
     ];
 
     const selected = await this.selectManyFromChoiceSection({
       title: "Pre-installed Tools",
-      question: "Which deployment CLIs should be pre-installed?",
+      question: "Which CLI tools should be pre-installed?",
       details: [
         "These tools will be available inside your Fly machine.",
+        "Select runtimes, package managers, cloud CLIs, and utilities.",
         "Auth data persists across deploys via symlinks.",
-        "You can always install more later with npm/pnpm.",
+        "You can always install more later with apt/npm.",
       ],
       options: TOOL_OPTIONS.map((option) => ({
         value: option.value,

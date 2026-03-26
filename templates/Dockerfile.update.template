@@ -54,8 +54,29 @@ RUN /opt/hermes/hermes-agent/venv/bin/python /tmp/hermes-fly-patch-whatsapp-brid
 RUN chmod +x /entrypoint.sh /gateway-supervisor.sh
 
 # Install pre-selected CLI tools
+{{INSTALL_BUN_CMD}}
+{{INSTALL_DENO_CMD}}
+{{INSTALL_PNPM_CMD}}
+{{INSTALL_YARN_CMD}}
 {{INSTALL_VERCEL_CMD}}
 {{INSTALL_RAILWAY_CMD}}
+{{INSTALL_NETLIFY_CMD}}
+{{INSTALL_AWSCLI_CMD}}
+{{INSTALL_GCLOUD_CMD}}
+{{INSTALL_AZURECLI_CMD}}
+{{INSTALL_DOCKER_CMD}}
+{{INSTALL_KUBECTL_CMD}}
+{{INSTALL_HELM_CMD}}
+{{INSTALL_TERRAFORM_CMD}}
+{{INSTALL_PULUMI_CMD}}
+{{INSTALL_PACKER_CMD}}
+{{INSTALL_ANSIBLE_CMD}}
+{{INSTALL_GH_CMD}}
+{{INSTALL_GLAB_CMD}}
+{{INSTALL_FZF_CMD}}
+{{INSTALL_HTTPIE_CMD}}
+{{INSTALL_JQ_CMD}}
+{{INSTALL_YQ_CMD}}
 
 WORKDIR /root/.hermes
 ENTRYPOINT ["/entrypoint.sh"]
