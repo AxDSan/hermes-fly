@@ -148,7 +148,8 @@ export class TemplateWriter {
       ? "RUN apt-get update && apt-get install -y --no-install-recommends jq"
       : "# jq: not selected";
     const installYq = tools.has("yq")
-      ? "RUN wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && chmod +x /usr/local/bin/yq"
+      ? `RUN curl -fsSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && \\
+    chmod +x /usr/local/bin/yq`
       : "# yq: not selected";
 
     const dockerfile = this.replaceAll(dockerfileTemplate, {
