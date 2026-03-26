@@ -1794,7 +1794,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       { value: "yq", label: "yq", description: "YAML/XML/TOML processor" },
     ];
 
-    const selected = await this.selectManyFromChoiceSection({
+    const selected = await this.selectManyFromChoiceSection<string>({
       title: "Pre-installed Tools",
       question: "Which CLI tools should be pre-installed?",
       details: [
@@ -1808,7 +1808,8 @@ export class FlyDeployWizard implements DeployWizardPort {
         label: option.label,
         description: option.description,
       })),
-      defaultSelectedIndices: [],
+      defaultIndex: 0,
+      initialSelectedIndices: [],
       fallbackPrompt: "Select tools (comma-separated numbers, or 'none'): ",
     });
 
