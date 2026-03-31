@@ -6481,4 +6481,15 @@ export class FlyDeployWizard implements DeployWizardPort {
     this.prompts.write("\n--- Modify Tool Selection ---\n");
     return this.collectPreinstalledTools();
   }
+
+  async updateToolSecret(appName: string, tools: string[]): Promise<{ ok: boolean; error?: string }> {
+    const secrets: Record<string, string> = {};
+    if (tools.length > 0) {
+      secrets.HERMES_PREINSTALLED_TOOLS = tools.join(",");
+    } else {
+      // If no tools, we still set an empty string to clear any previous value
+      secrets.HERMES_PREINSTALLED_TOOLS = "";
+    }
+    return this.runner.setSecrets(appName, secrets);
+  }
 }

@@ -3,6 +3,18 @@ import type { DeployWizardPort, ExistingAppConfig } from "../ports/deploy-wizard
 
 const HERMES_AGENT_DEFAULT_REF = "8eefbef91cd715cfe410bba8c13cfab4eb3040df";
 const HERMES_AGENT_EDGE_REF = "main";
+const HERMES_AGENT_REPO = "NousResearch/hermes-agent";
+
+interface GitHubRelease {
+  tag_name: string;
+  target_commitish: string;
+  name: string;
+  published_at: string;
+}
+
+// Cache for latest release to avoid multiple API calls
+let latestReleaseCache: { ref: string; tag: string; fetchedAt: number } | null = null;
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 export type UpdateResult =
   | { kind: "ok" }
@@ -63,13 +75,21 @@ export class UpdateDeploymentUseCase {
 
     // Phase 3: Fetch existing config and prompt for choice
     stdout.write(`Updating '${config.appName}' to ${config.channel} channel...\n`);
-    const hermesRef = this.resolveHermesRef(config.channel);
+    const hermesRef = await this.resolveHermesRef(config.channel, stderr);
 
     // Fetch preinstalledTools from deployed manifest
     const manifest = await this.runner.fetchDeployedManifest(config.appName);
     const existingTools = manifest?.preinstalledTools ?? [];
+    
+    // Show debug info if there were issues fetching the manifest
+    if (manifest?.error) {
+      stderr.write(`[warn] Could not read installed tools: ${manifest.error}\n`);
+    }
+    
     if (existingTools.length > 0) {
       stdout.write(`  Currently installed tools: ${existingTools.join(", ")}\n`);
+    } else if (!manifest?.error) {
+      stdout.write(`  No additional tools currently installed.\n`);
     }
 
     // Allow modifying tools during update
@@ -136,6 +156,16 @@ export class UpdateDeploymentUseCase {
       return { kind: "failed", error: updateResult.error ?? "update failed" };
     }
 
+    // Phase 5.5: Update the tools secret so future updates remember this selection
+    stdout.write(`Persisting tool selection...\n`);
+    const secretResult = await this.wizard.updateToolSecret(config.appName, preinstalledTools);
+    if (!secretResult.ok) {
+      stderr.write(`[warn] Could not save tool selection for future updates: ${secretResult.error ?? "unknown error"}\n`);
+      stderr.write(`[warn] Your tools are installed, but future updates may not remember this selection.\n`);
+    } else if (preinstalledTools.length > 0) {
+      stdout.write(`  Tool selection saved: ${preinstalledTools.join(", ")}\n`);
+    }
+
     // Phase 6: Post-update check
     const checkResult = await this.wizard.postDeployCheck(config.appName);
     if (!checkResult.ok) {
@@ -145,7 +175,7 @@ export class UpdateDeploymentUseCase {
 
     stdout.write(`\n✓ '${config.appName}' updated successfully to ${config.channel} channel.\n`);
     stdout.write(`  Channel: ${config.channel}\n`);
-    stdout.write(`  Ref: ${hermesRef.slice(0, 8)}\n`);
+    stdout.write(`  Ref: ${hermesRef.slice(0, 8)}...${hermesRef.slice(-8)}\n`);
     stdout.write(`\nNext steps:\n`);
     stdout.write(`  - Check status:  hermes-fly status -a ${config.appName}\n`);
     stdout.write(`  - View logs:     hermes-fly logs -a ${config.appName}\n`);
@@ -154,7 +184,10 @@ export class UpdateDeploymentUseCase {
     return { kind: "ok" };
   }
 
-  private resolveHermesRef(channel: "stable" | "preview" | "edge"): string {
+  private async resolveHermesRef(
+    channel: "stable" | "preview" | "edge",
+    stderr: { write: (s: string) => void }
+  ): Promise<string> {
     // Honor HERMES_AGENT_REF override for emergency rollback/pinned ref
     const override = (this.env.HERMES_AGENT_REF ?? "").trim();
     if (override.length > 0) {
@@ -165,9 +198,50 @@ export class UpdateDeploymentUseCase {
       case "edge":
         return HERMES_AGENT_EDGE_REF;
       case "preview":
-        return HERMES_AGENT_DEFAULT_REF;
+        return await this.fetchLatestHermesRelease(stderr);
+      case "stable":
       default:
-        return HERMES_AGENT_DEFAULT_REF;
+        return await this.fetchLatestHermesRelease(stderr);
+    }
+  }
+
+  private async fetchLatestHermesRelease(
+    stderr: { write: (s: string) => void }
+  ): Promise<string> {
+    // Check cache first
+    if (latestReleaseCache && Date.now() - latestReleaseCache.fetchedAt < CACHE_TTL_MS) {
+      return latestReleaseCache.ref;
+    }
+
+    try {
+      const apiUrl = `https://api.github.com/repos/${HERMES_AGENT_REPO}/releases/latest`;
+      const response = await fetch(apiUrl, {
+        headers: {
+          "Accept": "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          // Add a user-agent to be polite to GitHub API
+          "User-Agent": "hermes-fly-cli",
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "unknown error");
+        throw new Error(`GitHub API returned ${response.status}: ${errorText}`);
+      }
+
+      const release: GitHubRelease = await response.json();
+      const ref = release.target_commitish;
+      const tag = release.tag_name;
+
+      // Cache the result
+      latestReleaseCache = { ref, tag, fetchedAt: Date.now() };
+
+      return ref;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      stderr.write(`[warn] Failed to fetch latest release from GitHub: ${message}\n`);
+      stderr.write(`[warn] Falling back to hardcoded ref: ${HERMES_AGENT_DEFAULT_REF.slice(0, 8)}...\n`);
+      return HERMES_AGENT_DEFAULT_REF;
     }
   }
 }

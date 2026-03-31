@@ -49,29 +49,58 @@ export class FlyUpdateRunner implements UpdateRunnerPort {
     return { ok: true };
   }
 
-  async fetchDeployedManifest(appName: string): Promise<{ preinstalledTools?: string[] } | null> {
+  async fetchDeployedManifest(appName: string): Promise<{ preinstalledTools?: string[]; raw?: unknown; error?: string } | null> {
     // Read deploy-manifest.json from the running machine via SSH
     const result = await this.runner.run(
       "fly",
       ["ssh", "console", "-a", appName, "-C", "cat /root/.hermes/deploy-manifest.json 2>/dev/null || echo '{}'"],
       { env: this.env }
     );
-    if (result.exitCode !== 0 || !result.stdout) {
-      return null;
+    
+    // SSH command failed - machine might be down or not ready
+    if (result.exitCode !== 0) {
+      return { 
+        error: `SSH failed (exit ${result.exitCode}): ${result.stderr || "unknown error"}`,
+        preinstalledTools: [] 
+      };
     }
+    
+    if (!result.stdout || result.stdout.trim() === "{}") {
+      return { 
+        error: "Manifest file not found on remote machine (entrypoint.sh may not have run yet)",
+        preinstalledTools: [] 
+      };
+    }
+    
     try {
-      const manifest = JSON.parse(result.stdout) as { preinstalled_tools?: string; preinstalledTools?: string[] };
+      const manifest = JSON.parse(result.stdout) as { 
+        preinstalled_tools?: string; 
+        preinstalledTools?: string[];
+        [key: string]: unknown;
+      };
+      
       // Handle both snake_case from JSON and camelCase
       const toolsStr = manifest.preinstalled_tools;
       if (toolsStr && typeof toolsStr === "string" && toolsStr.length > 0) {
-        return { preinstalledTools: toolsStr.split(",").filter(Boolean) };
+        const tools = toolsStr.split(",").filter(Boolean);
+        return { preinstalledTools: tools, raw: manifest };
       }
+      
       if (manifest.preinstalledTools && Array.isArray(manifest.preinstalledTools)) {
-        return { preinstalledTools: manifest.preinstalledTools };
+        return { preinstalledTools: manifest.preinstalledTools, raw: manifest };
       }
-      return {};
-    } catch {
-      return null;
+      
+      // Manifest exists but no tools field - return empty with debug info
+      return { 
+        preinstalledTools: [], 
+        raw: manifest,
+        error: `Manifest found but 'preinstalled_tools' is empty. Fields: ${Object.keys(manifest).join(", ")}`
+      };
+    } catch (parseError) {
+      return { 
+        error: `Failed to parse manifest: ${parseError instanceof Error ? parseError.message : String(parseError)}. Raw: ${result.stdout.slice(0, 200)}`,
+        preinstalledTools: [] 
+      };
     }
   }
 }

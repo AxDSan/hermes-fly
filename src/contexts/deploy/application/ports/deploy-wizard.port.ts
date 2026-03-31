@@ -80,4 +80,9 @@ export interface DeployWizardPort {
   chooseSuccessfulDeploymentAction(config: DeployConfig): Promise<SuccessfulDeploymentAction>;
   showTelegramBotDeletionGuidance(config: DeployConfig): Promise<void>;
   promptUpdateToolsChoice(existingTools: string[]): Promise<string[]>;
+  /**
+   * Update the HERMES_PREINSTALLED_TOOLS secret on an existing deployment.
+   * Used during updates to persist tool selection for future updates.
+   */
+  updateToolSecret(appName: string, tools: string[]): Promise<{ ok: boolean; error?: string }>;
 }
