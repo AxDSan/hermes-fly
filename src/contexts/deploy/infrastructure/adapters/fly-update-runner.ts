@@ -51,9 +51,10 @@ export class FlyUpdateRunner implements UpdateRunnerPort {
 
   async fetchDeployedManifest(appName: string): Promise<{ preinstalledTools?: string[]; raw?: unknown; error?: string } | null> {
     // Read deploy-manifest.json from the running machine via SSH
+    // Use a shell -c command to properly handle the fallback
     const result = await this.runner.run(
       "fly",
-      ["ssh", "console", "-a", appName, "-C", "cat /root/.hermes/deploy-manifest.json 2>/dev/null || echo '{}'"],
+      ["ssh", "console", "-a", appName, "-C", "/bin/sh -c 'cat /root/.hermes/deploy-manifest.json 2>/dev/null || echo {}'"],
       { env: this.env }
     );
     
@@ -65,7 +66,7 @@ export class FlyUpdateRunner implements UpdateRunnerPort {
       };
     }
     
-    if (!result.stdout || result.stdout.trim() === "{}") {
+    if (!result.stdout || result.stdout.trim() === "{}" || result.stdout.trim() === "") {
       return { 
         error: "Manifest file not found on remote machine (entrypoint.sh may not have run yet)",
         preinstalledTools: [] 
