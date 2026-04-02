@@ -127,6 +127,34 @@ if [[ ! -f /root/.hermes/.tools-installed ]]; then
   touch /root/.hermes/.tools-installed
 fi
 
+# Auto-install tools from HERMES_NPM_TOOLS and HERMES_PIP_TOOLS env vars
+# Usage: fly secrets set HERMES_NPM_TOOLS="@paperclipai/cli,http-server"
+if [[ -n "${HERMES_NPM_TOOLS:-}" ]]; then
+  echo "[hermes] Auto-installing npm packages: $HERMES_NPM_TOOLS"
+  IFS=',' read -ra NPM_PKGS <<< "$HERMES_NPM_TOOLS"
+  for pkg in "${NPM_PKGS[@]}"; do
+    pkg=$(echo "$pkg" | xargs)  # trim whitespace
+    if [[ -n "$pkg" && ! -d "$PERSISTENT_TOOLS_DIR/lib/node_modules/$pkg" ]]; then
+      echo "[hermes]   Installing npm: $pkg"
+      npm install -g "$pkg" 2>&1 | tail -1
+    fi
+  done
+fi
+
+if [[ -n "${HERMES_PIP_TOOLS:-}" ]]; then
+  echo "[hermes] Auto-installing pip packages: $HERMES_PIP_TOOLS"
+  IFS=',' read -ra PIP_PKGS <<< "$HERMES_PIP_TOOLS"
+  for pkg in "${PIP_PKGS[@]}"; do
+    pkg=$(echo "$pkg" | xargs)  # trim whitespace
+    if [[ -n "$pkg" ]]; then
+      pip show "$pkg" 2>/dev/null || {
+        echo "[hermes]   Installing pip: $pkg"
+        pip install --user "$pkg" 2>&1 | tail -1
+      }
+    fi
+  done
+fi
+
 # Seed default config files on first deploy (never overwrite user customizations)
 for f in .env config.yaml SOUL.md; do
   if [[ ! -f /root/.hermes/$f ]] && [[ -f /opt/hermes/defaults/$f ]]; then
@@ -249,7 +277,8 @@ for var in OPENROUTER_API_KEY GLM_API_KEY GLM_BASE_URL LLM_MODEL LLM_BASE_URL LL
   TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_USERS DISCORD_BOT_TOKEN DISCORD_ALLOWED_USERS \
   SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_ALLOWED_USERS \
   WHATSAPP_ENABLED WHATSAPP_MODE WHATSAPP_ALLOWED_USERS WHATSAPP_HOME_CHANNEL WHATSAPP_HOME_CONTACT \
-  HERMES_APP_NAME GATEWAY_ALLOW_ALL_USERS TELEGRAM_HOME_CHANNEL; do
+  HERMES_APP_NAME GATEWAY_ALLOW_ALL_USERS TELEGRAM_HOME_CHANNEL \
+  HERMES_NPM_TOOLS HERMES_PIP_TOOLS; do
   val="${!var:-}"
   if [[ -n "$val" ]]; then
     sed -i "/^${var}=/d" /root/.hermes/.env
