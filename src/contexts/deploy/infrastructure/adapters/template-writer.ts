@@ -152,6 +152,14 @@ export class TemplateWriter {
     chmod +x /usr/local/bin/yq`
       : "# yq: not selected";
 
+    // Networking
+    const installTailscale = tools.has("tailscale")
+      ? `RUN apt-get update && apt-get install -y --no-install-recommends curl gnupg && \\
+    curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg | tee /usr/share/keyrings/tailscale-archive-keyring.gpg && \\
+    curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list | tee /etc/apt/sources.list.d/tailscale.list && \\
+    apt-get update && apt-get install -y tailscale`
+      : "# Tailscale: not selected";
+
     const dockerfile = this.replaceAll(dockerfileTemplate, {
       HERMES_VERSION: config.hermesRef,
       HERMES_CHANNEL: config.channel,
@@ -179,6 +187,7 @@ export class TemplateWriter {
       INSTALL_HTTPIE_CMD: installHttpie,
       INSTALL_JQ_CMD: installJq,
       INSTALL_YQ_CMD: installYq,
+      INSTALL_TAILSCALE_CMD: installTailscale,
     });
     await writeFile(join(buildDir, "Dockerfile"), dockerfile, "utf8");
 

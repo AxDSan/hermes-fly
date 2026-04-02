@@ -97,6 +97,11 @@ ln -sfn "$PERSISTENT_DIR/.config/gh" ~/.config/gh 2>/dev/null || true
 # GitLab CLI
 mkdir -p "$PERSISTENT_DIR/.config/glab-cli"
 ln -sfn "$PERSISTENT_DIR/.config/glab-cli" ~/.config/glab-cli 2>/dev/null || true
+
+# Networking
+# Tailscale
+mkdir -p "$PERSISTENT_DIR/.tailscale"
+ln -sfn "$PERSISTENT_DIR/.tailscale" ~/.tailscale 2>/dev/null || true
 # Seed default config files on first deploy (never overwrite user customizations)
 for f in .env config.yaml SOUL.md; do
   if [[ ! -f /root/.hermes/$f ]] && [[ -f /opt/hermes/defaults/$f ]]; then

@@ -1792,6 +1792,9 @@ export class FlyDeployWizard implements DeployWizardPort {
       { value: "httpie", label: "HTTPie", description: "User-friendly HTTP client" },
       { value: "jq", label: "jq", description: "JSON processor" },
       { value: "yq", label: "yq", description: "YAML/XML/TOML processor" },
+
+      // Networking
+      { value: "tailscale", label: "Tailscale", description: "Zero-config VPN and remote access" },
     ];
 
     const selected = await this.selectManyFromChoiceSection<string>({

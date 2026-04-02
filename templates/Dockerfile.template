@@ -89,6 +89,7 @@ RUN chmod +x /entrypoint.sh /gateway-supervisor.sh
 {{INSTALL_HTTPIE_CMD}}
 {{INSTALL_JQ_CMD}}
 {{INSTALL_YQ_CMD}}
+{{INSTALL_TAILSCALE_CMD}}
 
 WORKDIR /root/.hermes
 ENTRYPOINT ["/entrypoint.sh"]
