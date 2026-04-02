@@ -445,6 +445,9 @@ if command -v tailscaled >/dev/null 2>&1; then
     chmod 0660 /dev/net/tun 2>/dev/null || true
   fi
 
+  # Create tailscaled socket directory
+  mkdir -p /var/run/tailscale
+
   # Start tailscaled in background
   echo "[hermes] Starting Tailscale daemon..."
   tailscaled --state=/root/.hermes/.tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock &
