@@ -31,6 +31,13 @@ ln -sfn "$PERSISTENT_DIR/.local/share/pnpm" ~/.local/share/pnpm 2>/dev/null || t
 mkdir -p "$PERSISTENT_DIR/.pnpm-store"
 ln -sfn "$PERSISTENT_DIR/.pnpm-store" ~/.pnpm-store 2>/dev/null || true
 
+# uv (Python package manager)
+mkdir -p "$PERSISTENT_DIR/.uv"
+ln -sfn "$PERSISTENT_DIR/.uv" ~/.uv 2>/dev/null || true
+export UV_INSTALL_DIR="$PERSISTENT_DIR/.uv"
+export UV_CACHE_DIR="$PERSISTENT_DIR/.uv/cache"
+export PATH="$UV_INSTALL_DIR/bin:$PATH"
+
 # Deployment Platforms
 # Vercel (legacy ~/.vercel and modern XDG path)
 mkdir -p "$PERSISTENT_DIR/.vercel"
@@ -129,9 +136,10 @@ if [[ ! -f /root/.hermes/.tools-installed ]]; then
   touch /root/.hermes/.tools-installed
 fi
 
-# Auto-install tools from HERMES_NPM_TOOLS, HERMES_BUN_TOOLS and HERMES_PIP_TOOLS env vars
+# Auto-install tools from HERMES_NPM_TOOLS, HERMES_BUN_TOOLS, HERMES_UV_TOOLS and HERMES_PIP_TOOLS env vars
 # Usage: fly secrets set HERMES_NPM_TOOLS="@paperclipai/cli,http-server"
 # Usage: fly secrets set HERMES_BUN_TOOLS="@paperclipai/cli,typescript"
+# Usage: fly secrets set HERMES_UV_TOOLS="ruff,black,mypy"
 if [[ -n "${HERMES_NPM_TOOLS:-}" ]]; then
   echo "[hermes] Auto-installing npm packages: $HERMES_NPM_TOOLS"
   IFS=',' read -ra NPM_PKGS <<< "$HERMES_NPM_TOOLS"
@@ -152,6 +160,20 @@ if [[ -n "${HERMES_BUN_TOOLS:-}" ]]; then
     if [[ -n "$pkg" && ! -d "$PERSISTENT_DIR/.bun/install/global/$pkg" ]]; then
       echo "[hermes]   Installing bun: $pkg"
       bun install -g "$pkg" 2>&1 | tail -1
+    fi
+  done
+fi
+
+if [[ -n "${HERMES_UV_TOOLS:-}" ]]; then
+  echo "[hermes] Auto-installing uv packages: $HERMES_UV_TOOLS"
+  IFS=',' read -ra UV_PKGS <<< "$HERMES_UV_TOOLS"
+  for pkg in "${UV_PKGS[@]}"; do
+    pkg=$(echo "$pkg" | xargs)  # trim whitespace
+    if [[ -n "$pkg" ]]; then
+      uv tool list 2>/dev/null | grep -q "^$pkg " || {
+        echo "[hermes]   Installing uv: $pkg"
+        uv tool install "$pkg" 2>&1 | tail -1
+      }
     fi
   done
 fi
@@ -293,7 +315,7 @@ for var in OPENROUTER_API_KEY GLM_API_KEY GLM_BASE_URL LLM_MODEL LLM_BASE_URL LL
   SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_ALLOWED_USERS \
   WHATSAPP_ENABLED WHATSAPP_MODE WHATSAPP_ALLOWED_USERS WHATSAPP_HOME_CHANNEL WHATSAPP_HOME_CONTACT \
   HERMES_APP_NAME GATEWAY_ALLOW_ALL_USERS TELEGRAM_HOME_CHANNEL \
-  HERMES_NPM_TOOLS HERMES_BUN_TOOLS HERMES_PIP_TOOLS; do
+  HERMES_NPM_TOOLS HERMES_BUN_TOOLS HERMES_UV_TOOLS HERMES_PIP_TOOLS; do
   val="${!var:-}"
   if [[ -n "$val" ]]; then
     sed -i "/^${var}=/d" /root/.hermes/.env
@@ -303,9 +325,11 @@ done
 
 # Ensure persistent tools PATH is in .env for interactive shells
 if ! grep -q "PATH.*\.hermes/tools/bin" /root/.hermes/.env 2>/dev/null; then
-  echo "export PATH=\"/root/.hermes/tools/bin:/root/.hermes/cli_configs/.bun/bin:\$PATH\"" >>/root/.hermes/.env
+  echo "export PATH=\"/root/.hermes/tools/bin:/root/.hermes/cli_configs/.bun/bin:/root/.hermes/cli_configs/.uv/bin:\$PATH\"" >>/root/.hermes/.env
   echo "export NPM_CONFIG_PREFIX=\"/root/.hermes/tools\"" >>/root/.hermes/.env
   echo "export BUN_INSTALL=\"/root/.hermes/cli_configs/.bun\"" >>/root/.hermes/.env
+  echo "export UV_INSTALL_DIR=\"/root/.hermes/cli_configs/.uv\"" >>/root/.hermes/.env
+  echo "export UV_CACHE_DIR=\"/root/.hermes/cli_configs/.uv/cache\"" >>/root/.hermes/.env
   echo "export PYTHONUSERBASE=\"/root/.hermes/tools\"" >>/root/.hermes/.env
 fi
 # Auto-configure Telegram bot description on boot (never block startup)
