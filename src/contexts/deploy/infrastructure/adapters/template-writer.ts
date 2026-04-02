@@ -29,7 +29,7 @@ export class TemplateWriter {
     const supervisorTemplate = join(templateDir, "gateway-supervisor.sh");
     const sitecustomizeTemplate = join(templateDir, "sitecustomize.py");
     const compatPolicy = await this.readCompatibilityPolicyVersion();
-    const vmMemory = config.vmMemoryOverride ?? this.resolveVmMemory(config.vmSize);
+    const vmMemory = String(config.vmMemoryOverride ?? this.resolveVmMemory(config.vmSize));
 
     const preinstalledTools = config.preinstalledTools ?? [];
     const tools = new Set(preinstalledTools);

@@ -1740,27 +1740,42 @@ export class FlyDeployWizard implements DeployWizardPort {
     }
 
     const defaultMemory = this.resolveVmMemory(vmSize);
-    const wantCustom = await this.confirm({
-      message: `Use default ${defaultMemory}MB RAM for ${vmSize}?`,
-      defaultValue: true,
-    });
+    const wantCustom = await this.confirmYesNo(
+      `Use default ${defaultMemory}MB RAM for ${vmSize}?`,
+      true
+    );
 
     if (wantCustom) {
       return undefined;
     }
 
-    const customMemory = await this.promptForInput({
-      message: "Custom RAM in MB (e.g., 1024, 2048, 4096):",
-      validate: (input) => {
-        const num = parseInt(input, 10);
-        if (isNaN(num) || num < 256) {
-          return "Please enter a valid number (minimum 256MB)";
-        }
-        return true;
-      },
-    });
+    let customMemory: string | undefined;
+    while (customMemory === undefined) {
+      const answer = await this.prompts.ask("Custom RAM in MB (e.g., 1024, 2048, 4096): ");
+      const num = parseInt(answer, 10);
+      if (isNaN(num) || num < 256) {
+        this.prompts.write("Please enter a valid number (minimum 256MB)\n");
+      } else {
+        customMemory = answer;
+      }
+    }
 
     return parseInt(customMemory, 10);
+  }
+
+  private resolveVmMemory(vmSize: string): string {
+    const DEFAULT_VM_MEMORY_BY_SIZE: Record<string, string> = {
+      "shared-cpu-1x": "256",
+      "shared-cpu-2x": "512",
+      "shared-cpu-4x": "2048",
+      "shared-cpu-6x": "4096",
+      "shared-cpu-8x": "8192",
+      "performance-1x": "2048",
+      "performance-2x": "4096",
+      "performance-4x": "8192",
+      "performance-8x": "16384"
+    };
+    return DEFAULT_VM_MEMORY_BY_SIZE[vmSize] ?? "512";
   }
 
   private async collectVolumeSize(envValue: string | undefined): Promise<number> {
