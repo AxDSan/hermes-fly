@@ -119,7 +119,7 @@ mkdir -p "$PERSISTENT_TOOLS_DIR/bin" "$PERSISTENT_TOOLS_DIR/lib" "$PERSISTENT_TO
 export PATH="$PERSISTENT_TOOLS_DIR/bin:$PATH"
 export NPM_CONFIG_PREFIX="$PERSISTENT_TOOLS_DIR"
 export PYTHONUSERBASE="$PERSISTENT_TOOLS_DIR"
-export PYTHONPATH="$PERSISTENT_TOOLS_DIR/lib/python3.11/site-packages:$PYTHONPATH"
+export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$PERSISTENT_TOOLS_DIR/lib/python3.11/site-packages"
 
 # Install tools on first boot (if .tools-installed doesn't exist)
 if [[ ! -f /root/.hermes/.tools-installed ]]; then
