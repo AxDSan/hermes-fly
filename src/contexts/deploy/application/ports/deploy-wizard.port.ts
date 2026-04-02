@@ -5,6 +5,7 @@ export interface DeployConfig {
   appName: string;
   region: string;
   vmSize: string;
+  vmMemoryOverride?: number;  // Custom RAM in MB (optional, overrides preset)
   volumeSize: number;
   provider: string;
   apiKey: string;

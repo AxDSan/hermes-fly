@@ -548,6 +548,7 @@ export class FlyDeployWizard implements DeployWizardPort {
     const appName = await this.collectAppName(env.HERMES_FLY_APP_NAME);
     const region = await this.collectRegion(env.HERMES_FLY_REGION);
     const vmSize = await this.collectVmSize(env.HERMES_FLY_VM_SIZE);
+    const vmMemoryOverride = await this.collectCustomMemory(vmSize, env.HERMES_FLY_VM_MEMORY);
     const volumeSize = await this.collectVolumeSize(env.HERMES_FLY_VOLUME_SIZE);
     const aiAccess = await this.collectAiAccess({
       provider: env.HERMES_LLM_PROVIDER ?? env.HERMES_FLY_PROVIDER,
@@ -600,6 +601,7 @@ export class FlyDeployWizard implements DeployWizardPort {
       appName: intent.appName,
       region: intent.region,
       vmSize: intent.vmSize,
+      vmMemoryOverride,
       volumeSize,
       provider: intent.provider,
       apiKey: aiAccess.apiKey,
@@ -1719,6 +1721,46 @@ export class FlyDeployWizard implements DeployWizardPort {
       defaultIndex: defaultIndex + 1,
       fallbackPrompt: `Choose a tier [${defaultIndex + 1}]: `,
     });
+  }
+
+  private async collectCustomMemory(vmSize: string, envValue: string | undefined): Promise<number | undefined> {
+    const preset = envValue?.trim();
+    if (preset && preset.length > 0) {
+      // Parse memory like "4GB", "512MB", "2048"
+      const match = preset.match(/^(\d+)(?:\s*(MB|GB))?$/i);
+      if (match) {
+        const value = parseInt(match[1], 10);
+        const unit = (match[2] || "MB").toUpperCase();
+        return unit === "GB" ? value * 1024 : value;
+      }
+    }
+
+    if (!this.prompts.isInteractive()) {
+      return undefined;
+    }
+
+    const defaultMemory = this.resolveVmMemory(vmSize);
+    const wantCustom = await this.confirm({
+      message: `Use default ${defaultMemory}MB RAM for ${vmSize}?`,
+      defaultValue: true,
+    });
+
+    if (wantCustom) {
+      return undefined;
+    }
+
+    const customMemory = await this.promptForInput({
+      message: "Custom RAM in MB (e.g., 1024, 2048, 4096):",
+      validate: (input) => {
+        const num = parseInt(input, 10);
+        if (isNaN(num) || num < 256) {
+          return "Please enter a valid number (minimum 256MB)";
+        }
+        return true;
+      },
+    });
+
+    return parseInt(customMemory, 10);
   }
 
   private async collectVolumeSize(envValue: string | undefined): Promise<number> {
