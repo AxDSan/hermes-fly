@@ -106,6 +106,7 @@ export class UpdateDeploymentUseCase {
         deployConfig = {
           region: choice.config.region,
           vmSize: choice.config.vmSize,
+          vmMemoryOverride: choice.config.vmMemoryOverride,
           volumeSize: choice.config.volumeSize,
         };
       } else {
@@ -130,6 +131,7 @@ export class UpdateDeploymentUseCase {
           appName: config.appName,
           region: deployConfig.region,
           vmSize: deployConfig.vmSize,
+          vmMemoryOverride: deployConfig.vmMemoryOverride,
           volumeSize: deployConfig.volumeSize,
           provider: "",
           apiKey: "",

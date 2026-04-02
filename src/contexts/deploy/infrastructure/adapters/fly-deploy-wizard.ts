@@ -6399,6 +6399,7 @@ export class FlyDeployWizard implements DeployWizardPort {
     this.prompts.write("\n--- Update Configuration ---\n");
     const region = await this.collectRegion(this.env.HERMES_FLY_REGION);
     const vmSize = await this.collectVmSize(this.env.HERMES_FLY_VM_SIZE);
+    const vmMemoryOverride = await this.collectCustomMemory(vmSize, this.env.HERMES_FLY_VM_MEMORY);
     const volumeSize = await this.collectVolumeSize(this.env.HERMES_FLY_VOLUME_SIZE);
 
     return {
@@ -6407,6 +6408,7 @@ export class FlyDeployWizard implements DeployWizardPort {
         ...existing,
         region,
         vmSize,
+        vmMemoryOverride,
         volumeSize,
       } as import("../../application/ports/deploy-wizard.port.js").DeployConfig,
     };
@@ -6475,12 +6477,16 @@ export class FlyDeployWizard implements DeployWizardPort {
     );
     const region = regionChoice === 1 ? existing.region : await this.collectRegion(this.env.HERMES_FLY_REGION);
 
+    // Ask about custom RAM for this preset
+    const vmMemoryOverride = await this.collectCustomMemory(preset.vmSize, this.env.HERMES_FLY_VM_MEMORY);
+
     return {
       keep: false,
       config: {
         ...existing,
         region,
         vmSize: preset.vmSize,
+        vmMemoryOverride,
       } as import("../../application/ports/deploy-wizard.port.js").DeployConfig,
     };
   }

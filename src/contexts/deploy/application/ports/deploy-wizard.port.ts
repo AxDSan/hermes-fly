@@ -57,6 +57,7 @@ export type DeployRunResult = { ok: true } | { ok: false; failure: DeployFailure
 export interface ExistingAppConfig {
   region: string;
   vmSize: string;
+  vmMemoryOverride?: number;  // Custom RAM in MB (optional, overrides preset)
   volumeSize: number;
 }
 
