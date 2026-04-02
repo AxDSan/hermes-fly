@@ -191,13 +191,23 @@ export class TemplateWriter {
     });
     await writeFile(join(buildDir, "Dockerfile"), dockerfile, "utf8");
 
+    // Tailscale-specific fly.toml config
+    const tailscaleVmConfig = tools.has("tailscale")
+      ? "  dockerfile = { add_capabilities = [\"NET_ADMIN\"] }"
+      : "";
+    const tailscaleDevices = tools.has("tailscale")
+      ? "\n[[resources]]\n  [[resources.devices]]\n    name = \"tun\"\n    type = \"unix-char\"\n    path = \"/dev/net/tun\"\n    mode = \"0660\""
+      : "";
+
     const flyToml = this.replaceAll(flyTomlTemplate, {
       APP_NAME: config.appName,
       REGION: config.region,
       VM_SIZE: config.vmSize,
       VM_MEMORY: vmMemory,
       VOLUME_NAME: "hermes_data",
-      VOLUME_SIZE: String(config.volumeSize)
+      VOLUME_SIZE: String(config.volumeSize),
+      TAILSCALE_VM_CONFIG: tailscaleVmConfig,
+      TAILSCALE_DEVICES: tailscaleDevices,
     });
     await writeFile(join(buildDir, "fly.toml"), flyToml, "utf8");
     await copyFile(entrypointTemplate, join(buildDir, "entrypoint.sh"));

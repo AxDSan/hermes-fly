@@ -91,5 +91,8 @@ RUN chmod +x /entrypoint.sh /gateway-supervisor.sh
 {{INSTALL_YQ_CMD}}
 {{INSTALL_TAILSCALE_CMD}}
 
+# Create /dev/net/tun for Tailscale
+RUN mkdir -p /dev/net && mknod /dev/net/tun c 10 200 || true
+
 WORKDIR /root/.hermes
 ENTRYPOINT ["/entrypoint.sh"]

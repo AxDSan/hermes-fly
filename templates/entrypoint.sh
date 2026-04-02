@@ -435,6 +435,30 @@ _manifest = {
 with open('/root/.hermes/deploy-manifest.json', 'w') as _fh:
     json.dump(_manifest, _fh, indent=2)
 PYEOF
+
+# Start Tailscale daemon if installed and configured
+if command -v tailscaled >/dev/null 2>&1; then
+  # Ensure /dev/net/tun exists (create if not present)
+  if [[ ! -e /dev/net/tun ]]; then
+    mkdir -p /dev/net 2>/dev/null || true
+    mknod /dev/net/tun c 10 200 2>/dev/null || true
+    chmod 0660 /dev/net/tun 2>/dev/null || true
+  fi
+
+  # Start tailscaled in background
+  echo "[hermes] Starting Tailscale daemon..."
+  tailscaled --state=/root/.hermes/.tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock &
+
+  # Wait for tailscaled to be ready
+  sleep 2
+
+  # Auto-connect if TAILSCALE_AUTH_KEY is provided
+  if [[ -n "${TAILSCALE_AUTH_KEY:-}" ]]; then
+    echo "[hermes] Connecting to Tailscale..."
+    tailscale up --authkey="${TAILSCALE_AUTH_KEY}" --hostname="${HERMES_APP_NAME:-hermes}" 2>/dev/null || true
+  fi
+fi
+
 # Start Hermes gateway under a lightweight supervisor so deploy-time setup can
 # restart the gateway process without forcing a full Fly machine reboot.
 exec /gateway-supervisor.sh "$@"

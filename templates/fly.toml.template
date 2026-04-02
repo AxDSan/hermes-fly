@@ -8,8 +8,10 @@ primary_region = "{{REGION}}"
 [[vm]]
   size = "{{VM_SIZE}}"
   memory = "{{VM_MEMORY}}"
+{{TAILSCALE_VM_CONFIG}}
 
 [[mounts]]
   source = "{{VOLUME_NAME}}"
   destination = "/root/.hermes"
   initial_size = "{{VOLUME_SIZE}}"
+{{TAILSCALE_DEVICES}}
