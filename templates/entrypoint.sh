@@ -102,6 +102,31 @@ ln -sfn "$PERSISTENT_DIR/.config/glab-cli" ~/.config/glab-cli 2>/dev/null || tru
 # Tailscale
 mkdir -p "$PERSISTENT_DIR/.tailscale"
 ln -sfn "$PERSISTENT_DIR/.tailscale" ~/.tailscale 2>/dev/null || true
+# Persistent Tools Directory - npm/pip packages installed here survive restarts
+PERSISTENT_TOOLS_DIR="/root/.hermes/tools"
+mkdir -p "$PERSISTENT_TOOLS_DIR/bin" "$PERSISTENT_TOOLS_DIR/lib" "$PERSISTENT_TOOLS_DIR/share"
+
+# Add persistent tools to PATH
+export PATH="$PERSISTENT_TOOLS_DIR/bin:$PATH"
+export NPM_CONFIG_PREFIX="$PERSISTENT_TOOLS_DIR"
+export PYTHONUSERBASE="$PERSISTENT_TOOLS_DIR"
+export PYTHONPATH="$PERSISTENT_TOOLS_DIR/lib/python3.11/site-packages:$PYTHONPATH"
+
+# Install tools on first boot (if .tools-installed doesn't exist)
+if [[ ! -f /root/.hermes/.tools-installed ]]; then
+  echo "[hermes] Installing tools to persistent volume (~/.hermes/tools)..."
+  
+  # Ensure npm uses persistent location
+  npm config set prefix "$PERSISTENT_TOOLS_DIR" 2>/dev/null || true
+  
+  echo "[hermes] Tools directory ready: $PERSISTENT_TOOLS_DIR"
+  echo "[hermes] To install tools that persist, use:"
+  echo "[hermes]   npm install -g <package>   (installs to ~/.hermes/tools)"
+  echo "[hermes]   pip install --user <pkg>   (installs to ~/.hermes/tools)"
+  
+  touch /root/.hermes/.tools-installed
+fi
+
 # Seed default config files on first deploy (never overwrite user customizations)
 for f in .env config.yaml SOUL.md; do
   if [[ ! -f /root/.hermes/$f ]] && [[ -f /opt/hermes/defaults/$f ]]; then
@@ -231,6 +256,13 @@ for var in OPENROUTER_API_KEY GLM_API_KEY GLM_BASE_URL LLM_MODEL LLM_BASE_URL LL
     printf '%s=%s\n' "$var" "$val" >>/root/.hermes/.env
   fi
 done
+
+# Ensure persistent tools PATH is in .env for interactive shells
+if ! grep -q "PATH.*\.hermes/tools/bin" /root/.hermes/.env 2>/dev/null; then
+  echo "export PATH=\"/root/.hermes/tools/bin:\$PATH\"" >>/root/.hermes/.env
+  echo "export NPM_CONFIG_PREFIX=\"/root/.hermes/tools\"" >>/root/.hermes/.env
+  echo "export PYTHONUSERBASE=\"/root/.hermes/tools\"" >>/root/.hermes/.env
+fi
 # Auto-configure Telegram bot description on boot (never block startup)
 if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]]; then
   (
