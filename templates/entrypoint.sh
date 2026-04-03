@@ -192,6 +192,140 @@ if [[ -n "${HERMES_PIP_TOOLS:-}" ]]; then
   done
 fi
 
+# ============================================
+# htool - Runtime Tool Manager (Manifest-Driven)
+# ============================================
+TOOL_MANIFEST="/root/.hermes/tool-manifest.json"
+
+_ensure_tool_manifest() {
+  if [[ ! -f "$TOOL_MANIFEST" ]]; then
+    cat > "$TOOL_MANIFEST" << 'HTEOF'
+{"version":1,"tools":[],"bin_dir":"/root/.hermes/tools/bin"}
+HTEOF
+  fi
+}
+
+htool() {
+  local cmd="${1:-help}"
+  shift 2>/dev/null || true
+  
+  case "$cmd" in
+    install|i)
+      local source="$1" name="$2"
+      [[ -z "$source" || -z "$name" ]] && { echo "Usage: htool install <npm|binary|github> <name> [args...]"; return 1; }
+      shift 2
+      
+      case "$source" in
+        npm)
+          echo "[htool] Installing $name from npm..."
+          npm install -g "$name" "$@"
+          _htool_register "$name" "npm" "$name"
+          ;;
+        binary|url)
+          local url="$1"
+          [[ -z "$url" ]] && { echo "Usage: htool install binary <name> <url>"; return 1; }
+          echo "[htool] Installing $name from $url..."
+          curl -fsSL "$url" -o "$PERSISTENT_TOOLS_DIR/bin/$name"
+          chmod +x "$PERSISTENT_TOOLS_DIR/bin/$name"
+          _htool_register "$name" "binary" "$url"
+          ;;
+        github|gh)
+          local repo="$1" pattern="${2:-linux}"
+          [[ -z "$repo" ]] && { echo "Usage: htool install github <name> <owner/repo> [pattern]"; return 1; }
+          echo "[htool] Installing $name from github:$repo..."
+          local dl_url
+          dl_url=$(curl -s "https://api.github.com/repos/$repo/releases/latest" | \
+            jq -r ".assets[]? | select(.name | contains(\"$pattern\")) | .browser_download_url" | head -1)
+          [[ -z "$dl_url" ]] && { echo "[htool] ERROR: No asset matching '$pattern'"; return 1; }
+          
+          local tmp=$(mktemp -d)
+          curl -fsSL "$dl_url" -o "$tmp/dl"
+          if [[ "$dl_url" == *.tar.gz ]]; then
+            tar -xzf "$tmp/dl" -C "$tmp"
+            find "$tmp" -type f -name "$name" -exec mv {} "$PERSISTENT_TOOLS_DIR/bin/$name" \;
+          elif [[ "$dl_url" == *.zip ]]; then
+            unzip -q "$tmp/dl" -d "$tmp"
+            find "$tmp" -type f -name "$name" -exec mv {} "$PERSISTENT_TOOLS_DIR/bin/$name" \;
+          else
+            mv "$tmp/dl" "$PERSISTENT_TOOLS_DIR/bin/$name"
+            chmod +x "$PERSISTENT_TOOLS_DIR/bin/$name"
+          fi
+          rm -rf "$tmp"
+          _htool_register "$name" "github" "$repo"
+          ;;
+        *)
+          echo "[htool] Unknown source: $source (use npm, binary, or github)"
+          return 1
+          ;;
+      esac
+      echo "[htool] $name installed. Use 'htool list' to see all tools."
+      ;;
+    
+    list|ls)
+      _ensure_tool_manifest
+      echo "Installed runtime tools:"
+      jq -r '.tools[]? | "  • \(.name) [\(.source)] (\(.type))"' "$TOOL_MANIFEST" 2>/dev/null || echo "  (none yet)"
+      echo ""
+      echo "Binaries in $PERSISTENT_TOOLS_DIR/bin:"
+      ls -1 "$PERSISTENT_TOOLS_DIR/bin/" 2>/dev/null | sed 's/^/  • /' || echo "  (empty)"
+      ;;
+    
+    remove|rm)
+      local name="$1"
+      [[ -z "$name" ]] && { echo "Usage: htool remove <name>"; return 1; }
+      
+      # Remove binary if exists
+      [[ -f "$PERSISTENT_TOOLS_DIR/bin/$name" ]] && rm "$PERSISTENT_TOOLS_DIR/bin/$name"
+      
+      # Remove from manifest
+      _ensure_tool_manifest
+      jq --arg n "$name" 'del(.tools[] | select(.name == $n))' "$TOOL_MANIFEST" > /tmp/mf.json && mv /tmp/mf.json "$TOOL_MANIFEST"
+      
+      echo "[htool] $name removed"
+      ;;
+    
+    path)
+      echo "$PERSISTENT_TOOLS_DIR/bin"
+      ;;
+    
+    help|*)
+      cat << 'HELPEOF'
+htool - Hermes Runtime Tool Manager
+Install CLI tools that persist across deploys/restarts.
+
+Usage:
+  htool install npm <package> [npm-args...]     Install from npm registry
+  htool install binary <name> <url>             Install binary from URL
+  htool install github <name> <owner/repo>      Install from GitHub release
+  htool list                                    Show installed tools
+  htool remove <name>                           Remove a tool
+  htool path                                    Show bin directory
+
+Examples:
+  htool install npm @railway/cli
+  htool install binary mytool https://example.com/tool
+  htool install github gh cli/cli
+  htool install github bun oven-sh/bun-linux-x64
+HELPEOF
+      ;;
+  esac
+}
+
+_htool_register() {
+  local name="$1" type="$2" source="$3"
+  _ensure_tool_manifest
+  # Remove existing entry
+  jq --arg n "$name" 'del(.tools[] | select(.name == $n))' "$TOOL_MANIFEST" > /tmp/mf.json && mv /tmp/mf.json "$TOOL_MANIFEST"
+  # Add new entry
+  jq --arg n "$name" --arg t "$type" --arg s "$source" \
+     '.tools += [{name:$n,type:$t,source:$s,installed_at:(now|todateiso8601)}]' \
+     "$TOOL_MANIFEST" > /tmp/mf.json && mv /tmp/mf.json "$TOOL_MANIFEST"
+}
+
+export -f htool _htool_register _ensure_tool_manifest 2>/dev/null || true
+
+# ============================================
+
 # Seed default config files on first deploy (never overwrite user customizations)
 for f in .env config.yaml SOUL.md; do
   if [[ ! -f /root/.hermes/$f ]] && [[ -f /opt/hermes/defaults/$f ]]; then
