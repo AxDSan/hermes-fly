@@ -121,20 +121,74 @@ export NPM_CONFIG_PREFIX="$PERSISTENT_TOOLS_DIR"
 export PYTHONUSERBASE="$PERSISTENT_TOOLS_DIR"
 export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$PERSISTENT_TOOLS_DIR/lib/python3.11/site-packages"
 
+# ============================================
+# Dynamic Tool Inventory Display
+# ============================================
+
+_hermes_show_tool_inventory() {
+  local tool_manifest="/root/.hermes/tool-manifest.json"
+  local installed_count=0
+  local env_configured=""
+  
+  # Count tools from manifest
+  if [[ -f "$tool_manifest" ]]; then
+    installed_count=$(jq '.tools | length' "$tool_manifest" 2>/dev/null || echo 0)
+  fi
+  
+  # Count env-configured tools
+  local env_count=0
+  [[ -n "${HERMES_NPM_TOOLS:-}" ]] && ((env_count++))
+  [[ -n "${HERMES_BUN_TOOLS:-}" ]] && ((env_count++))
+  [[ -n "${HERMES_UV_TOOLS:-}" ]] && ((env_count++))
+  [[ -n "${HERMES_PIP_TOOLS:-}" ]] && ((env_count++))
+  
+  # Build env configured string
+  local env_list=()
+  [[ -n "${HERMES_NPM_TOOLS:-}" ]] && env_list+=("npm:${HERMES_NPM_TOOLS}")
+  [[ -n "${HERMES_BUN_TOOLS:-}" ]] && env_list+=("bun:${HERMES_BUN_TOOLS}")
+  [[ -n "${HERMES_UV_TOOLS:-}" ]] && env_list+=("uv:${HERMES_UV_TOOLS}")
+  [[ -n "${HERMES_PIP_TOOLS:-}" ]] && env_list+=("pip:${HERMES_PIP_TOOLS}")
+  
+  # Display summary
+  echo "[hermes] Tool inventory:"
+  echo "[hermes]   Runtime installed: $installed_count tool(s)"
+  if [[ ${#env_list[@]} -gt 0 ]]; then
+    echo "[hermes]   Auto-install env vars configured (${#env_list[@]}):"
+    for item in "${env_list[@]}"; do
+      echo "[hermes]     • $item"
+    done
+  fi
+  echo "[hermes]"
+  
+  # Show installed tools if any
+  if [[ $installed_count -gt 0 ]] && [[ -f "$tool_manifest" ]]; then
+    echo "[hermes] Currently installed tools:"
+    jq -r '.tools[]? | "[hermes]   ✓ \(.name) [\(.type)]"' "$tool_manifest" 2>/dev/null
+    echo "[hermes]"
+  fi
+  
+  # Show helper commands
+  echo "[hermes] Install more tools with:"
+  echo "[hermes]   htool install npm <package>      (persisted)"
+  echo "[hermes]   htool install github <name> <repo> (persisted)"
+  echo "[hermes]   npm install -g <package>           (also persisted)"
+  echo "[hermes]   fly secrets set HERMES_NPM_TOOLS=\"pkg1,pkg2\"  (auto-install)"
+}
+
 # Install tools on first boot (if .tools-installed doesn't exist)
 if [[ ! -f /root/.hermes/.tools-installed ]]; then
-  echo "[hermes] Installing tools to persistent volume (~/.hermes/tools)..."
+  echo "[hermes] Initializing persistent tools directory (~/.hermes/tools)..."
   
   # Ensure npm uses persistent location
   npm config set prefix "$PERSISTENT_TOOLS_DIR" 2>/dev/null || true
   
-  echo "[hermes] Tools directory ready: $PERSISTENT_TOOLS_DIR"
-  echo "[hermes] To install tools that persist, use:"
-  echo "[hermes]   npm install -g <package>   (installs to ~/.hermes/tools)"
-  echo "[hermes]   pip install --user <pkg>   (installs to ~/.hermes/tools)"
-  
   touch /root/.hermes/.tools-installed
 fi
+
+# Always show current inventory on boot
+_hermes_show_tool_inventory
+
+export -f _hermes_show_tool_inventory 2>/dev/null || true
 
 # Auto-install tools from HERMES_NPM_TOOLS, HERMES_BUN_TOOLS, HERMES_UV_TOOLS and HERMES_PIP_TOOLS env vars
 # Usage: fly secrets set HERMES_NPM_TOOLS="@paperclipai/cli,http-server"
