@@ -234,3 +234,53 @@ All DMs and emails are humanized through HermesSpeaks. The CMO auto-approval che
 ## Live Send Approval
 
 Cold emails and DMs default to `dry_run=True`. To send live emails, change to `dry_run=False` in the outreach agent call. **Always confirm with the user before switching to live mode.**
+
+### Critical: Clear Tracking Databases Before Going Live
+
+The Outreach Agent and Email Tracker record `dry_run` attempts as real contact events. If you do not clear these before flipping to `dry_run=False`, all emails will be blocked with messages like:
+- `excluded_by_tracker: N`
+- `Domain example.com contacted recently (7-day cooldown)`
+- `Skipping pastor@example.com: recently contacted or max attempts reached`
+
+**You must clear three data stores:**
+
+1. **`/root/.hermes/paperclip/data/email_tracking_db.json`**
+   - Remove entries from `leads_contacted`, `email_addresses`, and `domains_contacted`
+2. **`/root/.hermes/paperclip/logs/outreach_history.json`**
+   - Remove entries keyed by `handle:email` (e.g., `wolmfortmyersfl.net:pastorgreg@wolm.net`)
+
+**Quick cleanup script:**
+```python
+import json
+from pathlib import Path
+
+# 1. Clear email tracker
+db_path = Path('/root/.hermes/paperclip/data/email_tracking_db.json')
+with open(db_path) as f:
+    db = json.load(f)
+
+for e in ['pastor@church1.tld', 'pastor@church2.tld']:
+    db['email_addresses'].pop(e, None)
+for d in ['church1.tld', 'church2.tld']:
+    db['domains_contacted'].pop(d, None)
+for lead_id in list(db['leads_contacted'].keys()):
+    if 'church' in lead_id:  # match your targets
+        db['leads_contacted'].pop(lead_id, None)
+
+with open(db_path, 'w') as f:
+    json.dump(db, f, indent=2)
+
+# 2. Clear outreach history
+hist_path = Path('/root/.hermes/paperclip/logs/outreach_history.json')
+with open(hist_path) as f:
+    h = json.load(f)
+
+for k in list(h.keys()):
+    if 'church' in k:
+        h.pop(k, None)
+
+with open(hist_path, 'w') as f:
+    json.dump(h, f, indent=2)
+```
+
+After clearing, re-run `run_cold_email_outreach(max_leads=N, dry_run=False)`.
