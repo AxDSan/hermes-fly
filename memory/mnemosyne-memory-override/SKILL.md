@@ -33,9 +33,32 @@ all durable user data.
 - Ephemeral session state (current todo list, temp flags)
 - When Mnemosyne is explicitly confirmed down
 
+## Muscle Memory / Reflex Problem
+
+You will reflexively reach for `memory` out of old habit. This is a known bug
+in your training. Before EVERY memory tool call, pause and ask:
+
+> "Is this durable? Would I want this next session?"
+
+If yes → use `mnemosyne_remember`
+If no (temp flag, todo state) → `memory` is acceptable
+
+## Migration Cleanup
+
+When moving data from legacy memory to Mnemosyne:
+1. Save to Mnemosyne first with `mnemosyne_remember`
+2. Then REMOVE the old entry from `memory` with `memory(action="remove")`
+3. This prevents stale duplicates and confusion
+
+## Committing Changes
+
+The user expects fixes to be committed and pushed individually.
+Do not claim a fix is done until it is committed to its respective repo.
+
 ## Enforcement
 
 If you catch yourself typing `memory(action=` for durable data:
 1. CANCEL that tool call
 2. Use `mnemosyne_remember` instead
 3. Set importance >= 0.7 for anything that matters later
+4. If you already polluted legacy memory, remove the entry immediately
